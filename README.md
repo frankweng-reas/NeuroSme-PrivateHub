@@ -72,7 +72,22 @@ npm install
 npm run dev
 ```
 
-前端：http://localhost:3000
+前端：http://localhost:5173
+
+### LocalAuth 整合（登入功能）
+
+登入由 [LocalAuth](https://github.com/REAS-ai-dev/localauth) 負責，需同時啟動：
+
+1. **LocalAuth**（port 4000）：`cd localauth && docker compose up -d` 或 `npm run start:dev`
+2. **NeuroSme2.0 後端**（port 8000）
+3. **NeuroSme2.0 前端**（port 5173）
+
+`backend/.env` 需設定 `JWT_SECRET`，且與 LocalAuth 一致。
+
+**LocalAuth 在 Docker 時**：若登入出現「Failed to fetch」，在 `frontend/.env` 加上：
+```
+VITE_AUTH_API_URL=http://localhost:4000
+```
 
 ### 資料庫遷移
 

@@ -5,6 +5,7 @@ export interface User {
   email: string
   username: string
   role: UserRole
+  tenant_id?: string
 }
 
 export interface Agent {
@@ -14,4 +15,6 @@ export interface Agent {
   agent_id: string
   agent_name: string
   icon_name?: string | null
+  is_purchased?: boolean
+  tenant_id?: string
 }

@@ -2,8 +2,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { getAgent } from '@/api/agents'
-import { getUserByEmail } from '@/api/users'
-import { getCurrentUserEmail } from '@/utils/auth'
 import { ApiError } from '@/api/client'
 import type { Agent } from '@/types'
 import AgentBusinessUI from './agents/AgentBusinessUI'
@@ -25,9 +23,7 @@ export default function AgentPage() {
 
   useEffect(() => {
     if (!id) return
-    const email = getCurrentUserEmail()
-    getUserByEmail(email)
-      .then((user) => getAgent(id, user.id))
+    getAgent(id)
       .then((a) => {
         setAgent(a)
         setIsForbidden(false)

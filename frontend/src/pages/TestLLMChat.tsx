@@ -1,7 +1,7 @@
 /** 隱藏測試頁：LLM 聊天測試，僅可透過 /dev-test-chat 存取 */
 import { useState, useRef, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeft, GripHorizontal, GripVertical, Trash2, Upload, X } from 'lucide-react'
+import { ArrowLeft, Copy, GripHorizontal, GripVertical, Trash2, Upload, X } from 'lucide-react'
 import { chatCompletions } from '@/api/chat'
 import { ApiError } from '@/api/client'
 
@@ -471,25 +471,55 @@ export default function TestLLMChat() {
               {messages.length === 0 ? (
                 <p className="text-lg text-gray-500">輸入訊息開始測試...</p>
               ) : (
-                <ul className="space-y-3">
+                <ul className="flex flex-col space-y-3">
                   {messages.map((m, i) => (
                     <li
                       key={i}
-                      className={`rounded-lg px-3 py-2 ${
+                      className={`flex flex-col rounded-lg px-3 py-2 ${
                         m.role === 'user'
-                          ? 'ml-8 bg-blue-100 text-blue-900'
+                          ? 'ml-auto w-fit max-w-[85%] bg-blue-100 text-blue-900'
                           : 'mr-8 bg-gray-100 text-gray-900'
                       }`}
                     >
-                      <span className="text-lg font-medium opacity-70">
-                        {m.role === 'user' ? '使用者' : '助理'}
-                      </span>
-                      <p className="mt-1 whitespace-pre-wrap text-lg">{m.content}</p>
+                      <p className="whitespace-pre-wrap text-lg">{m.content}</p>
                       {m.role === 'assistant' && m.meta && (
                         <div className="mt-2 border-t border-gray-200 pt-2 text-lg text-gray-600">
                           model: {m.meta.model} · prompt: {m.meta.usage.prompt_tokens} · completion:{' '}
                           {m.meta.usage.completion_tokens} · total: {m.meta.usage.total_tokens}
                           {m.meta.finish_reason && ` · finish: ${m.meta.finish_reason}`}
+                        </div>
+                      )}
+                      {m.role === 'assistant' && (
+                        <div className="mt-2 flex items-center gap-2 border-t border-gray-200 pt-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(m.content).then(
+                                () => alert('已複製到剪貼簿'),
+                                () => alert('複製失敗')
+                              )
+                            }}
+                            className="flex items-center gap-1 rounded px-2 py-1 text-lg text-gray-600 transition-colors hover:bg-gray-200"
+                          >
+                            <Copy className="h-4 w-4" />
+                            複製
+                          </button>
+                          <span className="text-gray-300">｜</span>
+                          <button
+                            type="button"
+                            disabled
+                            className="flex items-center gap-1 rounded px-2 py-1 text-lg text-gray-400 cursor-not-allowed"
+                          >
+                            匯出 PDF
+                          </button>
+                          <span className="text-gray-300">｜</span>
+                          <button
+                            type="button"
+                            disabled
+                            className="flex items-center gap-1 rounded px-2 py-1 text-lg text-gray-400 cursor-not-allowed"
+                          >
+                            重新分析
+                          </button>
                         </div>
                       )}
                     </li>

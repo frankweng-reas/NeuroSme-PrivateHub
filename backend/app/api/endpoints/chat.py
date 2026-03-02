@@ -1,12 +1,15 @@
 """Chat API：POST /chat/completions（LiteLLM 統一支援 OpenAI / Gemini / 台智雲）"""
 import logging
 import os
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import litellm
 
 from app.core.config import settings
+from app.core.security import get_current_user
+from app.models.user import User
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -106,7 +109,10 @@ def _get_provider_name(model: str) -> str:
 
 
 @router.post("/completions", response_model=ChatResponse)
-async def chat_completions(req: ChatRequest):
+async def chat_completions(
+    req: ChatRequest,
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
     logger.info(f"chat_completions: model={req.model!r}, content_len={len(req.content) if req.content else 0}")
     try:
         model = (req.model or "").strip() or "gpt-4o-mini"

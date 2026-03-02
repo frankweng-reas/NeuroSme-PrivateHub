@@ -1,20 +1,22 @@
-"""Agent ORM：對應 agents 表 (id, group_id, agent_id, agent_name, icon_name)"""
-from sqlalchemy import Column, String
+"""Agent ORM：對應 agents 表，PK 為 (tenant_id, id)"""
+from sqlalchemy import Boolean, Column, ForeignKey, String
 from sqlalchemy.orm import relationship
 from app.core.database import Base
-from app.models.base import TimestampMixin
 
 
-class Agent(Base, TimestampMixin):
+class Agent(Base):
     __tablename__ = "agents"
 
-    id = Column(String(100), primary_key=True, index=True)
+    tenant_id = Column(String(100), ForeignKey("tenants.id", ondelete="RESTRICT"), primary_key=True, index=True)
+    id = Column(String(100), primary_key=True, index=True)  # tenant 內唯一
     group_id = Column(String(100), nullable=False, index=True)
     group_name = Column(String(255), nullable=False)
     agent_id = Column(String(100), nullable=False, index=True)
     agent_name = Column(String(255), nullable=False)
     icon_name = Column(String(100), nullable=True)
+    is_purchased = Column(Boolean, nullable=False, default=False)
 
+    tenant = relationship("Tenant", backref="agents")
     users = relationship(
         "User",
         secondary="user_agents",

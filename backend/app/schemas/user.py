@@ -16,6 +16,7 @@ class UserCreate(UserBase):
 class UserResponse(UserBase):
     id: int
     role: Role = "member"
+    tenant_id: str = ""
 
     class Config:
         from_attributes = True

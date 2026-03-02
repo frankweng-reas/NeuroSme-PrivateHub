@@ -1,23 +1,25 @@
 /** 共用版面：Header（含 NeuroSme 品牌、用戶區）+ Outlet；agent、admin 頁面隱藏 Header */
 import { useEffect, useRef, useState } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { getUserByEmail } from '@/api/users'
-import { getCurrentUserEmail } from '@/utils/auth'
+import { getMe } from '@/api/users'
+import { useAuth } from '@/contexts/AuthContext'
 import type { User } from '@/types'
 
 export default function Layout() {
   const location = useLocation()
   const navigate = useNavigate()
+  const { user: authUser, logout } = useAuth()
   const hideHeader = location.pathname.startsWith('/agent/') || location.pathname.startsWith('/admin') || location.pathname === '/dev-test-chat'
   const [user, setUser] = useState<User | null>(null)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const userMenuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    getUserByEmail(getCurrentUserEmail())
+    if (!authUser) return
+    getMe()
       .then(setUser)
       .catch(() => setUser(null))
-  }, [])
+  }, [authUser])
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -85,7 +87,14 @@ export default function Layout() {
                     }}
                   >
                     <p className="text-sm text-gray-600">Email</p>
-                    <p className="mt-1 text-sm font-medium text-gray-900">{getCurrentUserEmail()}</p>
+                    <p className="mt-1 text-sm font-medium text-gray-900">{authUser?.email ?? user?.email ?? '-'}</p>
+                    <button
+                      type="button"
+                      onClick={() => { logout(); navigate('/login'); setUserMenuOpen(false); }}
+                      className="mt-3 w-full rounded border border-gray-200 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
+                    >
+                      登出
+                    </button>
                   </div>
                 )}
               </div>

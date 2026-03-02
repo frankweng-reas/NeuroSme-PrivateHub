@@ -2,8 +2,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getAgents } from '@/api/agents'
-import { getUserByEmail } from '@/api/users'
-import { getCurrentUserEmail } from '@/utils/auth'
 import type { Agent } from '@/types'
 import AgentIcon from '@/components/AgentIcon'
 
@@ -13,9 +11,7 @@ export default function HomePage() {
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
-    const email = getCurrentUserEmail()
-    getUserByEmail(email)
-      .then((user) => getAgents(user.id))
+    getAgents(false)
       .then(setAgents)
       .catch(() => setAgents([]))
       .finally(() => setIsLoading(false))
@@ -113,8 +109,8 @@ export default function HomePage() {
                         key={agent.id}
                         role="button"
                         tabIndex={0}
-                        onClick={() => navigate(`/agent/${agent.id}`)}
-                        onKeyDown={(e) => e.key === 'Enter' && navigate(`/agent/${agent.id}`)}
+                        onClick={() => navigate(`/agent/${encodeURIComponent(agent.id)}`)}
+                        onKeyDown={(e) => e.key === 'Enter' && navigate(`/agent/${encodeURIComponent(agent.id)}`)}
                         className={`group relative flex cursor-pointer flex-row items-center overflow-hidden rounded-xl bg-white px-4 py-3 ring-1 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:shadow-md hover:ring-2 ${colors.ring} ${colors.ringHover}`}
                       >
                         <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg transition-all duration-300 group-hover:scale-105 ${colors.iconBg}`}>

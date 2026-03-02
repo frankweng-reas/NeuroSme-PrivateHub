@@ -1,6 +1,11 @@
 import { apiFetch } from './client'
 import type { User } from '@/types'
 
+/** 取得當前登入使用者（從 JWT） */
+export async function getMe(): Promise<User> {
+  return apiFetch<User>('/users/me')
+}
+
 export async function getUserByEmail(email: string): Promise<User> {
   return apiFetch<User>(`/users/by-email?email=${encodeURIComponent(email)}`)
 }

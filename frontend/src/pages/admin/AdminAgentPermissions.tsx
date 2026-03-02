@@ -26,16 +26,24 @@ export default function AdminAgentPermissions() {
   const [isLoadingUserAgents, setIsLoadingUserAgents] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [saveMessage, setSaveMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
+  const [usersError, setUsersError] = useState<string | null>(null)
 
   useEffect(() => {
+    setUsersError(null)
     listUsers()
-      .then(setUsers)
-      .catch(() => setUsers([]))
+      .then((data) => {
+        setUsers(data)
+        setUsersError(null)
+      })
+      .catch((err) => {
+        setUsers([])
+        setUsersError(err instanceof ApiError && err.status === 403 ? '需要 admin 權限' : '無法載入使用者列表')
+      })
       .finally(() => setIsLoadingUsers(false))
   }, [])
 
   useEffect(() => {
-    getAgents()
+    getAgents(true)
       .then(setAgents)
       .catch(() => setAgents([]))
       .finally(() => setIsLoadingAgents(false))
@@ -65,6 +73,11 @@ export default function AdminAgentPermissions() {
     )
   }, [users, search])
 
+  const purchasedAgents = useMemo(
+    () => agents.filter((a) => a.is_purchased === true),
+    [agents]
+  )
+
   const toggleAgent = useCallback((agentId: string) => {
     setUserAgentIds((prev) => {
       const next = new Set(prev)
@@ -75,8 +88,8 @@ export default function AdminAgentPermissions() {
   }, [])
 
   const selectAll = useCallback(() => {
-    setUserAgentIds(new Set(agents.map((a) => a.id)))
-  }, [agents])
+    setUserAgentIds(new Set(purchasedAgents.map((a) => a.id)))
+  }, [purchasedAgents])
 
   const deselectAll = useCallback(() => {
     setUserAgentIds(new Set())
@@ -120,6 +133,8 @@ export default function AdminAgentPermissions() {
           <div className="flex items-center justify-center py-8">
             <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-400 border-t-transparent" />
           </div>
+        ) : usersError ? (
+          <p className="py-4 text-sm text-red-600">{usersError}</p>
         ) : (
           <ul className="flex-1 overflow-y-auto space-y-1">
             {filteredUsers.map((u) => (
@@ -190,7 +205,7 @@ export default function AdminAgentPermissions() {
               <div className="flex flex-1 items-center justify-center">
                 <div className="h-8 w-8 animate-spin rounded-full border-2 border-gray-400 border-t-transparent" />
               </div>
-            ) : agents.length === 0 ? (
+            ) : purchasedAgents.length === 0 ? (
               <div className="flex flex-1 items-center justify-center rounded-lg border-2 border-dashed border-gray-200 bg-gray-50">
                 <p className="text-gray-500">尚無 Agent 資料</p>
               </div>
@@ -213,7 +228,7 @@ export default function AdminAgentPermissions() {
                   </button>
                 </div>
                 <div className="flex-1 overflow-y-auto space-y-2">
-                {agents.map((agent, index) => {
+                {purchasedAgents.map((agent, index) => {
                   const colors = GROUP_COLORS[index % GROUP_COLORS.length]
                   return (
                     <label

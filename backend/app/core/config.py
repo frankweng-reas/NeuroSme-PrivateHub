@@ -17,12 +17,17 @@ class Settings(BaseSettings):
     TWCC_API_KEY: str = ""
     TWCC_API_BASE: str = ""  # 台智雲端點，例：https://xxx.twcc.ai/v1
 
+    # JWT（與 LocalAuth 共用 secret）
+    JWT_SECRET: str = "change-me-in-production"
+
     # CORS
     CORS_ORIGINS: List[str] = [
         "http://localhost:3000",
+        "http://localhost:5173",
         "http://localhost:3001",
         "http://localhost:3002",
         "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
         "http://127.0.0.1:3001",
         "http://127.0.0.1:3002",
     ]

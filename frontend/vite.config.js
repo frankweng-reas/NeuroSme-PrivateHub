@@ -5,6 +5,7 @@ export default defineConfig(function (_a) {
     var mode = _a.mode;
     var env = loadEnv(mode, process.cwd(), '');
     var apiPort = env.VITE_API_PORT || '8000';
+    var localAuthPort = env.VITE_LOCALAUTH_PORT || '4000';
     return {
         plugins: [react()],
         resolve: {
@@ -13,10 +14,14 @@ export default defineConfig(function (_a) {
             },
         },
         server: {
-            port: 3000,
+            port: 5173,
             proxy: {
                 '/api': {
                     target: "http://localhost:".concat(apiPort),
+                    changeOrigin: true,
+                },
+                '/auth': {
+                    target: "http://localhost:".concat(localAuthPort),
                     changeOrigin: true,
                 },
             },

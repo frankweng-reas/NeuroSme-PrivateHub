@@ -17,5 +17,6 @@ litellm>=1.30.0
 
 # Utils
 pydantic[email]==2.6.1
+PyJWT>=2.8.0
 pydantic-settings==2.1.0
 python-dotenv==1.0.1

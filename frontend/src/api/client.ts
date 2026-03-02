@@ -1,5 +1,7 @@
 const API_BASE = '/api/v1'
 
+const TOKEN_KEY = 'neurosme_access_token'
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -21,15 +23,26 @@ export async function apiFetch<T>(
   const controller = new AbortController()
   const id = setTimeout(() => controller.abort(), timeout)
 
+  const token = localStorage.getItem(TOKEN_KEY)
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(rest.headers as Record<string, string>),
+  }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...rest,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(rest.headers as Record<string, string>),
-    },
+    headers,
     signal: controller.signal,
   })
   clearTimeout(id)
+
+  if (response.status === 401) {
+    localStorage.removeItem(TOKEN_KEY)
+    localStorage.removeItem('neurosme_user')
+    window.location.href = '/login'
+    throw new ApiError('未授權，請重新登入', 401)
+  }
 
   if (!response.ok) {
     let detail: string | undefined
