@@ -1,7 +1,7 @@
 /** 隱藏測試頁：LLM 聊天測試，僅可透過 /dev-test-chat 存取 */
 import { useState, useRef, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeft, Copy, GripHorizontal, GripVertical, Loader2, Trash2, Upload, X } from 'lucide-react'
+import { ArrowLeft, ChevronDown, Copy, GripHorizontal, GripVertical, Loader2, Trash2, Upload, X } from 'lucide-react'
 import { chatCompletionsDev } from '@/api/chat'
 import { ApiError } from '@/api/client'
 
@@ -94,6 +94,8 @@ export default function TestLLMChat() {
   const leftmostPanelRef = useRef<HTMLDivElement>(null)
   const leftPanelRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const chatScrollRef = useRef<HTMLDivElement>(null)
+  const [isAtBottom, setIsAtBottom] = useState(true)
 
   function handleCsvUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files
@@ -220,6 +222,25 @@ export default function TestLLMChat() {
       document.body.style.userSelect = ''
     }
   }, [isResizingVertical])
+
+  useEffect(() => {
+    if (isAtBottom) {
+      chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
+    }
+  }, [messages, isLoading, isAtBottom])
+
+  function handleChatScroll() {
+    const el = chatScrollRef.current
+    if (!el) return
+    const { scrollTop, scrollHeight, clientHeight } = el
+    const atBottom = scrollHeight - scrollTop - clientHeight < 20
+    setIsAtBottom(atBottom)
+  }
+
+  function scrollToBottom() {
+    chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
+    setIsAtBottom(true)
+  }
 
   useEffect(() => {
     saveStored({
@@ -468,7 +489,11 @@ export default function TestLLMChat() {
               </button>
             </div>
             <div className="flex flex-1 flex-col overflow-hidden p-4">
-            <div className="mb-4 flex-1 overflow-y-auto rounded-lg border border-gray-200 bg-white p-4">
+            <div
+              ref={chatScrollRef}
+              onScroll={handleChatScroll}
+              className="relative mb-4 flex-1 overflow-y-auto rounded-lg border border-gray-200 bg-white p-4"
+            >
               {messages.length === 0 ? (
                 <p className="text-lg text-gray-500">輸入訊息開始測試...</p>
               ) : (
@@ -537,6 +562,16 @@ export default function TestLLMChat() {
                     <span>.</span>
                   </span>
                 </p>
+              )}
+              {!isAtBottom && messages.length > 0 && (
+                <button
+                  type="button"
+                  onClick={scrollToBottom}
+                  className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center justify-center rounded-full border border-gray-300 bg-white p-2 text-gray-700 shadow-lg transition-colors hover:bg-gray-50"
+                  aria-label="跳到最後"
+                >
+                  <ChevronDown className="h-5 w-5" />
+                </button>
               )}
             </div>
 

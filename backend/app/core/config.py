@@ -1,9 +1,11 @@
 """應用設定：專案名、API 路徑、資料庫 URL、CORS 來源"""
-from pydantic_settings import BaseSettings
 from typing import List
+
+from pydantic_settings import BaseSettings, SettingsConfigDict  # type: ignore[import-untyped]
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
     PROJECT_NAME: str = "NeuroSme API"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
@@ -34,10 +36,6 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3001",
         "http://127.0.0.1:3002",
     ]
-
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
 
 
 settings = Settings()

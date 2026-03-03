@@ -1,7 +1,7 @@
 /** agent_id 含 business 時使用：商務型 agent 專用 UI */
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeft, ChevronsLeft, ChevronsRight, Copy, Loader2, RefreshCw } from 'lucide-react'
+import { ArrowLeft, ChevronDown, ChevronsLeft, ChevronsRight, Copy, Loader2, RefreshCw } from 'lucide-react'
 import { Group, Panel, PanelImperativeHandle, Separator } from 'react-resizable-panels'
 import { chatCompletions } from '@/api/chat'
 import { ApiError } from '@/api/client'
@@ -109,6 +109,8 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
   const [isLoading, setIsLoading] = useState(false)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
+  const [isAtBottom, setIsAtBottom] = useState(true)
+  const chatScrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!toastMessage) return
@@ -126,6 +128,25 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
       detailLevel,
     })
   }, [agent.id, messages, userPrompt, model, role, language, detailLevel])
+
+  useEffect(() => {
+    if (isAtBottom) {
+      chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
+    }
+  }, [messages, isLoading, isAtBottom])
+
+  function handleChatScroll() {
+    const el = chatScrollRef.current
+    if (!el) return
+    const { scrollTop, scrollHeight, clientHeight } = el
+    const atBottom = scrollHeight - scrollTop - clientHeight < 20
+    setIsAtBottom(atBottom)
+  }
+
+  function scrollToBottom() {
+    chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
+    setIsAtBottom(true)
+  }
 
   function buildUserPrompt(): string {
     const parts: string[] = []
@@ -262,7 +283,12 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
             </button>
           </header>
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-4">
-            <div className="mb-4 flex-1 overflow-y-auto rounded-xl border border-gray-200/80 bg-gray-50/60 ring-1 ring-gray-200/40 p-4">
+            <div className="relative mb-4 flex-1 min-h-0">
+              <div
+                ref={chatScrollRef}
+                onScroll={handleChatScroll}
+                className="h-full overflow-y-auto rounded-xl border border-gray-200/80 bg-gray-50/60 ring-1 ring-gray-200/40 p-4"
+              >
               {messages.length === 0 ? (
                 <p className="text-[18px] text-gray-400">輸入訊息開始對話...</p>
               ) : (
@@ -315,6 +341,17 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
                     <span>.</span>
                   </span>
                 </p>
+              )}
+              </div>
+              {!isAtBottom && messages.length > 0 && (
+                <button
+                  type="button"
+                  onClick={scrollToBottom}
+                  className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center justify-center rounded-full border border-gray-300 bg-white p-2 text-gray-700 shadow-lg transition-colors hover:bg-gray-50"
+                  aria-label="跳到最後"
+                >
+                  <ChevronDown className="h-5 w-5" />
+                </button>
               )}
             </div>
             <form onSubmit={handleSubmit} className="flex gap-2">
