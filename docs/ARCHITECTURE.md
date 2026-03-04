@@ -7,26 +7,33 @@
 ## 整體架構
 
 ```
-┌─────────────┐     HTTP      ┌─────────────┐     SQL      ┌─────────────┐
-│   Frontend  │ ────────────► │   Backend   │ ────────────► │  PostgreSQL │
-│  React +    │   /api/v1/    │     FastAPI │   SQLAlchemy │   Database  │
-│  React +    │   agents/     │             │              │             │
-│  Tailwind   │ ◄──────────── │  SQLAlchemy │ ◄──────────── │  agents     │
-└─────────────┘    JSON       └─────────────┘    ORM        └─────────────┘
+┌─────────────┐     HTTP      ┌─────────────┐     SQL      ┌─────────────────────┐
+│   Frontend  │ ────────────► │   Backend   │ ────────────► │  PostgreSQL         │
+│  React +    │   /api/v1/    │     FastAPI │   SQLAlchemy │  agent_catalog       │
+│  Tailwind   │   agents/     │             │              │  tenant_agents       │
+│             │ ◄──────────── │  SQLAlchemy │ ◄──────────── │  user_agents        │
+└─────────────┘    JSON       └─────────────┘    ORM        └─────────────────────┘
 ```
 
 ---
 
 ## 資料庫 (PostgreSQL)
 
-**表：** `agents`
+**Agent 相關表：**
 
-- **id** (integer) — 主鍵
-- **group_id** (varchar) — 群組 ID
-- **group_name** (varchar) — 群組名稱
-- **agent_id** (varchar) — 助理 ID
-- **agent_name** (varchar) — 助理名稱
-- **icon_name** (varchar, 可選) — 圖示名稱
+- **agent_catalog** — 系統全域 agent 定義
+  - id (varchar, PK)
+  - group_id, group_name, agent_id, agent_name, icon_name
+
+- **tenant_agents** — 客戶買了哪些 agent
+  - tenant_id, agent_id (複合 PK)
+  - FK: tenant_id → tenants, agent_id → agent_catalog
+
+- **user_agents** — 使用者能用哪些 agent
+  - tenant_id, user_id, agent_id (複合 PK)
+  - FK: agent_id → agent_catalog
+
+**權限邏輯：** 使用者可存取 agent 的條件 = tenant 已購買（tenant_agents）且 user 已授權（user_agents）
 
 ---
 
@@ -34,15 +41,16 @@
 
 **資料流：** 資料庫 → Model → Schema → API Response
 
-- **Model** — `backend/app/models/agent.py`：定義 SQLAlchemy ORM，對應 `agents` 表
+- **Model** — `backend/app/models/agent_catalog.py`：對應 `agent_catalog` 表
 - **Schema** — `backend/app/schemas/agent.py`：定義 API 回應格式（Pydantic）
-- **API** — `backend/app/api/endpoints/agents.py`：定義 `GET /api/v1/agents/`，查詢並回傳 JSON
+- **API** — `backend/app/api/endpoints/agents.py`：定義 `GET /api/v1/agents/`，依 user_agents ∩ tenant_agents 過濾後從 agent_catalog 查詢並回傳 JSON
 
 **請求流程：**
 1. 收到 `GET /api/v1/agents/`
-2. 依 `Agent` model 查詢
-3. 結果依 `AgentResponse` schema 轉成 JSON
-4. 回傳給前端
+2. 依 `get_agent_ids_for_user()` 取得 user 可存取的 agent_id 集合
+3. 從 `AgentCatalog` 查詢對應資料
+4. 結果依 `AgentResponse.from_catalog()` 轉成 JSON
+5. 回傳給前端
 
 ---
 
@@ -66,7 +74,7 @@
 ## 完整資料流（以 HomePage 為例）
 
 ```
-1. 使用者開啟 / 
+1. 使用者開啟 /
    → HomePage 載入
 
 2. useEffect 執行 getAgents()
@@ -75,8 +83,8 @@
 3. Vite proxy 轉發到 localhost:8000
    → FastAPI 收到請求
 
-4. agents.py: db.query(Agent).order_by(Agent.agent_id).all()
-   → SQLAlchemy 查詢 agents 表
+4. agents.py: get_agent_ids_for_user() 取得 user_agents ∩ tenant_agents
+   → 從 AgentCatalog 查詢對應 agent_id
 
 5. PostgreSQL 回傳 rows
    → 轉成 AgentResponse 列表

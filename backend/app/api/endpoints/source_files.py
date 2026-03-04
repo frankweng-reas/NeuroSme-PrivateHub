@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.agent import Agent
+from app.models.agent_catalog import AgentCatalog
 from app.models.source_file import SourceFile
 from app.models.user import User
 from app.schemas.source_file import (
@@ -31,14 +31,13 @@ def _parse_agent_id(agent_id: str, fallback_tenant_id: str) -> tuple[str, str]:
 def _check_agent_access(db: Session, user: User, agent_id: str) -> tuple[str, str]:
     """驗證使用者有權限存取該 agent，回傳 (tenant_id, agent_id)"""
     tenant_id, aid = _parse_agent_id(agent_id, user.tenant_id)
-    allowed = get_agent_ids_for_user(db, user.id)
-    agent = db.query(Agent).filter(
-        Agent.tenant_id == tenant_id,
-        Agent.id == aid,
-    ).first()
-    if not agent:
+    if tenant_id != user.tenant_id:
+        raise HTTPException(status_code=403, detail="無權限存取此助理")
+    catalog = db.query(AgentCatalog).filter(AgentCatalog.id == aid).first()
+    if not catalog:
         raise HTTPException(status_code=404, detail="Agent not found")
-    if agent.id not in allowed:
+    allowed = get_agent_ids_for_user(db, user.id)
+    if catalog.id not in allowed:
         raise HTTPException(status_code=403, detail="無權限存取此助理")
     return tenant_id, aid
 

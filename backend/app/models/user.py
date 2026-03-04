@@ -16,9 +16,3 @@ class User(Base, TimestampMixin):
     tenant_id = Column(String(100), ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
 
     tenant = relationship("Tenant", backref="users")
-    agents = relationship(
-        "Agent",
-        secondary="user_agents",
-        back_populates="users",
-        lazy="selectin",
-    )

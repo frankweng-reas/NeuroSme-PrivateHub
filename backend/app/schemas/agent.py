@@ -1,12 +1,12 @@
 """Agent API 回應結構 (AgentResponse)"""
 from pydantic import BaseModel
 
-from app.models.agent import Agent
+from app.models.agent_catalog import AgentCatalog
 
 
-def _agent_composite_id(agent: Agent) -> str:
+def _agent_composite_id(tenant_id: str, agent_id: str) -> str:
     """API 用 id：tenant_id:id，全域唯一"""
-    return f"{agent.tenant_id}:{agent.id}"
+    return f"{tenant_id}:{agent_id}"
 
 
 class AgentResponse(BaseModel):
@@ -23,15 +23,15 @@ class AgentResponse(BaseModel):
         from_attributes = True
 
     @classmethod
-    def from_agent(cls, agent: Agent) -> "AgentResponse":
-        """從 Agent ORM 建立，id 為 tenant_id:id"""
+    def from_catalog(cls, catalog: AgentCatalog, tenant_id: str) -> "AgentResponse":
+        """從 AgentCatalog 建立，id 為 tenant_id:id"""
         return cls(
-            id=_agent_composite_id(agent),
-            group_id=agent.group_id,
-            group_name=agent.group_name,
-            agent_id=agent.agent_id,
-            agent_name=agent.agent_name,
-            icon_name=agent.icon_name,
-            is_purchased=agent.is_purchased,
-            tenant_id=agent.tenant_id,
+            id=_agent_composite_id(tenant_id, catalog.id),
+            group_id=catalog.group_id,
+            group_name=catalog.group_name,
+            agent_id=catalog.agent_id,
+            agent_name=catalog.agent_name,
+            icon_name=catalog.icon_name,
+            is_purchased=True,  # 從 tenant_agents 取得者皆為已購買
+            tenant_id=tenant_id,
         )

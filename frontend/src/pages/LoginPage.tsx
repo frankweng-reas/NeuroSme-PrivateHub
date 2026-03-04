@@ -6,8 +6,8 @@ import { useAuth } from '@/contexts/AuthContext'
 const RETURN_URL_KEY = 'login_return_url'
 
 export default function LoginPage() {
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
+  const [email, setEmail] = useState('test01@test.com')
+  const [password, setPassword] = useState('123456')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [searchParams] = useSearchParams()
