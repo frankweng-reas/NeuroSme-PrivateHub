@@ -489,11 +489,12 @@ export default function TestLLMChat() {
               </button>
             </div>
             <div className="flex flex-1 flex-col overflow-hidden p-4">
-            <div
-              ref={chatScrollRef}
-              onScroll={handleChatScroll}
-              className="relative mb-4 flex-1 overflow-y-auto rounded-lg border border-gray-200 bg-white p-4"
-            >
+            <div className="relative mb-4 flex-1 min-h-0">
+              <div
+                ref={chatScrollRef}
+                onScroll={handleChatScroll}
+                className="h-full overflow-y-auto rounded-lg border border-gray-200 bg-white p-4"
+              >
               {messages.length === 0 ? (
                 <p className="text-lg text-gray-500">輸入訊息開始測試...</p>
               ) : (
@@ -563,6 +564,7 @@ export default function TestLLMChat() {
                   </span>
                 </p>
               )}
+              </div>
               {!isAtBottom && messages.length > 0 && (
                 <button
                   type="button"

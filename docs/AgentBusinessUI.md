@@ -16,7 +16,7 @@ interface AgentBusinessUIProps {
 
 三欄式 layout，使用 `react-resizable-panels` 的 `Group` + `Panel`，可拖曳調整寬度。左、右欄 `collapsible`，可折疊。
 
-- **左欄**：`SourceFileManager`，管理該 Agent 的來源檔案（CSV）
+- **左欄**：`SourceFileManager`，管理該 Agent 的來源檔案（CSV）；標題列右側有 Help 按鈕，點擊顯示 Online Help
 - **中欄**：對話區，訊息列表 + 輸入 form，呼叫 `chatCompletions`
 - **右欄**：AI 設定，Model 下拉選單、User Prompt textarea
 
@@ -78,8 +78,16 @@ Key：`agent-business-ui-{agentId}`
 
 ---
 
+## Online Help
+
+- 左欄「來源」標題右側有 Help 按鈕（問號圖示）
+- 點擊後以 modal 顯示 `help.md` 內容（Markdown 渲染）
+- **共用元件**：`HelpModal`（`@/components/HelpModal`），支援動態 `url` 指定 help 檔
+- **來源**：`frontend/public/help-sourcefile.md`（來源檔案說明）
+- **Docker**：將 `./frontend/public/help-sourcefile.md` volume 掛載至前端 static root，改檔即生效無需 rebuild
+
 ## 相依
 
-- `SourceFileManager`、`ConfirmModal`、`AgentIcon`
+- `SourceFileManager`、`ConfirmModal`、`HelpModal`、`AgentIcon`
 - `chatCompletions`、`ApiError`
-- `react-resizable-panels`、`lucide-react`
+- `react-resizable-panels`、`react-markdown`、`lucide-react`
