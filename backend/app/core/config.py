@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
     TWCC_API_KEY: str = ""
-    TWCC_API_BASE: str = ""  # 台智雲端點，例：https://xxx.twcc.ai/v1
+    TWCC_API_BASE: str = ""  # 台智雲 Conversation API 完整 URL，例：https://api-ams.twcc.ai/api/models/conversation
 
     # JWT（與 LocalAuth 共用 secret）
     JWT_SECRET: str = "change-me-in-production"

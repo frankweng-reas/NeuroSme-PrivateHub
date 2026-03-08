@@ -12,7 +12,7 @@ class User(Base, TimestampMixin):
     email = Column(String(255), unique=True, index=True, nullable=False)
     username = Column(String(100), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
-    role = Column(String(20), nullable=False, default="member")  # admin | member
+    role = Column(String(20), nullable=False, default="member")  # admin | manager | member
     tenant_id = Column(String(100), ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
 
     tenant = relationship("Tenant", backref="users")

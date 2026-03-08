@@ -7,6 +7,8 @@ export interface ChatMessage {
 
 export interface ChatRequest {
   agent_id?: string // chat.py 必填；chat_dev 不填
+  project_id?: string // quotation_parse 時可填，改從 qtn_sources 取參考資料
+  prompt_type?: string // 空或 analysis → system_prompt_analysis.md；quotation_parse → system_prompt_quotation_1_parse.md
   system_prompt: string
   user_prompt: string
   data: string

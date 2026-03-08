@@ -1,7 +1,7 @@
 """User 相關 Pydantic 結構：UserBase, UserCreate, UserResponse"""
 from pydantic import BaseModel, EmailStr
 
-Role = str  # 'admin' | 'member'
+Role = str  # 'admin' | 'manager' | 'member'
 
 
 class UserBase(BaseModel):
@@ -29,4 +29,4 @@ class UserAgentsUpdate(BaseModel):
 
 class UserRoleUpdate(BaseModel):
     """更新使用者角色"""
-    role: str  # 'admin' | 'member'
+    role: str  # 'admin' | 'manager' | 'member'

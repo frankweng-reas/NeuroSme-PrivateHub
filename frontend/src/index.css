@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 @layer base {
-  /* 全站最小字型 14px（Tailwind text-xs 已設為 14px） */
+  /* 全站最小字型 16px */
   html {
     font-size: 16px;
   }
@@ -37,4 +37,34 @@
 }
 .animate-thinking-dots span:nth-child(3) {
   animation-delay: 0.3s;
+}
+
+/* 解析中 overlay 淡入 */
+@keyframes analyzing-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 解析中 modal 縮放淡入 */
+@keyframes analyzing-modal-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-analyzing-overlay {
+  animation: analyzing-overlay-in 0.2s ease-out forwards;
+}
+
+.animate-analyzing-modal {
+  animation: analyzing-modal-in 0.25s ease-out forwards;
 }

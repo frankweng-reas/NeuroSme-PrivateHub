@@ -9,9 +9,11 @@ import litellm
 from app.api.endpoints.chat import (
     ChatRequest,
     ChatResponse,
+    _call_twcc_conversation,
     _get_llm_params,
     _get_provider_name,
     _parse_response,
+    _twcc_model_id,
 )
 from app.core.security import get_current_user
 from app.models.user import User
@@ -63,10 +65,19 @@ async def chat_completions_dev(
             )
 
         messages = _build_messages(req)
+
+        if model.startswith("twcc/"):
+            url = (api_base or "").rstrip("/")
+            if not url:
+                raise HTTPException(
+                    status_code=503,
+                    detail="台智雲 TWCC_API_BASE 未設定，請在 .env 設定為 https://api-ams.twcc.ai/api/models/conversation",
+                )
+            model_id = _twcc_model_id(model[5:])
+            return await _call_twcc_conversation(url=url, api_key=api_key, model_id=model_id, messages=messages)
+
         if model.startswith("gemini/"):
             os.environ["GEMINI_API_KEY"] = api_key
-        elif model.startswith("twcc/"):
-            pass
         else:
             os.environ["OPENAI_API_KEY"] = api_key
 

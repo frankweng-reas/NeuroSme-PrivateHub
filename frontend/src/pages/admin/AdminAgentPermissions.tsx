@@ -100,8 +100,8 @@ export default function AdminAgentPermissions() {
     if (selectedUserId == null) return
     setIsSaving(true)
     try {
-      // 僅 admin/member 可透過此 API 更新；super_admin 略過角色更新
-      if (userRole === 'admin' || userRole === 'member') {
+      // 僅 admin/manager/member 可透過此 API 更新；super_admin 略過角色更新
+      if (userRole === 'admin' || userRole === 'manager' || userRole === 'member') {
         await updateUserRole(selectedUserId, userRole)
       }
       await updateUserAgents(selectedUserId, Array.from(userAgentIds))
@@ -186,6 +186,7 @@ export default function AdminAgentPermissions() {
                       className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-400"
                     >
                       <option value="member" disabled={isOnlyAdmin}>member</option>
+                      <option value="manager" disabled={isOnlyAdmin}>manager</option>
                       <option value="admin">admin</option>
                     </select>
                   )}

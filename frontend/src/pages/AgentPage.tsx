@@ -6,12 +6,15 @@ import { ApiError } from '@/api/client'
 import type { Agent } from '@/types'
 import AgentBusinessUI from './agents/AgentBusinessUI'
 import AgentCustomerUI from './agents/AgentCustomerUI'
+import AgentQuotationUI from './agents/AgentQuotationUI'
 import AgentDefaultUI from './agents/AgentDefaultUI'
 
 function getAgentUI(agent: Agent) {
   const id = agent.agent_id.toLowerCase()
   if (id.includes('business')) return AgentBusinessUI
   if (id.includes('customer')) return AgentCustomerUI
+  if (id.includes('quotation')) return AgentQuotationUI
+
   return AgentDefaultUI
 }
 

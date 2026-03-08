@@ -17,7 +17,7 @@ router = APIRouter()
 
 
 def _is_admin_or_super(user: User) -> bool:
-    """admin 或 super_admin 可執行管理操作"""
+    """admin 或 super_admin 可執行管理操作（manager 不可）"""
     return user.role in ("admin", "super_admin")
 
 
@@ -115,9 +115,9 @@ def update_user_role(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    if body.role not in ("admin", "member"):
-        raise HTTPException(status_code=400, detail="role must be admin or member")
-    if body.role == "member" and user.role == "admin":
+    if body.role not in ("admin", "manager", "member"):
+        raise HTTPException(status_code=400, detail="role must be admin, manager or member")
+    if body.role in ("member", "manager") and user.role == "admin":
         admin_count = db.query(User).filter(
             User.role == "admin",
             User.tenant_id == user.tenant_id,
@@ -125,7 +125,7 @@ def update_user_role(
         if admin_count <= 1:
             raise HTTPException(
                 status_code=400,
-                detail="系統至少需保留一位 admin，無法將唯一的管理員改為 member",
+                detail="系統至少需保留一位 admin，無法將唯一的管理員改為 member 或 manager",
             )
     user.role = body.role
     db.commit()

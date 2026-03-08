@@ -8,7 +8,7 @@ export const MODEL_OPTIONS = [
   { value: 'gemini/gemini-2.5-flash-lite', label: 'gemini-2.5-flash-lite' },
   { value: 'gemini/gemini-1.5-pro', label: 'gemini-1.5-pro' },
   { value: 'gemini/gemini-pro', label: 'gemini-pro' },
-  { value: 'twcc/Llama3.1-FFM-8B-32K', label: '台智雲 Llama3.1-FFM-8B' },
+  { value: 'twcc/Llama3.3-FFM-70B-32K', label: 'Llama3.3-FFM-70B' },
 ] as const
 
 export const ROLE_OPTIONS = [
@@ -20,6 +20,7 @@ export const ROLE_OPTIONS = [
 export const LANGUAGE_OPTIONS = [
   { value: 'zh-TW', label: '繁中', prompt: '請用繁體中文回覆。' },
   { value: 'en', label: '英文', prompt: 'Please respond in English.' },
+  { value: 'ja', label: '日文', prompt: '日本語で回答してください。' },
 ] as const
 
 export const DETAIL_OPTIONS = [

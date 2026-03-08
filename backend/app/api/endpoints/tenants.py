@@ -1,6 +1,4 @@
 """Tenants API：CRUD，僅 super_admin 可存取"""
-from typing import Annotated
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -23,14 +21,14 @@ router = APIRouter()
 
 
 def _require_super_admin(current: User) -> None:
-    if current.role != "super_admin":
+    if str(getattr(current, "role", "")) != "super_admin":
         raise HTTPException(status_code=403, detail="需 super_admin 權限")
 
 
 @router.get("/", response_model=list[TenantResponse])
 def list_tenants(
     db: Session = Depends(get_db),
-    current: Annotated[User, Depends(get_current_user)] = ...,
+    current: User = Depends(get_current_user),
 ):
     """列出所有 tenants（僅 super_admin）"""
     _require_super_admin(current)
@@ -41,7 +39,7 @@ def list_tenants(
 def create_tenant(
     body: TenantCreate,
     db: Session = Depends(get_db),
-    current: Annotated[User, Depends(get_current_user)] = ...,
+    current: User = Depends(get_current_user),
 ):
     """新增 tenant（僅 super_admin）"""
     _require_super_admin(current)
@@ -60,14 +58,14 @@ def update_tenant(
     tenant_id: str,
     body: TenantUpdate,
     db: Session = Depends(get_db),
-    current: Annotated[User, Depends(get_current_user)] = ...,
+    current: User = Depends(get_current_user),
 ):
     """更新 tenant（僅 super_admin）"""
     _require_super_admin(current)
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
-    tenant.name = body.name
+    setattr(tenant, "name", body.name)
     db.commit()
     db.refresh(tenant)
     return tenant
@@ -77,7 +75,7 @@ def update_tenant(
 def delete_tenant(
     tenant_id: str,
     db: Session = Depends(get_db),
-    current: Annotated[User, Depends(get_current_user)] = ...,
+    current: User = Depends(get_current_user),
 ):
     """刪除 tenant（僅 super_admin）。若有關聯 users 等會失敗"""
     _require_super_admin(current)
@@ -100,7 +98,7 @@ def delete_tenant(
 def get_tenant_agents(
     tenant_id: str,
     db: Session = Depends(get_db),
-    current: Annotated[User, Depends(get_current_user)] = ...,
+    current: User = Depends(get_current_user),
 ):
     """取得該 tenant 可使用的 agent_id 清單（僅 super_admin）"""
     _require_super_admin(current)
@@ -116,7 +114,7 @@ def update_tenant_agents(
     tenant_id: str,
     body: TenantAgentsUpdate,
     db: Session = Depends(get_db),
-    current: Annotated[User, Depends(get_current_user)] = ...,
+    current: User = Depends(get_current_user),
 ):
     """更新該 tenant 可使用的 agent 清單（僅 super_admin）"""
     _require_super_admin(current)

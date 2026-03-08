@@ -2,8 +2,102 @@
 import { useState, useRef, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowLeft, ChevronDown, Copy, GripHorizontal, GripVertical, Loader2, Trash2, Upload, X } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { chatCompletionsDev } from '@/api/chat'
 import { ApiError } from '@/api/client'
+
+const CHAT_MARKDOWN_COMPONENTS = {
+  p: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
+    <p className="mb-2 last:mb-0 leading-relaxed text-lg text-gray-900" {...props}>
+      {children}
+    </p>
+  ),
+  h1: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
+    <h1 className="mb-2 mt-3 text-xl font-semibold text-gray-900 first:mt-0" {...props}>
+      {children}
+    </h1>
+  ),
+  h2: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
+    <h2 className="mb-2 mt-3 border-b border-gray-200 pb-1 text-lg font-semibold text-gray-900" {...props}>
+      {children}
+    </h2>
+  ),
+  h3: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
+    <h3 className="mb-2 mt-2 text-base font-semibold text-gray-800" {...props}>
+      {children}
+    </h3>
+  ),
+  ul: ({ children, ...props }: React.HTMLAttributes<HTMLUListElement>) => (
+    <ul className="mb-2 ml-4 list-disc space-y-1 text-lg text-gray-900" {...props}>
+      {children}
+    </ul>
+  ),
+  ol: ({ children, ...props }: React.HTMLAttributes<HTMLOListElement>) => (
+    <ol className="mb-2 ml-4 list-decimal list-outside pl-6 space-y-1 text-lg text-gray-900" {...props}>
+      {children}
+    </ol>
+  ),
+  li: ({ children, ...props }: React.HTMLAttributes<HTMLLIElement>) => (
+    <li className="leading-relaxed" {...props}>
+      {children}
+    </li>
+  ),
+  strong: ({ children, ...props }: React.HTMLAttributes<HTMLElement>) => (
+    <strong className="font-semibold text-gray-900" {...props}>
+      {children}
+    </strong>
+  ),
+  code: ({ children, className, ...props }: React.HTMLAttributes<HTMLElement>) => {
+    const isBlock = className?.includes('language-')
+    if (isBlock) {
+      return (
+        <code className="block whitespace-pre overflow-x-auto" {...props}>
+          {children}
+        </code>
+      )
+    }
+    return (
+      <code className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-base" {...props}>
+        {children}
+      </code>
+    )
+  },
+  pre: ({ children, ...props }: React.HTMLAttributes<HTMLPreElement>) => (
+    <pre className="my-2 overflow-x-auto rounded-lg bg-gray-100 p-3 text-base" {...props}>
+      {children}
+    </pre>
+  ),
+  hr: () => <hr className="my-3 border-gray-200" />,
+  table: ({ children, ...props }: React.HTMLAttributes<HTMLTableElement>) => (
+    <div className="my-2 overflow-x-auto">
+      <table className="min-w-full border-collapse border border-gray-200 text-base" {...props}>
+        {children}
+      </table>
+    </div>
+  ),
+  thead: ({ children, ...props }: React.HTMLAttributes<HTMLTableSectionElement>) => (
+    <thead className="bg-gray-100" {...props}>
+      {children}
+    </thead>
+  ),
+  th: ({ children, ...props }: React.HTMLAttributes<HTMLTableCellElement>) => (
+    <th className="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-900" {...props}>
+      {children}
+    </th>
+  ),
+  td: ({ children, ...props }: React.HTMLAttributes<HTMLTableCellElement>) => (
+    <td className="border border-gray-200 px-3 py-2 text-gray-900" {...props}>
+      {children}
+    </td>
+  ),
+  tr: ({ children, ...props }: React.HTMLAttributes<HTMLTableRowElement>) => (
+    <tr {...props}>{children}</tr>
+  ),
+  tbody: ({ children, ...props }: React.HTMLAttributes<HTMLTableSectionElement>) => (
+    <tbody {...props}>{children}</tbody>
+  ),
+}
 
 interface ResponseMeta {
   model: string
@@ -33,6 +127,7 @@ const MODEL_OPTIONS = [
   { value: 'gemini/gemini-1.5-pro', label: 'gemini-1.5-pro' },
   { value: 'gemini/gemini-pro', label: 'gemini-pro' },
   { value: 'twcc/Llama3.1-FFM-8B-32K', label: '台智雲 Llama3.1-FFM-8B' },
+  { value: 'twcc/Llama3.3-FFM-70B-32K', label: '台智雲 Llama3.3-FFM-70B' },
 ] as const
 
 interface StoredState {
@@ -508,7 +603,15 @@ export default function TestLLMChat() {
                           : 'mr-8 bg-gray-100 text-gray-900'
                       }`}
                     >
-                      <p className="whitespace-pre-wrap text-lg">{m.content}</p>
+                      {m.role === 'user' ? (
+                        <p className="whitespace-pre-wrap text-lg">{m.content}</p>
+                      ) : (
+                        <div>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={CHAT_MARKDOWN_COMPONENTS}>
+                            {m.content}
+                          </ReactMarkdown>
+                        </div>
+                      )}
                       {m.role === 'assistant' && m.meta && (
                         <div className="mt-2 border-t border-gray-200 pt-2 text-lg text-gray-600">
                           model: {m.meta.model} · prompt: {m.meta.usage.prompt_tokens} · completion:{' '}

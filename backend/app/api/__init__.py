@@ -1,6 +1,6 @@
-"""API 路由彙總：掛載 users、agents、source_files、prompt_templates 等 endpoint"""
+"""API 路由彙總：掛載 users、agents、source_files、prompt_templates、qtn_projects 等 endpoint"""
 from fastapi import APIRouter
-from app.api.endpoints import users, agents, agent_catalog, chat, chat_dev, source_files, prompt_templates, tenants
+from app.api.endpoints import users, agents, agent_catalog, chat, chat_dev, source_files, prompt_templates, tenants, qtn_projects, qtn_sources, qtn_catalogs
 
 router = APIRouter()
 router.include_router(users.router, prefix="/users", tags=["users"])
@@ -11,3 +11,6 @@ router.include_router(chat.router, prefix="/chat", tags=["chat"])
 router.include_router(chat_dev.router, prefix="/chat/dev", tags=["chat-dev"])
 router.include_router(source_files.router, prefix="/source-files", tags=["source-files"])
 router.include_router(prompt_templates.router, prefix="/prompt-templates", tags=["prompt-templates"])
+router.include_router(qtn_projects.router, prefix="/qtn-projects", tags=["qtn-projects"])
+router.include_router(qtn_sources.router, prefix="/qtn-sources", tags=["qtn-sources"])
+router.include_router(qtn_catalogs.router, prefix="/qtn-catalogs", tags=["qtn-catalogs"])

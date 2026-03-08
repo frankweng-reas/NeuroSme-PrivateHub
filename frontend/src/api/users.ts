@@ -26,7 +26,7 @@ export async function updateUserAgents(userId: number, agentIds: string[]): Prom
   })
 }
 
-export async function updateUserRole(userId: number, role: 'admin' | 'member'): Promise<void> {
+export async function updateUserRole(userId: number, role: 'admin' | 'manager' | 'member'): Promise<void> {
   await apiFetch(`/users/${userId}/role`, {
     method: 'PATCH',
     body: JSON.stringify({ role }),
