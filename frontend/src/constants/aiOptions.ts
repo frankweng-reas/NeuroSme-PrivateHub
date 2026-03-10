@@ -8,7 +8,8 @@ export const MODEL_OPTIONS = [
   { value: 'gemini/gemini-2.5-flash-lite', label: 'gemini-2.5-flash-lite' },
   { value: 'gemini/gemini-1.5-pro', label: 'gemini-1.5-pro' },
   { value: 'gemini/gemini-pro', label: 'gemini-pro' },
-  { value: 'twcc/Llama3.3-FFM-70B-32K', label: 'Llama3.3-FFM-70B' },
+  { value: 'twcc/Llama3.1-FFM-8B-32K', label: '台智雲 Llama3.1-FFM-8B' },
+  { value: 'twcc/Llama3.3-FFM-70B-32K', label: '台智雲 Llama3.3-FFM-70B' },
 ] as const
 
 export const ROLE_OPTIONS = [

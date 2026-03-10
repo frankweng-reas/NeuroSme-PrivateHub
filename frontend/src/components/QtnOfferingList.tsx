@@ -1,6 +1,6 @@
 /** 產品或服務清單：從公司報價清單套用，僅顯示與刪除 */
 import { useEffect, useState } from 'react'
-import { ChevronDown, ChevronUp, FileText, Trash2 } from 'lucide-react'
+import { FileText, Trash2 } from 'lucide-react'
 import ConfirmModal from '@/components/ConfirmModal'
 import { listQtnCatalogs, type QtnCatalogItem } from '@/api/qtnCatalogs'
 import {
@@ -112,11 +112,6 @@ export default function QtnOfferingList({
           onClick={collapsible ? () => setCollapsed((c) => !c) : undefined}
         >
           <h4 className="text-base font-medium text-gray-700">產品或服務清單</h4>
-          {collapsible && (
-            <span className="text-gray-500">
-              {collapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
-            </span>
-          )}
         </button>
 
         {!collapsed && (

@@ -1,4 +1,5 @@
 """Chat API：POST /chat/completions（LiteLLM 統一支援 OpenAI / Gemini / 台智雲）"""
+import json
 import logging
 import os
 from pathlib import Path
@@ -268,8 +269,43 @@ def _get_qtn_sources_content(db: Session, user_id: int, project_id: str) -> str:
     return "\n\n".join(parts)
 
 
+def _get_qtn_final_content(db: Session, user_id: int, project_id: str) -> str:
+    """依 project_id 查詢 qtn_projects.qtn_final，轉為可讀文字供 LLM 參考。
+    會補上計算後的小計、稅額、總金額，確保 LLM 取得與畫面一致的數字。"""
+    try:
+        pid = UUID(project_id)
+    except ValueError:
+        return ""
+    proj = db.query(QtnProject).filter(QtnProject.project_id == pid).first()
+    if not proj or proj.user_id != str(user_id) or not proj.qtn_final:
+        return ""
+    data = dict(proj.qtn_final)
+    items = data.get("items") or []
+    if isinstance(items, list):
+        subtotal_sum = sum(
+            float(i.get("subtotal", 0) or 0)
+            for i in items
+            if isinstance(i, dict)
+        )
+        subtotal_sum = round(subtotal_sum * 100) / 100
+    else:
+        subtotal_sum = 0
+    tax_rate = float(data.get("tax_rate") or 0)
+    tax_amount = round(subtotal_sum * tax_rate * 100) / 100
+    total_amount = subtotal_sum + tax_amount
+    data["_computed"] = {
+        "subtotal_sum": subtotal_sum,
+        "tax_rate": tax_rate,
+        "tax_amount": tax_amount,
+        "total_amount": total_amount,
+        "currency": data.get("currency") or "TWD",
+    }
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
 _PROMPT_TYPE_FILES: dict[str, str] = {
     "quotation_parse": "system_prompt_quotation_1_parse.md",
+    "quotation_share": "system_prompt_quotation_4_share.md",
     "analysis": "system_prompt_analysis.md",
 }
 
@@ -302,9 +338,15 @@ async def chat_completions(
     try:
         tenant_id, aid = _check_agent_access(db, current, req.agent_id.strip())
 
-        # quotation_parse + project_id：從 qtn_sources 取資料；否則從 source_files
-        if (req.prompt_type or "").strip() == "quotation_parse" and (req.project_id or "").strip():
-            data = _get_qtn_sources_content(db, current.id, req.project_id.strip())
+        # quotation_parse + project_id：從 qtn_sources 取資料
+        # quotation_share + project_id：從 qtn_final 取資料
+        # 否則從 source_files
+        pt = (req.prompt_type or "").strip()
+        pid = (req.project_id or "").strip()
+        if pt == "quotation_parse" and pid:
+            data = _get_qtn_sources_content(db, current.id, pid)
+        elif pt == "quotation_share" and pid:
+            data = _get_qtn_final_content(db, current.id, pid)
         else:
             data = _get_selected_source_files_content(db, current.id, tenant_id, aid)
         data_len = len(data.strip()) if data else 0
@@ -315,10 +357,15 @@ async def chat_completions(
                 detail=f"參考資料超過 {max_chars:,} 字元（目前約 {data_len:,} 字元），請減少選用的來源檔案後再試。",
             )
         if data_len == 0:
-            if (req.prompt_type or "").strip() == "quotation_parse":
+            if pt == "quotation_parse":
                 raise HTTPException(
                     status_code=400,
                     detail="請先選擇專案並上傳產品/服務清單與需求描述後再進行解析。",
+                )
+            if pt == "quotation_share":
+                raise HTTPException(
+                    status_code=400,
+                    detail="請先完成報價單（步驟 3）並進入發送跟進步驟後再生成建議。",
                 )
             logger.warning(
                 "chat_completions: 無參考資料 (agent_id=%r, tenant_id=%r, aid=%r, user_id=%s) - 請在該 agent 頁面左欄上傳並勾選來源檔案",

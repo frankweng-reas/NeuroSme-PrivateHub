@@ -9,6 +9,8 @@ interface InputModalProps {
   loading?: boolean
   onSubmit: () => void
   onClose: () => void
+  /** 額外 class 套用在 modal 內容容器（如 min-w-[640px] 加寬） */
+  contentClassName?: string
 }
 
 export default function InputModal({
@@ -19,6 +21,7 @@ export default function InputModal({
   loading = false,
   onSubmit,
   onClose,
+  contentClassName,
 }: InputModalProps) {
   if (!open) return null
 
@@ -31,7 +34,7 @@ export default function InputModal({
     >
       <div className="absolute inset-0 bg-black/30" />
       <div
-        className="relative z-10 max-h-[90vh] min-w-[320px] max-w-[90vw] overflow-y-auto rounded-2xl border-2 border-gray-200 bg-white p-6 shadow-lg"
+        className={`relative z-10 max-h-[90vh] min-w-[320px] max-w-[90vw] overflow-y-auto rounded-2xl border-2 border-gray-200 bg-white p-6 shadow-lg ${contentClassName ?? ''}`}
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="mb-4 text-[20px] font-semibold text-gray-800">{title}</h2>

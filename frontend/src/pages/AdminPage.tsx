@@ -1,12 +1,13 @@
 /** 管理頁面：admin 專用，含 sidebar 導航 */
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
-import { ArrowLeft, Building2, ShieldCheck, Users } from 'lucide-react'
+import { ArrowLeft, Building2, Building, ShieldCheck, Users } from 'lucide-react'
 import { getMe } from '@/api/users'
 import type { User } from '@/types'
 
 const SIDEBAR_ITEMS = [
   { to: '/admin/agent-permissions', label: 'Agent 權限設定', icon: ShieldCheck, superAdminOnly: false },
+  { to: '/admin/companies', label: '公司資訊', icon: Building, superAdminOnly: false },
   { to: '/admin/users', label: '會員管理', icon: Users, superAdminOnly: false },
   { to: '/admin/tenant-settings', label: 'Tenant 設定', icon: Building2, superAdminOnly: true },
 ] as const

@@ -33,3 +33,15 @@ export interface Agent {
   is_purchased?: boolean
   tenant_id?: string
 }
+
+export interface Company {
+  id: string
+  legal_name?: string | null
+  tax_id?: string | null
+  logo_url?: string | null
+  address?: string | null
+  phone?: string | null
+  email?: string | null
+  contact?: string | null
+  sort_order?: string | null
+}
