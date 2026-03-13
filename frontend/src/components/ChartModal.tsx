@@ -154,7 +154,7 @@ export default function ChartModal({ open, data, onClose }: ChartModalProps) {
   const valueSuffix = data.valueSuffix ?? ''
 
   function formatValue(val: number): string {
-    const s = val % 1 === 0 ? String(val) : val.toFixed(1)
+    const s = val % 1 === 0 ? String(val) : val.toFixed(2)
     return valueSuffix ? `${s}${valueSuffix}` : s
   }
 
@@ -177,7 +177,7 @@ export default function ChartModal({ open, data, onClose }: ChartModalProps) {
             tick={{ fill: '#6b7280', fontSize: FONT_SIZE }}
             axisLine={{ stroke: '#374151' }}
             tickLine={{ stroke: '#374151' }}
-            tickFormatter={(v) => (v % 1 === 0 ? String(v) : v.toFixed(1))}
+            tickFormatter={(v) => (v % 1 === 0 ? String(v) : v.toFixed(2))}
             width={yAxisLabel ? 72 : 60}
           >
             {yAxisLabel && (
@@ -277,7 +277,7 @@ export default function ChartModal({ open, data, onClose }: ChartModalProps) {
             tick={{ fill: '#6b7280', fontSize: FONT_SIZE }}
             axisLine={{ stroke: '#374151' }}
             tickLine={{ stroke: '#374151' }}
-            tickFormatter={(v) => (v % 1 === 0 ? String(v) : v.toFixed(1))}
+            tickFormatter={(v) => (v % 1 === 0 ? String(v) : v.toFixed(2))}
             width={yAxisLabel ? 72 : 60}
           >
             {yAxisLabel && (
