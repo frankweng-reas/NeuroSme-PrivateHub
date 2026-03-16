@@ -10,6 +10,8 @@ from app.models.agent_catalog import AgentCatalog
 from app.models.bi_project import BiProject
 from app.models.user import User
 from app.schemas.bi_project import BiProjectCreate, BiProjectResponse, BiProjectUpdate
+from app.services.bi_sources_utils import get_merged_csv_for_project
+from app.services.duckdb_store import delete_project_duckdb, get_project_duckdb_path, sync_project_csv_to_duckdb
 from app.services.permission import get_agent_ids_for_user
 
 router = APIRouter()
@@ -168,5 +170,38 @@ def delete_bi_project(
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    pid = str(proj.project_id)
     db.delete(proj)
     db.commit()
+    delete_project_duckdb(pid)
+
+
+@router.post("/{project_id}/sync-duckdb", status_code=status.HTTP_200_OK)
+def sync_duckdb(
+    project_id: str,
+    agent_id: str = Query(..., description="agent 識別"),
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+) -> dict:
+    """手動同步專案 CSV 至 DuckDB（若已啟用長存）"""
+    tenant_id, aid = _check_agent_access(db, current, agent_id)
+
+    proj = (
+        db.query(BiProject)
+        .filter(
+            BiProject.project_id == project_id,
+            BiProject.user_id == str(current.id),
+            BiProject.tenant_id == tenant_id,
+            BiProject.agent_id == aid,
+        )
+        .first()
+    )
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    db.expire_all()  # 強制從 DB 重讀，避免 session 快取舊資料
+    merged = get_merged_csv_for_project(db, project_id)
+    ok, row_count = sync_project_csv_to_duckdb(project_id, merged)
+    msg = f"DuckDB 已同步 ({row_count} 筆)" if ok else "DuckDB 未啟用或同步失敗"
+    path = get_project_duckdb_path(project_id)
+    return {"ok": ok, "message": msg, "row_count": row_count, "path": str(path) if path else None}

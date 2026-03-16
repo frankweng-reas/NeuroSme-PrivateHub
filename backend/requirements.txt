@@ -18,8 +18,13 @@ litellm>=1.30.0
 # Scheduling（OR-Tools）
 ortools>=9.8.0
 
+# Analysis（DuckDB + pandas）
+duckdb>=0.9.0
+pandas>=2.0.0
+
 # Utils
 pydantic[email]==2.6.1
+PyYAML>=6.0
 PyJWT>=2.8.0
 pydantic-settings==2.1.0
 python-dotenv==1.0.1

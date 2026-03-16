@@ -38,13 +38,13 @@ NeuroSme2.0/
 
 ## 快速開始
 
-### PostgreSQL (Docker)
+### PostgreSQL (Docker，僅 DB)
 
-NeuroSme2.0 專用容器，與 local auth 的 PostgreSQL 分開：
+開發時 Docker 只跑 PostgreSQL，Backend / Frontend 皆本地執行：
 
 ```bash
 cp .env.example .env   # 編輯 .env 設定 POSTGRES_PASSWORD
-docker compose up -d
+docker compose up -d   # 僅啟動 postgres-neurosme2
 ```
 
 - 容器名稱：`neurosme2.0`

@@ -152,7 +152,7 @@ async def _call_twcc_conversation(
         "messages": messages,
         "parameters": {
             "max_new_tokens": 2000,
-            "temperature": 0.3,
+            "temperature": 0,
             "top_k": 40,
             "top_p": 0.9,
             "frequency_penalty": 1.2,
@@ -448,6 +448,7 @@ async def chat_completions(
             "messages": messages,
             "api_key": api_key,
             "timeout": 60,
+            "temperature": 0,
         }
         if api_base:
             base = api_base.rstrip("/")

@@ -57,3 +57,14 @@ export async function deleteBiProject(agentId: string, projectId: string): Promi
     { method: 'DELETE' }
   )
 }
+
+/** 手動同步專案 CSV 至 DuckDB */
+export async function syncDuckdb(
+  agentId: string,
+  projectId: string
+): Promise<{ ok: boolean; message: string; row_count?: number }> {
+  return apiFetch(
+    `/bi-projects/${encodeURIComponent(projectId)}/sync-duckdb?agent_id=${encodeURIComponent(agentId)}`,
+    { method: 'POST' }
+  )
+}

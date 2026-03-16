@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "postgresql://user:password@localhost:5432/neurosme"
 
+    # DuckDB 長存：專案資料的 .duckdb 檔存放目錄（空則不啟用長存）
+    DUCKDB_DATA_DIR: str = "data/duckdb"
+
     # Chat 參考資料字元上限，超過則回傳 413 要求用戶縮小範圍
     CHAT_DATA_MAX_CHARS: int = 100_000
 

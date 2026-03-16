@@ -11,8 +11,16 @@ from app.models.bi_project import BiProject
 from app.models.bi_source import BiSource
 from app.models.user import User
 from app.schemas.bi_source import BiSourceCreate, BiSourceResponse, BiSourceUpdate
+from app.services.bi_sources_utils import get_merged_csv_for_project
+from app.services.duckdb_store import sync_project_csv_to_duckdb
 
 router = APIRouter()
+
+
+def _sync_project_duckdb(db: Session, project_id: str) -> None:
+    """專案 bi_sources 變更後，同步至 DuckDB（若已啟用）"""
+    merged = get_merged_csv_for_project(db, project_id)
+    sync_project_csv_to_duckdb(project_id, merged)
 
 SOURCE_TYPE_DATA = "DATA"
 
@@ -53,6 +61,7 @@ def create_bi_source(
     db.add(src)
     db.commit()
     db.refresh(src)
+    _sync_project_duckdb(db, body.project_id)
     return BiSourceResponse(
         source_id=str(src.source_id),
         project_id=str(src.project_id),
@@ -139,6 +148,7 @@ def update_bi_source(
 
     db.commit()
     db.refresh(src)
+    _sync_project_duckdb(db, str(src.project_id))
     return BiSourceResponse(
         source_id=str(src.source_id),
         project_id=str(src.project_id),
@@ -167,6 +177,8 @@ def delete_bi_source(
         raise HTTPException(status_code=404, detail="來源不存在")
     _check_project_access(db, current, str(src.project_id))
 
+    project_id = str(src.project_id)
     db.delete(src)
     db.commit()
+    _sync_project_duckdb(db, project_id)
     return None

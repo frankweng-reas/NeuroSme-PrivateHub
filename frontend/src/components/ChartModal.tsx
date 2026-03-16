@@ -51,12 +51,12 @@ interface ChartModalProps {
   onClose: () => void
 }
 
-/** 依資料結構回傳可選的圖表類型 */
+/** 依資料結構回傳可選的圖表類型。labels+data 可支援 pie/bar/line；labels+datasets 可支援 bar/line */
 function getAvailableTypes(data: ChartData): ('bar' | 'pie' | 'line')[] {
   const hasDatasets = data.datasets && data.datasets.length > 0
   const hasPieData = data.data && data.data.length > 0
   if (hasDatasets) return ['bar', 'line']
-  if (hasPieData) return ['pie', 'bar']
+  if (hasPieData) return ['pie', 'bar', 'line']
   return ['bar']
 }
 

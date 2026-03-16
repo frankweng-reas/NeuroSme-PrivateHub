@@ -9,7 +9,7 @@ export default function Layout() {
   const location = useLocation()
   const navigate = useNavigate()
   const { user: authUser, logout } = useAuth()
-  const hideHeader = location.pathname.startsWith('/agent/') || location.pathname.startsWith('/admin') || location.pathname === '/dev-test-chat'
+  const hideHeader = location.pathname.startsWith('/agent/') || location.pathname.startsWith('/admin') || location.pathname === '/dev-test-chat' || location.pathname === '/dev-test-compute-flow'
   const [user, setUser] = useState<User | null>(null)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const userMenuRef = useRef<HTMLDivElement>(null)

@@ -20,9 +20,11 @@ interface AgentHeaderProps {
   className?: string
   /** 是否顯示主管工具（僅報價型 agent 使用，其他 agent 不顯示） */
   showManagerTools?: boolean
+  /** 自訂 header 背景色，未傳則用預設 #4b5563 */
+  headerBackgroundColor?: string
 }
 
-export default function AgentHeader({ agent, className = '', showManagerTools: showManagerToolsProp = false }: AgentHeaderProps) {
+export default function AgentHeader({ agent, className = '', showManagerTools: showManagerToolsProp = false, headerBackgroundColor = '#4b5563' }: AgentHeaderProps) {
   const { user: authUser } = useAuth()
   const [user, setUser] = useState<User | null>(null)
   const [managerToolsOpen, setManagerToolsOpen] = useState(false)
@@ -121,7 +123,7 @@ export default function AgentHeader({ agent, className = '', showManagerTools: s
     <>
       <header
         className={`flex-shrink-0 rounded-2xl border-b border-gray-300/50 px-6 py-4 shadow-md ${className}`.trim()}
-        style={{ backgroundColor: '#4b5563' }}
+        style={{ backgroundColor: headerBackgroundColor }}
       >
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">

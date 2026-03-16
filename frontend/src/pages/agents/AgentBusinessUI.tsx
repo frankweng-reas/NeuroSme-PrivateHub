@@ -1,6 +1,6 @@
 /** agent_id 含 business 時使用：商務型 agent 專用 UI */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronRight, ChevronsLeft, ChevronsRight, HelpCircle, MoreVertical, Plus, RefreshCw } from 'lucide-react'
+import { ChevronRight, ChevronsLeft, ChevronsRight, Database, HelpCircle, Loader2, MoreVertical, Plus, RefreshCw } from 'lucide-react'
 import { Group, Panel, PanelImperativeHandle, Separator } from 'react-resizable-panels'
 import { chatCompletions } from '@/api/chat'
 import { ApiError } from '@/api/client'
@@ -14,7 +14,7 @@ import ConfirmModal from '@/components/ConfirmModal'
 import InputModal from '@/components/InputModal'
 import SourceListManager from '@/components/SourceListManager'
 import { createBiSourceAdapter } from '@/adapters/biSourceAdapter'
-import { createBiProject, deleteBiProject, listBiProjects, updateBiProject, type BiProjectItem, type MessageStored } from '@/api/biProjects'
+import { createBiProject, deleteBiProject, listBiProjects, syncDuckdb, updateBiProject, type BiProjectItem, type MessageStored } from '@/api/biProjects'
 import { DETAIL_OPTIONS, LANGUAGE_OPTIONS, ROLE_OPTIONS } from '@/constants/aiOptions'
 import type { Agent } from '@/types'
 
@@ -233,6 +233,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
   const [showHelpModal, setShowHelpModal] = useState(false)
+  const [syncDuckdbLoading, setSyncDuckdbLoading] = useState(false)
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(
     () => loadStored(agent.id)?.selectedTemplateId ?? null
   )
@@ -285,6 +286,17 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     const id = setTimeout(() => setToastMessage(null), 2000)
     return () => clearTimeout(id)
   }, [toastMessage])
+
+  /** 專案選單：點擊畫面任何處即關閉 */
+  useEffect(() => {
+    if (!projectMenuOpen) return
+    const handleClick = () => setProjectMenuOpen(null)
+    const id = setTimeout(() => document.addEventListener('click', handleClick), 0)
+    return () => {
+      clearTimeout(id)
+      document.removeEventListener('click', handleClick)
+    }
+  }, [projectMenuOpen])
 
   useEffect(() => {
     const stored = loadStored(agent.id)
@@ -429,6 +441,19 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
       setDeleteProjectLoading(false)
       setDeleteProjectConfirm(null)
       setProjectMenuOpen(null)
+    }
+  }
+
+  async function handleSyncDuckdb() {
+    if (!selectedProject || syncDuckdbLoading) return
+    setSyncDuckdbLoading(true)
+    try {
+      const res = await syncDuckdb(agent.id, selectedProject.project_id)
+      setToastMessage(res.message)
+    } catch {
+      setToastMessage('同步失敗，請稍後再試')
+    } finally {
+      setSyncDuckdbLoading(false)
     }
   }
 
@@ -675,7 +700,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
           )}
         </div>
       </InputModal>
-      <AgentHeader agent={agent} />
+      <AgentHeader agent={agent} headerBackgroundColor="#1C3939" />
 
       <div className="mt-4 flex min-h-0 flex-1 gap-4 overflow-hidden">
         {/* 左側：專案 sidebar（可折疊，與 AgentQuotationUI 一致） */}
@@ -683,7 +708,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
           className={`flex shrink-0 flex-col overflow-hidden rounded-xl border border-gray-300/50 shadow-md transition-[width] duration-200 ${
             projectPanelCollapsed ? 'w-12' : 'w-64'
           }`}
-          style={{ backgroundColor: '#4b5563' }}
+          style={{ backgroundColor: '#1C3939' }}
         >
           <div
             className={`flex shrink-0 items-center justify-between border-b border-gray-300/50 py-2.5 ${
@@ -728,18 +753,18 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
           {!projectPanelCollapsed && (
             <div className="min-h-0 flex-1 overflow-y-auto p-4">
               {projectsLoading ? (
-                <p className="text-base text-white/70">載入中…</p>
+                <p className="text-base text-[#AE924C]/70">載入中…</p>
               ) : projects.length === 0 ? (
-                <p className="text-base text-white/70">尚無專案，點擊 +New 建立</p>
+                <p className="text-base text-[#AE924C]/70">尚無專案，點擊 +New 建立</p>
               ) : (
                 <ul className="space-y-2">
                   {projects.map((p) => (
                     <li
                       key={p.project_id}
-                      className={`group relative flex cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-2 text-base transition-colors ${
+                      className={`relative flex cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-2 text-base transition-colors text-white ${
                         selectedProject?.project_id === p.project_id
-                          ? 'bg-white/20 font-medium text-white'
-                          : 'text-white/90 hover:bg-white/10'
+                          ? 'bg-[#AE924C] font-medium'
+                          : 'hover:bg-[#AE924C]/10'
                       }`}
                       onClick={() => {
                         setSelectedProject(p)
@@ -750,24 +775,21 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
                         }
                       }}
                     >
-                      <span className="min-w-0 flex-1 truncate">{p.project_name}</span>
-                      {p.project_name && (
-                        <span className="pointer-events-none absolute left-0 right-10 top-full z-[100] mt-1 hidden max-w-full whitespace-normal rounded-md bg-gray-900 px-2 py-1.5 text-xs text-white shadow-lg group-hover:block">
-                          {p.project_name}
-                        </span>
-                      )}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setProjectMenuOpen((prev) => (prev === p.project_id ? null : p.project_id))
-                        }}
-                        className="shrink-0 rounded-2xl p-1 text-white/70 hover:bg-white/10 hover:text-white"
-                        aria-label="專案選單"
-                      >
-                        <MoreVertical className="h-4 w-4" />
-                      </button>
-                      {projectMenuOpen === p.project_id && (
+                      <span className="min-w-0 flex-1 truncate text-white">{p.project_name}</span>
+                      {selectedProject?.project_id === p.project_id && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setProjectMenuOpen((prev) => (prev === p.project_id ? null : p.project_id))
+                            }}
+                            className="shrink-0 rounded-2xl p-1 text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+                            aria-label="專案選單"
+                          >
+                            <MoreVertical className="h-4 w-4" />
+                          </button>
+                          {projectMenuOpen === p.project_id && (
                         <div
                           className="absolute right-0 top-full z-10 mt-1 min-w-[7rem] rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
                           onClick={(e) => e.stopPropagation()}
@@ -790,6 +812,8 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
                             刪除
                           </button>
                         </div>
+                          )}
+                        </>
                       )}
                     </li>
                   ))}
@@ -816,14 +840,30 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
                 showHelp={true}
                 helpUrl="/help-sourcefile.md"
                 headerActions={
-                  <button
-                    type="button"
-                    onClick={() => sourcePanelRef.current?.collapse()}
-                    className="rounded-lg p-2 text-gray-600 transition-colors hover:bg-gray-200"
-                    aria-label="折疊"
-                  >
-                    <ChevronsLeft className="h-5 w-5" />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={handleSyncDuckdb}
+                      disabled={syncDuckdbLoading}
+                      className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+                      title="將 CSV 內容同步至 DuckDB"
+                    >
+                      {syncDuckdbLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Database className="h-4 w-4" />
+                      )}
+                      同步 DuckDB
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => sourcePanelRef.current?.collapse()}
+                      className="rounded-lg p-2 text-gray-600 transition-colors hover:bg-gray-200"
+                      aria-label="折疊"
+                    >
+                      <ChevronsLeft className="h-5 w-5" />
+                    </button>
+                  </div>
                 }
               />
             ) : (

@@ -16,6 +16,9 @@ import AdminUsers from './pages/admin/AdminUsers'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import TestLLMChat from './pages/TestLLMChat'
+import TestComputeFlow from './pages/TestComputeFlow'
+import TestComputeFlowTool from './pages/TestComputeFlowTool'
+import TestIntentToData from './pages/TestIntentToData'
 
 function App() {
   return (
@@ -63,6 +66,30 @@ function App() {
                 element={
                   <ProtectedRoute>
                     <TestLLMChat />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="dev-test-compute-flow"
+                element={
+                  <ProtectedRoute>
+                    <TestComputeFlow />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="dev-test-compute-tool"
+                element={
+                  <ProtectedRoute>
+                    <TestComputeFlowTool />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="dev-test-intent-to-data"
+                element={
+                  <ProtectedRoute>
+                    <TestIntentToData />
                   </ProtectedRoute>
                 }
               />
