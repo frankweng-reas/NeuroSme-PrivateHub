@@ -79,7 +79,8 @@ export default function TestComputeFlowTool() {
     const meta = {
       valueSuffix: c.valueSuffix as string | undefined,
       title: c.title as string | undefined,
-      yAxisLabel: (c.yAxisLabel ?? c.y_axis_label) as string | undefined,
+      /** 後端 compute_aggregate 回傳 valueLabel（如「銷售金額」「營收」），需對應到 yAxisLabel 才能在圖表顯示數值含義 */
+      yAxisLabel: (c.yAxisLabel ?? c.y_axis_label ?? c.valueLabel) as string | undefined,
     }
     if (Array.isArray(c.datasets) && c.datasets.length > 0) {
       return {

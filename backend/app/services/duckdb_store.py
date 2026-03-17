@@ -68,8 +68,8 @@ def sync_project_csv_to_duckdb(project_id: str, csv_content: str) -> tuple[bool,
     try:
         df = pd.read_csv(io.StringIO(csv_content.strip()), encoding="utf-8-sig")
         df.columns = [str(c).strip() for c in df.columns]
-        # 數值欄位轉 numeric
-        _NUMERIC_KEYWORDS = ("金額", "銷售額", "數量", "amount", "sales", "quantity", "price", "value")
+        # 數值欄位轉 numeric（支援 Sales Analytics: sales_amount, gross_profit, guest_count 等）
+        _NUMERIC_KEYWORDS = ("金額", "銷售額", "數量", "amount", "sales", "quantity", "price", "value", "profit", "gross", "count")
         for col in df.columns:
             if any(kw in col for kw in _NUMERIC_KEYWORDS) and df[col].dtype == object:
                 df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", ""), errors="coerce")

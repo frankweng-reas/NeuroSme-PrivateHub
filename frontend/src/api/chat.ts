@@ -84,6 +84,7 @@ export interface IntentToComputeByProjectRequest {
 
 export interface IntentToComputeResponse {
   chart_result: Record<string, unknown> | null
+  error_detail?: string | null
 }
 
 export async function intentToComputeByProject(

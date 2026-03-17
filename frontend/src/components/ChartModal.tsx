@@ -70,11 +70,13 @@ function getDefaultType(data: ChartData): 'bar' | 'pie' | 'line' {
 /** 將 ChartData 轉成 Recharts Bar/Line 格式 */
 function transformToBarLineData(data: ChartData): Record<string, string | number>[] {
   const { labels } = data
+  const singleDataLabel = data.yAxisLabel || '數值'
+  const singleDataSuffix = data.valueSuffix ?? ''
   const effectiveDatasets =
     data.datasets && data.datasets.length > 0
       ? data.datasets
       : data.data
-        ? [{ label: '數值', data: data.data }]
+        ? [{ label: singleDataLabel, data: data.data, valueSuffix: singleDataSuffix }]
         : []
 
   if (labels.length === 0) return []
@@ -102,11 +104,13 @@ export default function ChartModal({ open, data, onClose }: ChartModalProps) {
   const colors = CHART_COLORS
 
   const isFromPieData = !data.datasets?.length && !!data.data?.length
+  const singleDataLabel = data.yAxisLabel || '數值'
+  const singleDataSuffix = data.valueSuffix ?? ''
   const effectiveDatasets =
     data.datasets && data.datasets.length > 0
       ? data.datasets
       : data.data
-        ? [{ label: '數值', data: data.data }]
+        ? [{ label: singleDataLabel, data: data.data, valueSuffix: singleDataSuffix }]
         : []
 
   useEffect(() => {
@@ -147,15 +151,21 @@ export default function ChartModal({ open, data, onClose }: ChartModalProps) {
 
   const isSingleSeries = effectiveDatasets.length === 1
   const barDataKeys = effectiveDatasets.map((d) => d.label)
+  const labelToSuffix: Record<string, string> = {}
+  effectiveDatasets.forEach((d) => {
+    const ds = d as { label?: string; valueSuffix?: string }
+    labelToSuffix[ds.label ?? ''] = ds.valueSuffix ?? ''
+  })
 
   const chartHeight = isFullscreen ? '100%' : 260
   const chartMinHeight = isFullscreen ? 400 : 260
   const yAxisLabel = data.yAxisLabel
   const valueSuffix = data.valueSuffix ?? ''
 
-  function formatValue(val: number): string {
+  function formatValue(val: number, datasetLabel?: string): string {
     const s = val % 1 === 0 ? String(val) : val.toFixed(2)
-    return valueSuffix ? `${s}${valueSuffix}` : s
+    const suffix = datasetLabel ? (labelToSuffix[datasetLabel] ?? valueSuffix) : valueSuffix
+    return suffix ? `${s}${suffix}` : s
   }
 
   function renderBar() {
@@ -188,7 +198,7 @@ export default function ChartModal({ open, data, onClose }: ChartModalProps) {
             contentStyle={{ borderRadius: 12, border: '1px solid #e5e7eb', fontSize: FONT_SIZE }}
             formatter={(value, name) => {
               const label = (name === '數值' || !name) && yAxisLabel ? yAxisLabel : String(name ?? '')
-              return [formatValue(Number(value ?? 0)), label]
+              return [formatValue(Number(value ?? 0), String(name ?? '')), label]
             }}
             labelStyle={{ color: '#374151', fontWeight: 600, fontSize: FONT_SIZE }}
           />
@@ -246,7 +256,8 @@ export default function ChartModal({ open, data, onClose }: ChartModalProps) {
               const val = typeof value === 'number' ? value : props?.payload?.value ?? 0
               const pct = ((val / total) * 100).toFixed(1)
               const valStr = valueSuffix ? `${val}${valueSuffix}` : String(val)
-              return [`${valStr} (${pct}%)`, String(name ?? '')]
+              const valueLabel = yAxisLabel ? `${yAxisLabel}：` : ''
+              return [`${valueLabel}${valStr} (${pct}%)`, String(name ?? '')]
             }}
           />
           <Legend
@@ -288,7 +299,7 @@ export default function ChartModal({ open, data, onClose }: ChartModalProps) {
             contentStyle={{ borderRadius: 12, border: '1px solid #e5e7eb', fontSize: FONT_SIZE }}
             formatter={(value, name) => {
               const label = (name === '數值' || !name) && yAxisLabel ? yAxisLabel : String(name ?? '')
-              return [formatValue(Number(value ?? 0)), label]
+              return [formatValue(Number(value ?? 0), String(name ?? '')), label]
             }}
             labelStyle={{ color: '#374151', fontWeight: 600, fontSize: FONT_SIZE }}
           />

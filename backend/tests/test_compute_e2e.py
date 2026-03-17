@@ -85,7 +85,7 @@ def run_flow(intent: dict) -> dict | None:
         value_columns=intent.get("value_columns")
         if isinstance(intent.get("value_columns"), list)
         else ([intent.get("value_columns")] if intent.get("value_columns") else None),
-        indicator=intent.get("indicator") if isinstance(intent.get("indicator"), str) else None,
+        indicator=intent.get("indicator") if (isinstance(intent.get("indicator"), str) or isinstance(intent.get("indicator"), list)) else None,
     )
     return chart_result
 
@@ -196,6 +196,53 @@ pchome,1月,深度保濕精華液,20,2000"""
     assert sum(r["data"]) == 1500, f"momo 平台應為 1500，實際 {sum(r['data'])}"
 
 
+def test_arpu_with_guest_count():
+    """ARPU 分母可為 guest_count（人均營收 = sales_amount / guest_count）"""
+    csv = """timestamp,store_name,sales_amount,guest_count
+2026-03-17,台北店,1508,1
+2026-03-17,台中店,1286,1"""
+    rows = ac.parse_csv_content(csv)
+    assert rows and len(rows) == 2
+    r = ac.compute_aggregate(
+        rows,
+        "timestamp",
+        value_column=None,
+        aggregation="sum",
+        chart_type="bar",
+        value_columns=["sales_amount", "guest_count"],
+        indicator="arpu",
+        series_by_column="store_name",
+        display_fields=["sales_amount", "arpu"],
+    )
+    assert r, "arpu + guest_count 應成功"
+    assert "datasets" in r
+    labels = [d["label"] for d in r["datasets"]]
+    assert any("客單價" in lbl or "arpu" in lbl.lower() for lbl in labels), "應含 ARPU 客單價"
+    assert any("銷售金額" in lbl or "sales" in lbl.lower() for lbl in labels), "應含銷售金額"
+
+
+def test_indicator_as_array():
+    """indicator 為陣列 ["arpu"] 時不應報 'list' object has no attribute 'strip'"""
+    csv = """store_name,sales_amount,guest_count
+momo,1000,10
+pchome,2000,20"""
+    rows = ac.parse_csv_content(csv)
+    assert rows and len(rows) == 2
+    r = ac.compute_aggregate(
+        rows,
+        "store_name",
+        value_column=None,
+        aggregation="sum",
+        chart_type="bar",
+        value_columns=["sales_amount", "guest_count"],
+        indicator=["arpu"],
+    )
+    assert r, "indicator 為陣列應成功"
+    data_by_label = dict(zip(r["labels"], r["data"]))
+    assert data_by_label.get("momo") == 100.0  # 1000/10
+    assert data_by_label.get("pchome") == 100.0  # 2000/20
+
+
 def test_indicator_margin_rate():
     """複合指標：毛利率 margin_rate = gross_profit / net_amount"""
     csv = """channel_id,net_amount,gross_profit
@@ -222,6 +269,36 @@ shopee,500,100"""
     assert data_by_label.get("shopee") == 20.0
 
 
+def test_indicator_multi():
+    """複合指標陣列：indicator=["margin_rate","roi"]"""
+    csv = """item_name,gross_profit,net_amount,cost_amount,channel_id
+A,100,200,50,momo
+A,50,100,25,momo
+B,200,400,100,momo"""
+    rows = ac.parse_csv_content(csv)
+    assert rows and len(rows) == 3
+    r = ac.compute_aggregate(
+        rows,
+        "item_name",
+        value_column=None,
+        aggregation="sum",
+        chart_type="bar",
+        value_columns=["gross_profit", "net_amount", "cost_amount"],
+        indicator=["margin_rate", "roi"],
+        display_fields=["item_name", "margin_rate", "roi"],
+        filters=[{"column": "channel_id", "op": "==", "value": "momo"}],
+    )
+    assert r, "indicator 陣列應成功"
+    assert "labels" in r and "datasets" in r
+    # A: margin_rate=150/300=50%, roi=150/75=200%
+    # B: margin_rate=200/400=50%, roi=200/100=200%
+    labels = r["labels"]
+    datasets = r["datasets"]
+    assert len(datasets) == 2
+    assert any(d.get("label") == "毛利率" for d in datasets)
+    assert any(d.get("label") == "ROI" for d in datasets)
+
+
 def test_indicator_no_group_by():
     """group_by_column=null 時，視為單一總計（如「momo 的毛利率」）"""
     csv = """channel_id,net_amount,gross_profit
@@ -244,6 +321,30 @@ momo,500,150"""
     assert r["data"][idx] == 30.0  # (300+150)/(1000+500)=30%
 
 
+def test_new_schema_sales_amount_store_name():
+    """新 schema：sales_amount、store_name 取代 net_amount、channel_id"""
+    csv = """store_name,sales_amount,gross_profit
+momo,1000,300
+pchome,2000,600
+shopee,500,100"""
+    rows = ac.parse_csv_content(csv)
+    assert rows and len(rows) == 3
+    r = ac.compute_aggregate(
+        rows,
+        "store_name",
+        value_column=None,
+        aggregation="sum",
+        chart_type="bar",
+        value_columns=["gross_profit", "sales_amount"],
+        indicator="margin_rate",
+    )
+    assert r, "新 schema sales_amount + store_name 應成功"
+    data_by_label = dict(zip(r["labels"], r["data"]))
+    assert data_by_label.get("momo") == 30.0
+    assert data_by_label.get("pchome") == 30.0
+    assert data_by_label.get("shopee") == 20.0
+
+
 def test_no_value_column():
     """LLM 未輸出 value_column，補強應推斷"""
     intent = {
@@ -258,6 +359,12 @@ def test_no_value_column():
 
 
 if __name__ == "__main__":
+    test_arpu_with_guest_count()
+    print("OK: arpu + guest_count")
+    test_indicator_as_array()
+    print("OK: indicator 為陣列")
+    test_new_schema_sales_amount_store_name()
+    print("OK: 新 schema sales_amount/store_name")
     test_wrong_intent_no_filter()
     print("OK: wrong intent (no filter) -> 補強成功")
     test_wrong_intent_wrong_group()

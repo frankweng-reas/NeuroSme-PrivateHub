@@ -74,7 +74,11 @@ export default function TestIntentToData() {
     try {
       const res = await intentToComputeByProject({ project_id: selectedProjectId, intent })
       setResult(
-        res.chart_result ? JSON.stringify(res.chart_result, null, 2) : '（無結果：chart_result 為 null）'
+        res.chart_result
+          ? JSON.stringify(res.chart_result, null, 2)
+          : res.error_detail
+            ? `（無結果：chart_result 為 null）\n\n原因：${res.error_detail}`
+            : '（無結果：chart_result 為 null）'
       )
       localStorage.setItem(STORAGE_KEY_PROJECT, selectedProjectId)
     } catch (err) {
