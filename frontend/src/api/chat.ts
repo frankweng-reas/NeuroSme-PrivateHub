@@ -61,13 +61,6 @@ export interface ChatResponseCompute {
   debug?: Record<string, unknown>
 }
 
-export async function chatCompletionsCompute(req: ChatRequest): Promise<ChatResponseCompute> {
-  return apiFetch<ChatResponseCompute>('/chat/completions-compute', {
-    method: 'POST',
-    body: JSON.stringify(req),
-  })
-}
-
 /** Tool Calling 路徑：意圖萃取 → Backend 計算 → 文字生成 */
 export async function chatCompletionsComputeTool(req: ChatRequest): Promise<ChatResponseCompute> {
   return apiFetch<ChatResponseCompute>('/chat/completions-compute-tool', {

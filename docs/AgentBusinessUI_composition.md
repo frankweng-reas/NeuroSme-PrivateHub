@@ -19,7 +19,7 @@
 
 ## API
 
-- `chatCompletions`（`@/api/chat`）：發送對話請求
+- `chatCompletionsComputeTool`（`@/api/chat`）：發送對話請求（Intent 萃取 → 後端計算 → 文字生成）
 
 ## 常數
 

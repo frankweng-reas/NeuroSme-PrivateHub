@@ -16,7 +16,6 @@ import AdminUsers from './pages/admin/AdminUsers'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import TestLLMChat from './pages/TestLLMChat'
-import TestComputeFlow from './pages/TestComputeFlow'
 import TestComputeFlowTool from './pages/TestComputeFlowTool'
 import TestIntentToData from './pages/TestIntentToData'
 
@@ -66,14 +65,6 @@ function App() {
                 element={
                   <ProtectedRoute>
                     <TestLLMChat />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="dev-test-compute-flow"
-                element={
-                  <ProtectedRoute>
-                    <TestComputeFlow />
                   </ProtectedRoute>
                 }
               />

@@ -394,7 +394,7 @@ export default function TestLLMChat() {
         </Link>
         <h1 className="text-xl font-semibold text-white">LLM Chat 測試</h1>
         <Link
-          to="/dev-test-compute-flow"
+          to="/dev-test-compute-tool"
           className="ml-auto rounded-lg border border-white/30 px-3 py-1.5 text-sm text-white/90 hover:bg-white/10"
         >
           Compute Flow 測試

@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronRight, ChevronsLeft, ChevronsRight, Database, HelpCircle, Loader2, MoreVertical, Plus, RefreshCw } from 'lucide-react'
 import { Group, Panel, PanelImperativeHandle, Separator } from 'react-resizable-panels'
-import { chatCompletions } from '@/api/chat'
+import { chatCompletionsComputeTool } from '@/api/chat'
 import { ApiError } from '@/api/client'
 import AISettingsPanelBasic from '@/components/AISettingsPanelBasic'
 import AISettingsPanelAdvanced from '@/components/AISettingsPanelAdvanced'
@@ -155,6 +155,34 @@ function normalizeChartData(v: unknown): ChartData | undefined {
  * 從 LLM 回覆中解析 JSON，回傳 { text, chartData }。
  * 支援：純 JSON、```json ... ``` 區塊、或前有說明文字後接 JSON 的混和格式。
  */
+/** 將 chatCompletionsComputeTool 回傳的 chart_data 轉為 ChartModal 格式 */
+function toChartData(cd: unknown): ChartData | undefined {
+  if (!cd || typeof cd !== 'object' || !('labels' in (cd as object))) return undefined
+  const c = cd as Record<string, unknown>
+  const meta = {
+    valueSuffix: c.valueSuffix as string | undefined,
+    title: c.title as string | undefined,
+    yAxisLabel: (c.yAxisLabel ?? c.y_axis_label ?? c.valueLabel) as string | undefined,
+  }
+  if (Array.isArray(c.datasets) && c.datasets.length > 0) {
+    return {
+      chartType: ((c.chartType as string) ?? 'line') as 'pie' | 'bar' | 'line',
+      labels: c.labels as string[],
+      datasets: c.datasets as { label: string; data: number[] }[],
+      ...meta,
+    }
+  }
+  if (Array.isArray(c.data)) {
+    return {
+      chartType: ((c.chartType as string) ?? 'bar') as 'pie' | 'bar' | 'line',
+      labels: c.labels as string[],
+      data: c.data as number[],
+      ...meta,
+    }
+  }
+  return undefined
+}
+
 function parseJsonResponse(raw: string): { displayText: string; chartData?: ChartData } {
   try {
     let jsonStr = raw.trim()
@@ -560,26 +588,31 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     setIsLoading(true)
 
     try {
-      const res = await chatCompletions({
+      const userPrompt = buildUserPrompt(latest)
+      const content = userPrompt ? `${userPrompt}\n\n${text}` : text
+      const res = await chatCompletionsComputeTool({
         agent_id: agent.id,
         project_id: selectedProject.project_id,
         system_prompt: '',
-        user_prompt: buildUserPrompt(latest),
+        user_prompt: '',
         data: '',
         model: latest.model,
         messages: [],
-        content: text,
+        content,
       })
       const meta: ResponseMeta | undefined =
         res.usage != null
           ? {
               model: res.model,
               usage: res.usage,
-              finish_reason: res.finish_reason,
+              finish_reason: null,
             }
           : undefined
-      const { displayText, chartData } = parseJsonResponse(res.content)
-      setMessages((prev) => [...prev, { role: 'assistant', content: displayText, meta, chartData }])
+      const chartData =
+        res.chart_data && res.chart_data.labels && (res.chart_data.data || res.chart_data.datasets)
+          ? toChartData(res.chart_data)
+          : undefined
+      setMessages((prev) => [...prev, { role: 'assistant', content: res.content, meta, chartData }])
     } catch (err) {
       let msg = '未知錯誤'
       if (err instanceof ApiError) msg = err.detail ?? err.message

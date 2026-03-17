@@ -36,37 +36,33 @@ Key：`agent-business-ui-{agentId}`
 
 ## 前端 API
 
-`chatCompletions`（`@/api/chat`）：POST `/api/v1/chat/completions`，傳入 `agent_id`、`model`、`user_prompt`、`content`。`system_prompt` 與 `data` 傳空字串，由後端組裝。
+`chatCompletionsComputeTool`（`@/api/chat`）：POST `/api/v1/chat/completions-compute-tool`，傳入 `agent_id`、`project_id`、`model`、`content`。採用 Intent 萃取 → 後端計算 → 文字生成流程。
 
 ---
 
 ## 後端處理
 
-**路徑**：`backend/app/api/endpoints/chat.py`
+**路徑**：`backend/app/api/endpoints/chat_compute_tool.py`
 
 ### Endpoint
 
-`POST /api/v1/chat/completions`，需 JWT 認證。
+`POST /api/v1/chat/completions-compute-tool`，需 JWT 認證。
 
 ### 流程
 
 1. **權限檢查**：`_check_agent_access(db, current, agent_id)` 驗證 user 有權存取該 agent，回傳 `(tenant_id, agent_id)`。支援 `tenant_id:id` 或僅 `id`（用 user.tenant_id 補上）。
 
-2. **來源檔組裝**：`_get_selected_source_files_content(db, user_id, tenant_id, agent_id)` 查詢 `SourceFile` 中 `is_selected=True` 的檔案，依 `file_name` 排序，將 `content` 以 `\n\n` 拼接成字串。若總字元數超過 `CHAT_DATA_MAX_CHARS`（預設 100,000），回傳 413。
+2. **資料取得**：`_get_bi_sources_content(db, user_id, project_id)` 取得 BI 專案的資料（CSV/DuckDB），經 `parse_csv_content` 轉為 rows。
 
-3. **System Prompt**：`_load_system_prompt_from_file()` 讀取 `config/system_prompt_analysis.md`（專案根或 Docker `/app/config`），每次請求即時讀檔，改檔無需重啟。
+3. **System Prompt**：意圖萃取用 `system_prompt_analysis_intent_tool.md`，文字生成用 `system_prompt_analysis_text_tool.md`。
 
-4. **組裝 messages**：`_build_messages(req, data)` 依序：
-   - system：`[file_prompt] + [req.system_prompt] + [參考資料: data]`，以 `\n\n` 串接
-   - 若有 `req.messages` 則照序加入
-   - user：`req.user_prompt + req.content`（若 user_prompt 非空則前置）
+4. **意圖萃取**：LLM 依 schema 與問題輸出 intent JSON。
 
-5. **Model 路由**：`_get_llm_params(model)` 依 prefix 決定 provider：
-   - `gemini/*` → GEMINI_API_KEY
-   - `twcc/*` → TWCC_API_KEY + TWCC_API_BASE（轉成 `openai/*` 給 LiteLLM）
-   - 其他 → OPENAI_API_KEY
+5. **後端計算**：`compute_aggregate(rows, intent)` 產生 chart_result。
 
-6. **呼叫 LiteLLM**：`litellm.acompletion`，timeout 60s，回傳 OpenAI 格式。
+6. **文字生成**：LLM 依 chart_result 撰寫分析文字，回傳 `{ content, chart_data }`。
+
+7. **Model 路由**：`_get_llm_params(model)` 依 prefix 決定 provider；**呼叫 LiteLLM**：`litellm.acompletion`，timeout 60s。
 
 ### 錯誤處理
 

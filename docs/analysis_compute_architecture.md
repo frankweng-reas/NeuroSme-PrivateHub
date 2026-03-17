@@ -1,19 +1,17 @@
 # Analysis Compute 架構說明
 
-## 一、整體流程（chat_compute.py）
+## 一、整體流程（chat_compute_tool.py）
 
 ```
 使用者問題
     ↓
-[1] 取得 bi_sources 資料（多檔合併）
+[1] 取得 bi_sources 資料（DuckDB 或 CSV）
     ↓
-[2] 解析 CSV → rows
+[2] LLM 意圖萃取 → intent JSON
     ↓
-[3] LLM 意圖萃取 → intent JSON
+[3] compute_aggregate(rows, intent) → chart_result
     ↓
-[4] compute_aggregate(rows, intent) → chart_result
-    ↓
-[5] LLM 文字生成（依 chart_result 撰寫分析）
+[4] LLM 文字生成（依 chart_result 撰寫分析）
     ↓
 回傳 { content, chart_data, debug }
 ```
@@ -171,11 +169,11 @@ momo, A, 5000, 6000, 8680
 
 ---
 
-## 六、chat_compute 與 analysis_compute 職責
+## 六、chat_compute_tool 與 analysis_compute 職責
 
 | 模組 | 職責 |
 |------|------|
-| chat_compute.py | API、取得資料、合併 CSV、呼叫 LLM、組裝回應 |
+| chat_compute_tool.py | API、取得資料（DuckDB）、意圖萃取、compute_aggregate、LLM 文字生成 |
 | analysis_compute.py | 純計算：parse、schema、aggregate，不依賴 HTTP/DB |
 
 ---

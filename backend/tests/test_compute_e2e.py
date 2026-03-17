@@ -1,5 +1,5 @@
 """
-端對端測試：模擬 chat_compute 流程（不含 LLM）
+端對端測試：模擬 chat_compute_tool 的 Intent 流程（不含 LLM）
 驗證「momo深度保濕精華液的銷售額」在各種 intent 下都能正確回答
 """
 import importlib.util
@@ -38,7 +38,7 @@ USER_CONTENT = "momo深度保濕精華液的銷售額"
 
 
 def run_flow(intent: dict) -> dict | None:
-    """模擬 chat_compute 的 intent 流程"""
+    """模擬 chat_compute_tool 的 intent 流程"""
     rows = ac.parse_csv_content(CSV)
     if not rows:
         return None

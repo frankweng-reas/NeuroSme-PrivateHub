@@ -160,12 +160,6 @@ export default function TestComputeFlowTool() {
           >
             Intent 測試
           </Link>
-          <Link
-            to="/dev-test-compute-flow"
-            className="rounded-lg border border-white/30 px-3 py-1.5 text-sm text-white/90 hover:bg-white/10"
-          >
-            SQL 路徑
-          </Link>
         </div>
       </header>
 
