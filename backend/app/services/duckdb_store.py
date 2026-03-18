@@ -3,6 +3,7 @@ DuckDB 長存：專案 CSV 同步至 .duckdb 檔
 
 - sync_project_csv_to_duckdb：將 CSV 內容寫入專案對應的 DuckDB
 - get_project_duckdb_path：取得專案 DuckDB 檔路徑（存在則回傳）
+- get_project_data_as_csv：取得專案 DuckDB 資料為 CSV 字串（供 chat 參考用）
 - delete_project_duckdb：刪除專案 DuckDB 檔
 """
 import io
@@ -102,6 +103,20 @@ def delete_project_duckdb(project_id: str) -> bool:
     except Exception as e:
         logger.warning("DuckDB 刪除失敗 %s: %s", project_id, e)
         return False
+
+
+def get_project_data_as_csv(project_id: str) -> str | None:
+    """
+    取得專案 DuckDB 資料為 CSV 字串。
+    若無 DuckDB 或無資料則回傳 None。
+    """
+    path = get_project_duckdb_path(project_id)
+    if not path:
+        return None
+    df = execute_sql_on_duckdb_file(path, "SELECT * FROM data")
+    if df is None or df.empty:
+        return None
+    return df.to_csv(index=False)
 
 
 def execute_sql_on_duckdb_file(path: Path, sql: str) -> pd.DataFrame | None:

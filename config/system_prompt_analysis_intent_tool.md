@@ -28,14 +28,16 @@
 8. 多指標處理規則：若問題涉及多個複合指標（如：ROI 與毛利率），indicator 欄位必須以 Array [string] 格式輸出，
    包含所有指標。value_columns 必須包含支撐這些指標計算的所有基礎數值欄位。
    在 display_fields 中也應同步列出這些指標。
-9. 時間顆粒度自動識別：若提到「趨勢」、「走勢」、「變化」、「每個月」、「每季」，
-   必須根據語境填入 time_grain ("day", "week", "month", "quarter", "year")。
+9.比例換算: 在 having_filters 中，若用戶提到百分比（如 20%），value 必須轉為小數 (0.2)。
+
+# group_by_column:
+1. 可為單一欄位或陣列。若需階層顯示（例如「大類 > 中類 > 品名」），請設為依層級排序的欄位陣列，例如：["category_l1", "category_l2", "item_name"]。
+
+# time_grain:
+1. 時間顆粒度自動識別：若提到「趨勢」、「走勢」、「變化」、「每個月」、「每季」，
+   必須根據語境填入 time_grain ("hour","day","week","month","quarter","year")。
    若僅是查詢特定區間的「總和」，time_grain 可設為 null。
-10.比例換算: 在 having_filters 中，若用戶提到百分比（如 20%），value 必須轉為小數 (0.2)。
-
-# Group by:
-1. group_by_column:可為單一欄位或陣列。若需階層顯示（例如「大類 > 中類 > 品名」），請設為依層級排序的欄位陣列，例如：["category_l1", "category_l2", "item_name"]。
-
+   
 # Filter Rule:
 1. 結構強制性(STRICT): 每個 filter/having_filter 物件 MUST 包含 {"column", "op", "value"}。若無明確運算符，op 預設為 ==。
 2. 語意對應 (Op Mapping)：

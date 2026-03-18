@@ -5,13 +5,13 @@
 import json
 import logging
 import os
-import re
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 import litellm
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from uuid import UUID
@@ -19,7 +19,6 @@ from uuid import UUID
 from app.api.endpoints.chat import (
     ChatRequest,
     _check_agent_access,
-    _get_bi_sources_content,
     _get_llm_params,
     _get_provider_name,
     _twcc_model_id,
@@ -28,11 +27,7 @@ from app.core.database import get_db
 from app.models.bi_project import BiProject
 from app.core.security import get_current_user
 from app.models.user import User
-from app.services.analysis_compute import (
-    compute_aggregate,
-    get_schema_summary,
-    parse_csv_content,
-)
+from app.services.analysis_compute import compute_aggregate, get_schema_summary
 from app.services.duckdb_store import execute_sql_on_duckdb_file, get_project_duckdb_path
 from app.services.schema_loader import load_schema
 
@@ -74,16 +69,17 @@ def _indicator_default_value_columns(indic: str | list[str] | None) -> list[str]
     return cols if cols else None
 
 def _parse_filters_from_intent(intent: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """從 intent 解析 filters。支援 filters 陣列；無則由 filter_column/filter_value 轉換。"""
+    """從 intent 解析 filters。支援 filters 陣列；無則由 filter_column/filter_value 轉換。
+    容錯：column 可為 col，value 可為 val（LLM 有時會用簡寫）。"""
     filters = intent.get("filters")
     if isinstance(filters, list):
         out = []
         for f in filters:
             if isinstance(f, dict):
-                col = f.get("column")
-                val = f.get("value")
+                col = f.get("column") or f.get("col")
+                val = f.get("value") if "value" in f else f.get("val")
                 op = f.get("op")
-                if col is not None:
+                if col is not None and str(col).strip():
                     op_str = str(op).strip().lower() if op is not None else "=="
                     out.append({"column": str(col).strip(), "op": op_str or "==", "value": val})
         if out:
@@ -139,37 +135,6 @@ def _infer_chart_type(question: str) -> str:
     if any(kw in q for kw in ("趨勢", "變化", "月", "季", "年")):
         return "line"
     return "bar"
-
-
-def _extract_and_merge_csv_blocks(raw: str) -> str:
-    """從 bi_sources 拼接字串中取出所有 CSV 區塊並合併（同 schema 時合併資料列）"""
-    if not raw or not raw.strip():
-        return ""
-    parts = re.split(r"---\s*檔名：.*?---\s*\n", raw, flags=re.IGNORECASE)
-    blocks: list[str] = []
-    for p in parts:
-        p = p.strip()
-        if not p or ("," not in p and "\t" not in p):
-            continue
-        blocks.append(p)
-    if not blocks:
-        return raw.strip()
-    if len(blocks) == 1:
-        return blocks[0]
-    lines0 = blocks[0].split("\n")
-    if not lines0:
-        return blocks[0]
-    header = lines0[0]
-    merged_rows = [header]
-    for block in blocks:
-        lines = block.split("\n")
-        if len(lines) < 2:
-            continue
-        if lines[0].strip().lower() == header.strip().lower():
-            merged_rows.extend(lines[1:])
-        else:
-            merged_rows.extend(lines)
-    return "\n".join(merged_rows)
 
 
 def _extract_json_from_llm(raw: str) -> dict | None:
@@ -337,13 +302,16 @@ async def _call_llm(
         completion_kwargs["api_base"] = base if base.endswith("/v1") else f"{base}/v1"
 
     resp = await litellm.acompletion(**completion_kwargs)
-    content = (resp.choices[0].message.content or "") if resp.choices else ""
+    choices = getattr(resp, "choices", None) or []
+    msg = choices[0].message if choices else None
+    content = (getattr(msg, "content", None) or "") if msg else ""
     usage = None
-    if resp.usage:
+    u = getattr(resp, "usage", None)
+    if u:
         usage = {
-            "prompt_tokens": resp.usage.prompt_tokens,
-            "completion_tokens": resp.usage.completion_tokens,
-            "total_tokens": resp.usage.total_tokens,
+            "prompt_tokens": getattr(u, "prompt_tokens", 0),
+            "completion_tokens": getattr(u, "completion_tokens", 0),
+            "total_tokens": getattr(u, "total_tokens", 0),
         }
     return content, usage
 
@@ -351,8 +319,8 @@ async def _call_llm(
 @router.post("/completions-compute-tool", response_model=ChatResponseComputeTool)
 async def chat_completions_compute_tool(
     req: ChatRequest,
-    db: Annotated[Session, Depends(get_db)] = ...,
-    current: Annotated[User, Depends(get_current_user)] = ...,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
 ):
     """Tool Calling 路徑：LLM 意圖萃取 → Backend 計算 → 文字生成。需 project_id 且為 bi_project。"""
     if not (req.agent_id or "").strip():
@@ -371,18 +339,8 @@ async def chat_completions_compute_tool(
     except ValueError:
         raise HTTPException(status_code=400, detail="project_id 格式錯誤")
 
-    proj = db.query(BiProject).filter(BiProject.project_id == uuid_pid).first()
-    if not proj or proj.user_id != str(current.id):
-        raise HTTPException(status_code=404, detail="專案不存在或無權限")
-
-    raw_data = _get_bi_sources_content(db, current.id, pid)
-    if not raw_data or not raw_data.strip():
-        raise HTTPException(status_code=400, detail="請先上傳並選用 CSV 來源檔案")
-
-    csv_block = _extract_and_merge_csv_blocks(raw_data)
-    rows = parse_csv_content(csv_block)
-    if not rows:
-        raise HTTPException(status_code=400, detail="無法解析 CSV 資料，請確認格式正確")
+    user_id = getattr(current, "id", 0) or 0
+    rows, proj = _load_rows_from_duckdb_only(pid, db, int(user_id))
     logger.info("Tool flow 載入 %d 列，欄位: %s", len(rows), list(rows[0].keys()) if rows else [])
 
     schema_id = (proj.schema_id or "").strip() or "fact_business_operations"
@@ -415,8 +373,19 @@ schema:
     debug["intent_raw"] = intent_raw
     debug["intent_usage"] = usage1
     intent = _extract_json_from_llm(intent_raw)
+    if not intent or not isinstance(intent, dict):
+        return ChatResponseComputeTool(
+            content="無法解析您的分析意圖，請換個方式詢問。",
+            model=model,
+            usage=usage1,
+            chart_data=None,
+            debug=debug,
+        )
+    filters = _parse_filters_from_intent(intent)
     has_aggregate = intent.get("value_column") or intent.get("value_columns") or intent.get("indicator")
-    if not intent or (not intent.get("group_by_column") and not has_aggregate):
+    has_group = bool(intent.get("group_by_column"))
+    has_filters = bool(filters)
+    if not has_group and not has_aggregate and not has_filters:
         return ChatResponseComputeTool(
             content="無法解析您的分析意圖，請換個方式詢問。",
             model=model,
@@ -432,7 +401,6 @@ schema:
         group_by = [str(x).strip() for x in gb_raw if x]
     else:
         group_by = (gb_raw or "").strip() or ""
-    filters = _parse_filters_from_intent(intent)
     having_filters = _parse_having_filters_from_intent(intent)
     value_col = intent.get("value_column")
     value_cols = intent.get("value_columns")
@@ -460,7 +428,10 @@ schema:
     indicator = _parse_indicator_from_intent(intent)
     if not value_cols and indicator:
         value_cols = _indicator_default_value_columns(indicator)
+    if not value_cols and (has_group or has_filters):
+        value_cols = ["sales_amount"]
 
+    error_list: list[str] = []
     chart_result = compute_aggregate(
         rows,
         group_by,
@@ -478,11 +449,19 @@ schema:
         indicator=indicator,
         group_aliases=schema_def.get("group_aliases") if schema_def else None,
         value_aliases=schema_def.get("value_aliases") if schema_def else None,
+        error_out=error_list,
     )
 
     if not chart_result:
+        err_msg = "; ".join(error_list) if error_list else ""
+        if "篩選後無資料" in err_msg or "無資料" in err_msg:
+            content = "查無符合條件的資料，請調整篩選條件或時間範圍。"
+        elif "_resolve_columns" in err_msg or "rows 為空" in err_msg:
+            content = "無法解析欄位對應，請確認問題描述與資料 schema。"
+        else:
+            content = "後端計算失敗，請稍後再試或調整問題描述。"
         return ChatResponseComputeTool(
-            content="後端計算失敗或結果為空。請確認 schema 與問題描述，或檢查 debug 中的 intent。",
+            content=content,
             model=model,
             usage=usage1,
             chart_data=None,
@@ -552,11 +531,244 @@ schema:
     )
 
 
+def _sse_event(data: dict[str, Any]) -> str:
+    """產生 SSE 格式字串：data: {json}\\n\\n"""
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+async def _stream_compute_tool(
+    req: ChatRequest,
+    db: Session,
+    user_id: int,
+):
+    """SSE 串流：每個階段完成時 yield 事件。"""
+    yield _sse_event({"stage": "intent"})
+
+    pid = (req.project_id or "").strip()
+    try:
+        uuid_pid = UUID(pid)
+    except ValueError:
+        yield _sse_event({"stage": "done", "error_stage": "setup", "content": "project_id 格式錯誤", "chart_data": None})
+        return
+
+    try:
+        rows, proj = _load_rows_from_duckdb_only(pid, db, user_id)
+    except HTTPException as e:
+        yield _sse_event({"stage": "done", "error_stage": "setup", "content": e.detail, "chart_data": None})
+        return
+
+    schema_id = (proj.schema_id or "").strip() or "fact_business_operations"
+    schema_def = load_schema(schema_id)
+    if not schema_def:
+        schema_def = load_schema("fact_business_operations")
+    schema_summary = get_schema_summary(rows, schema_def)
+    model = (req.model or "").strip() or "gpt-4o-mini"
+    intent_prompt = _load_prompt("intent")
+    if not intent_prompt:
+        yield _sse_event({"stage": "done", "error_stage": "intent", "content": "Intent prompt 檔案不存在", "chart_data": None})
+        return
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    user_content_intent = f"""當前時間：{now_str}
+
+schema:
+{schema_summary}
+
+問題: {req.content}"""
+    try:
+        intent_raw, usage1 = await _call_llm(model, intent_prompt, user_content_intent)
+    except Exception as e:
+        logger.exception("意圖萃取 LLM 呼叫失敗")
+        yield _sse_event({"stage": "done", "error_stage": "intent", "content": f"意圖萃取失敗：{e}", "chart_data": None})
+        return
+
+    intent = _extract_json_from_llm(intent_raw)
+    if not intent or not isinstance(intent, dict):
+        yield _sse_event({
+            "stage": "done",
+            "error_stage": "intent",
+            "content": "無法解析您的分析意圖，請換個方式詢問。",
+            "chart_data": None,
+        })
+        return
+    filters = _parse_filters_from_intent(intent)
+    has_aggregate = intent.get("value_column") or intent.get("value_columns") or intent.get("indicator")
+    has_group = bool(intent.get("group_by_column"))
+    has_filters = bool(filters)
+    if not has_group and not has_aggregate and not has_filters:
+        yield _sse_event({
+            "stage": "done",
+            "error_stage": "intent",
+            "content": "無法解析您的分析意圖，請換個方式詢問。",
+            "chart_data": None,
+        })
+        return
+
+    yield _sse_event({"stage": "compute"})
+
+    gb_raw = intent.get("group_by_column")
+    if isinstance(gb_raw, list):
+        group_by = [str(x).strip() for x in gb_raw if x]
+    else:
+        group_by = (gb_raw or "").strip() or ""
+    having_filters = _parse_having_filters_from_intent(intent)
+    value_col = intent.get("value_column")
+    value_cols = intent.get("value_columns")
+    if isinstance(value_cols, list):
+        value_cols = [str(v).strip() for v in value_cols if v]
+    else:
+        value_cols = None
+    agg = (intent.get("aggregation") or "sum").strip().lower()
+    chart_type = _infer_chart_type(req.content)
+    series_by = intent.get("series_by_column")
+    if series_by and not isinstance(series_by, str):
+        series_by = None
+    top_n = intent.get("top_n")
+    if top_n is not None and not isinstance(top_n, int):
+        try:
+            top_n = int(top_n)
+        except (ValueError, TypeError):
+            top_n = None
+    sort_order = (intent.get("sort_order") or "desc").strip().lower()
+    time_order = bool(intent.get("time_order"))
+    time_grain_raw = intent.get("time_grain")
+    time_grain = str(time_grain_raw).strip().lower() if time_grain_raw else None
+    if time_grain and time_grain not in ("day", "week", "month", "quarter", "year"):
+        time_grain = None
+    indicator = _parse_indicator_from_intent(intent)
+    if not value_cols and indicator:
+        value_cols = _indicator_default_value_columns(indicator)
+    if not value_cols and (has_group or has_filters):
+        value_cols = ["sales_amount"]
+
+    error_list: list[str] = []
+    chart_result = compute_aggregate(
+        rows,
+        group_by,
+        value_column=value_col,
+        aggregation=agg,
+        chart_type=chart_type,
+        series_by_column=series_by,
+        filters=filters,
+        having_filters=having_filters,
+        top_n=top_n,
+        sort_order=sort_order,
+        time_order=time_order,
+        time_grain=time_grain,
+        value_columns=value_cols,
+        indicator=indicator,
+        group_aliases=schema_def.get("group_aliases") if schema_def else None,
+        value_aliases=schema_def.get("value_aliases") if schema_def else None,
+        error_out=error_list,
+    )
+
+    if not chart_result:
+        err_msg = "; ".join(error_list) if error_list else ""
+        if "篩選後無資料" in err_msg or "無資料" in err_msg:
+            content = "查無符合條件的資料，請調整篩選條件或時間範圍。"
+        elif "_resolve_columns" in err_msg or "rows 為空" in err_msg:
+            content = "無法解析欄位對應，請確認問題描述與資料 schema。"
+        else:
+            content = "後端計算失敗，請稍後再試或調整問題描述。"
+        logger.info("compute 階段失敗: error_list=%s -> content=%s", error_list, content)
+        yield _sse_event({"stage": "done", "error_stage": "compute", "content": content, "chart_data": None})
+        return
+
+    if "valueSuffix" not in chart_result and "datasets" not in chart_result:
+        chart_result["valueSuffix"] = "元"
+    if not chart_result.get("yAxisLabel") and chart_result.get("valueLabel"):
+        chart_result["yAxisLabel"] = chart_result["valueLabel"]
+
+    detail_lines = _chart_result_to_detail_lines(chart_result)
+    if not detail_lines:
+        yield _sse_event({
+            "stage": "done",
+            "error_stage": "compute",
+            "content": "無法格式化計算結果。請調整問題或檢查 schema。",
+            "chart_data": None,
+        })
+        return
+
+    yield _sse_event({"stage": "text"})
+
+    text_prompt = _load_prompt("text")
+    if not text_prompt:
+        text_prompt = "根據計算結果撰寫分析文字，使用 Markdown 格式。圖表由後端負責，只輸出文字。"
+    detail_block = "計算結果：\n" + "\n".join(detail_lines)
+    user_content_text = f"""使用者問題：{req.content}
+
+{detail_block}
+
+請撰寫分析文字，金額與數字必須與上述完全一致。"""
+
+    try:
+        text_content, usage2 = await _call_llm(model, text_prompt, user_content_text)
+    except Exception as e:
+        logger.exception("文字生成 LLM 呼叫失敗")
+        yield _sse_event({
+            "stage": "done",
+            "error_stage": "text",
+            "content": f"分析文字生成失敗：{e}",
+            "chart_data": chart_result,
+        })
+        return
+
+    final_content = text_content.strip()
+    parsed = _extract_json_from_llm(text_content)
+    if parsed and isinstance(parsed.get("text"), str):
+        final_content = parsed["text"].strip()
+
+    total_usage: dict[str, int] = {}
+    if usage1:
+        for k, v in usage1.items():
+            total_usage[k] = total_usage.get(k, 0) + v
+    if usage2:
+        for k, v in usage2.items():
+            total_usage[k] = total_usage.get(k, 0) + v
+
+    yield _sse_event({
+        "stage": "done",
+        "content": final_content,
+        "chart_data": chart_result,
+        "model": model,
+        "usage": total_usage,
+    })
+
+
+@router.post("/completions-compute-tool-stream")
+async def chat_completions_compute_tool_stream(
+    req: ChatRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """SSE 串流版：每個階段 emit 進度事件，前端可顯示「意圖解析中…」「計算中…」「分析建議…」。"""
+    if not (req.agent_id or "").strip():
+        raise HTTPException(status_code=400, detail="agent_id is required")
+    pid = (req.project_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="project_id is required（compute flow 僅支援 BI 專案）")
+    try:
+        _check_agent_access(db, current, req.agent_id.strip())
+    except HTTPException:
+        raise
+
+    user_id = int(getattr(current, "id", 0) or 0)
+    return StreamingResponse(
+        _stream_compute_tool(req, db, user_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.post("/intent-to-compute", response_model=IntentToComputeResponse)
 async def intent_to_compute(
     req: IntentToComputeRequest,
-    db: Annotated[Session, Depends(get_db)] = ...,
-    current: Annotated[User, Depends(get_current_user)] = ...,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
 ):
     """dev-test-intent-to-data 專用：接受 intent JSON，從 DuckDB 或 CSV 載入專案資料後呼叫 compute_aggregate。"""
     if not (req.agent_id or "").strip():
@@ -578,25 +790,8 @@ async def intent_to_compute(
     except ValueError:
         raise HTTPException(status_code=400, detail="project_id 格式錯誤")
 
-    proj = db.query(BiProject).filter(BiProject.project_id == uuid_pid).first()
-    if not proj or proj.user_id != str(current.id):
-        raise HTTPException(status_code=404, detail="專案不存在或無權限")
-
-    rows: list[dict[str, Any]] | None = None
-    duckdb_path = get_project_duckdb_path(pid)
-    if duckdb_path:
-        df = execute_sql_on_duckdb_file(duckdb_path, "SELECT * FROM data")
-        if df is not None and not df.empty:
-            rows = df.to_dict("records")
-            logger.info("intent-to-compute 從 DuckDB 載入 %d 列", len(rows))
-    if not rows:
-        raw_data = _get_bi_sources_content(db, current.id, pid)
-        if not raw_data or not raw_data.strip():
-            raise HTTPException(status_code=400, detail="請先上傳並選用 CSV 來源檔案，或同步專案至 DuckDB")
-        csv_block = _extract_and_merge_csv_blocks(raw_data)
-        rows = parse_csv_content(csv_block)
-        if not rows:
-            raise HTTPException(status_code=400, detail="無法解析 CSV 資料，請確認格式正確")
+    user_id = int(getattr(current, "id", 0) or 0)
+    rows, proj = _load_rows_from_duckdb_only(pid, db, user_id)
 
     schema_id = (proj.schema_id or "").strip() or "fact_business_operations"
     schema_def = load_schema(schema_id)
@@ -667,38 +862,31 @@ async def intent_to_compute(
     return IntentToComputeResponse(chart_result=chart_result, error_detail=error_detail)
 
 
-def _load_rows_from_project(pid: str, db: Session, user_id: int) -> tuple[list[dict[str, Any]], Any]:
-    """從專案載入 rows：優先 DuckDB，無則 CSV。回傳 (rows, proj)。"""
+def _load_rows_from_duckdb_only(pid: str, db: Session, user_id: int) -> tuple[list[dict[str, Any]], Any]:
+    """從專案載入 rows：僅從 DuckDB 讀取。回傳 (rows, proj)。無 DuckDB 時 raise HTTPException。"""
     try:
         uuid_pid = UUID(pid)
     except ValueError:
         raise HTTPException(status_code=400, detail="project_id 格式錯誤")
     proj = db.query(BiProject).filter(BiProject.project_id == uuid_pid).first()
-    if not proj or proj.user_id != str(user_id):
+    if proj is None or str(getattr(proj, "user_id", "")) != str(user_id):
         raise HTTPException(status_code=404, detail="專案不存在或無權限")
-    rows = None
     duckdb_path = get_project_duckdb_path(pid)
-    if duckdb_path:
-        df = execute_sql_on_duckdb_file(duckdb_path, "SELECT * FROM data")
-        if df is not None and not df.empty:
-            rows = df.to_dict("records")
-            logger.info("從 DuckDB 載入 %d 列", len(rows))
-    if not rows:
-        raw_data = _get_bi_sources_content(db, user_id, pid)
-        if not raw_data or not raw_data.strip():
-            raise HTTPException(status_code=400, detail="請先上傳並選用 CSV 來源檔案，或同步專案至 DuckDB")
-        csv_block = _extract_and_merge_csv_blocks(raw_data)
-        rows = parse_csv_content(csv_block)
-        if not rows:
-            raise HTTPException(status_code=400, detail="無法解析 CSV 資料，請確認格式正確")
+    if not duckdb_path:
+        raise HTTPException(status_code=400, detail="請先同步專案至 DuckDB")
+    df = execute_sql_on_duckdb_file(duckdb_path, "SELECT * FROM data")
+    if df is None or df.empty:
+        raise HTTPException(status_code=400, detail="請先同步專案至 DuckDB")
+    rows = df.to_dict("records")
+    logger.info("從 DuckDB 載入 %d 列", len(rows))
     return rows, proj
 
 
 @router.post("/intent-to-compute-by-project", response_model=IntentToComputeResponse)
 async def intent_to_compute_by_project(
     req: IntentToComputeByProjectRequest,
-    db: Annotated[Session, Depends(get_db)] = ...,
-    current: Annotated[User, Depends(get_current_user)] = ...,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
 ):
     """dev-test-intent-to-data 專用：僅需 project_id，從 DuckDB 載入資料。無需 agent_id。"""
     pid = (req.project_id or "").strip()
@@ -708,7 +896,8 @@ async def intent_to_compute_by_project(
     if not isinstance(intent, dict):
         raise HTTPException(status_code=400, detail="intent 必須為 JSON 物件")
 
-    rows, proj = _load_rows_from_project(pid, db, current.id)
+    user_id = int(getattr(current, "id", 0) or 0)
+    rows, proj = _load_rows_from_duckdb_only(pid, db, user_id)
 
     schema_id = (proj.schema_id or "").strip() or "fact_business_operations"
     schema_def = load_schema(schema_id)
@@ -782,7 +971,7 @@ async def intent_to_compute_by_project(
 @router.post("/intent-to-compute-raw", response_model=IntentToComputeResponse)
 async def intent_to_compute_raw(
     req: IntentToComputeRawRequest,
-    current: Annotated[User, Depends(get_current_user)] = ...,
+    current: User = Depends(get_current_user),
 ):
     """dev-test-intent-to-data 專用：接受 intent + rows，無需 agent/project。"""
     intent = req.intent or {}

@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronRight, ChevronsLeft, ChevronsRight, Database, HelpCircle, Loader2, MoreVertical, Plus, RefreshCw } from 'lucide-react'
 import { Group, Panel, PanelImperativeHandle, Separator } from 'react-resizable-panels'
-import { chatCompletionsComputeTool } from '@/api/chat'
+import { chatCompletionsComputeToolStream, type ComputeStage } from '@/api/chat'
 import { ApiError } from '@/api/client'
 import AISettingsPanelBasic from '@/components/AISettingsPanelBasic'
 import AISettingsPanelAdvanced from '@/components/AISettingsPanelAdvanced'
@@ -258,6 +258,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     () => loadStored(agent.id)?.exampleQuestionsCount ?? '0'
   )
   const [isLoading, setIsLoading] = useState(false)
+  const [loadingStage, setLoadingStage] = useState<ComputeStage | null>(null)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
   const [showHelpModal, setShowHelpModal] = useState(false)
@@ -586,20 +587,24 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     const latest = latestRef.current
     setMessages((prev) => [...prev, { role: 'user', content: text }])
     setIsLoading(true)
+    setLoadingStage('intent')
 
     try {
       const userPrompt = buildUserPrompt(latest)
       const content = userPrompt ? `${userPrompt}\n\n${text}` : text
-      const res = await chatCompletionsComputeTool({
-        agent_id: agent.id,
-        project_id: selectedProject.project_id,
-        system_prompt: '',
-        user_prompt: '',
-        data: '',
-        model: latest.model,
-        messages: [],
-        content,
-      })
+      const res = await chatCompletionsComputeToolStream(
+        {
+          agent_id: agent.id,
+          project_id: selectedProject.project_id,
+          system_prompt: '',
+          user_prompt: '',
+          data: '',
+          model: latest.model,
+          messages: [],
+          content,
+        },
+        (stage) => setLoadingStage(stage)
+      )
       const meta: ResponseMeta | undefined =
         res.usage != null
           ? {
@@ -622,6 +627,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
       setMessages((prev) => [...prev, { role: 'assistant', content: `錯誤：${msg}` }])
     } finally {
       setIsLoading(false)
+      setLoadingStage(null)
     }
   }
 
@@ -916,6 +922,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
             messages={messages}
             onSubmit={handleSendMessage}
             isLoading={isLoading}
+            loadingStage={loadingStage}
             onCopySuccess={() => setToastMessage('已複製到剪貼簿')}
             onCopyError={() => setToastMessage('複製失敗')}
             headerActions={

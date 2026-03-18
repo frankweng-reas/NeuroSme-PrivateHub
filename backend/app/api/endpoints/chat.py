@@ -24,6 +24,7 @@ from app.models.qtn_project import QtnProject
 from app.models.qtn_source import QtnSource
 from app.models.source_file import SourceFile
 from app.models.user import User
+from app.services.duckdb_store import get_project_data_as_csv
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -376,7 +377,7 @@ async def chat_completions(
             try:
                 bi_proj = db.query(BiProject).filter(BiProject.project_id == UUID(pid)).first()
                 if bi_proj and bi_proj.user_id == str(current.id):
-                    data = _get_bi_sources_content(db, current.id, pid)
+                    data = get_project_data_as_csv(pid) or ""
                 else:
                     data = _get_selected_source_files_content(db, current.id, tenant_id, aid)
             except ValueError:
@@ -401,6 +402,18 @@ async def chat_completions(
                     status_code=400,
                     detail="請先完成報價單（步驟 3）並進入發送跟進步驟後再生成建議。",
                 )
+            if pid:
+                try:
+                    bi_proj = db.query(BiProject).filter(BiProject.project_id == UUID(pid)).first()
+                    if bi_proj and bi_proj.user_id == str(current.id):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="請先同步專案至 DuckDB",
+                        )
+                except HTTPException:
+                    raise
+                except ValueError:
+                    pass
             logger.warning(
                 "chat_completions: 無參考資料 (agent_id=%r, tenant_id=%r, aid=%r, user_id=%s) - 請在該 agent 頁面左欄上傳並勾選來源檔案",
                 req.agent_id,

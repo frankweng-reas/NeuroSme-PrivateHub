@@ -114,10 +114,21 @@ export interface Message {
   chartData?: ChartData
 }
 
+/** 三階段 loading 文字（意圖解析 → 計算 → 分析建議） */
+export type LoadingStage = 'intent' | 'compute' | 'text'
+
+const LOADING_STAGE_LABELS: Record<LoadingStage, string> = {
+  intent: '意圖解析中…',
+  compute: '計算中…',
+  text: '分析建議…',
+}
+
 interface AgentChatProps {
   messages: Message[]
   onSubmit: (text: string) => void
   isLoading: boolean
+  /** 三階段進度，有值時取代預設「助理思考中」 */
+  loadingStage?: LoadingStage | null
   onCopySuccess?: () => void
   onCopyError?: () => void
   emptyPlaceholder?: string
@@ -129,6 +140,7 @@ export default function AgentChat({
   messages,
   onSubmit,
   isLoading,
+  loadingStage,
   onCopySuccess,
   onCopyError,
   emptyPlaceholder = '輸入訊息開始對話...',
@@ -262,7 +274,7 @@ export default function AgentChat({
             {isLoading && (
               <p className="mt-2 flex items-center gap-2 text-[18px] text-gray-500">
                 <Loader2 className="h-5 w-5 shrink-0 animate-spin" aria-hidden />
-                <span>助理思考中</span>
+                <span>{loadingStage ? LOADING_STAGE_LABELS[loadingStage] : '助理思考中'}</span>
                 <span className="animate-thinking-dots inline-flex">
                   <span>.</span>
                   <span>.</span>
