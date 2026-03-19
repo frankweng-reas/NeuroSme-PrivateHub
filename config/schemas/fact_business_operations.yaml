@@ -1,0 +1,18 @@
+---
+id: fact_business_operations
+
+# 分組欄位別名：用戶說「平台」時對應的實際欄位
+group_aliases:
+  平台: [平台, 各平台, 通路, store_name, channel_id, channel, platform, 店]
+  月份: [月份, 月, 日期, 時間, timestamp, event_date, month, date]
+  品類: [品類, 類別, category_l1, category_l2, 大類, 中類]
+  產品名稱: [產品名稱, 產品, 品名, item_name, item]
+
+# 數值欄位別名：用戶說「銷售金額」時對應的實際欄位
+value_aliases:
+  銷售金額: [銷售金額, 銷售額, 金額, sales_amount, net_amount, gross_amount, 營收, 售價總額, revenue]
+  銷售數量: [銷售數量, 數量, quantity]
+  毛利: [毛利, gross_profit]
+  營收: [營收, sales_amount, net_amount, revenue, 售價總額]
+  成本: [成本, cost_amount, 預估成本]
+  來客數: [來客數, 人數, guest_count]

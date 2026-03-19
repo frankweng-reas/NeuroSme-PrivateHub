@@ -49,6 +49,42 @@ def get_project_duckdb_path(project_id: str) -> Path | None:
     return path if path.exists() else None
 
 
+def sync_transformed_rows_to_duckdb(
+    project_id: str, rows: list[dict[str, Any]]
+) -> tuple[bool, int, str]:
+    """
+    將已轉換的 rows（符合 Standard Schema）寫入 DuckDB。
+    Test01 POC 使用 project_id = test01_{user_id}。
+    回傳 (成功, 筆數, 錯誤訊息)。
+    """
+    base = _get_base_dir()
+    if not base or not str(base).strip():
+        return False, 0, "DUCKDB_DATA_DIR 未設定"
+    base.mkdir(parents=True, exist_ok=True)
+    path = base / f"{project_id}.duckdb"
+
+    if not rows:
+        if path.exists():
+            path.unlink()
+        return True, 0, ""
+
+    try:
+        df = pd.DataFrame(rows)
+        conn = duckdb.connect(str(path))
+        conn.execute(f"DROP TABLE IF EXISTS {_TABLE_NAME}")
+        conn.register("_df", df)
+        conn.execute(f"CREATE TABLE {_TABLE_NAME} AS SELECT * FROM _df")
+        conn.unregister("_df")
+        conn.close()
+        row_count = len(df)
+        logger.info("DuckDB 同步成功: %s (%d 列)", path, row_count)
+        return True, row_count, ""
+    except Exception as e:
+        err_msg = str(e)
+        logger.warning("DuckDB 同步失敗 %s: %s", project_id, err_msg)
+        return False, 0, err_msg
+
+
 def sync_project_csv_to_duckdb(project_id: str, csv_content: str) -> tuple[bool, int]:
     """
     將 CSV 內容同步至專案 DuckDB 檔。

@@ -1,46 +1,97 @@
-"""Schema 配置載入：從 config/schemas/*.yaml 讀取，供 analysis_compute 使用"""
+"""載入 Schema：load_schema(schema_id) 用於 chat compute；load_bi_sales_schema() 用於 Test01"""
 import logging
 from pathlib import Path
 from typing import Any
 
+import yaml
+
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
+
+_SCHEMA_FILENAME = "bi_sales_table.yaml"
+
+
+def _get_schemas_dir() -> Path | None:
+    """取得 config/schemas 目錄路徑"""
+    if settings.SCHEMA_CONFIG_DIR:
+        p = Path(settings.SCHEMA_CONFIG_DIR).resolve()
+        if p.exists():
+            return p
+    candidates = [
+        Path(__file__).resolve().parents[3] / "config" / "schemas",
+        Path(__file__).resolve().parents[2] / ".." / "config" / "schemas",
+        Path.cwd().parent / "config" / "schemas",
+        Path.cwd() / "config" / "schemas",
+    ]
+    for c in candidates:
+        resolved = c.resolve()
+        if resolved.exists():
+            return resolved
+    return None
 
 
 def load_schema(schema_id: str) -> dict[str, Any] | None:
     """
-    從 config/schemas/{schema_id}.yaml 讀取 schema 定義。
-    回傳 { id, columns, group_aliases, value_aliases }，失敗則 None。
+    載入 config/schemas/{schema_id}.yaml，供 chat compute 使用。
+    回傳 dict（含 id, group_aliases, value_aliases, columns 等）或 None。
     """
     if not schema_id or not str(schema_id).strip():
         return None
+    base = _get_schemas_dir()
+    if not base:
+        return None
+    path = base / f"{schema_id.strip()}.yaml"
+    if not path.exists():
+        return None
     try:
-        import yaml
-    except ImportError:
-        logger.warning("PyYAML 未安裝，無法載入 schema 配置")
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        if isinstance(data, dict):
+            data.setdefault("id", schema_id)
+            return data
+        return None
+    except (yaml.YAMLError, OSError) as e:
+        logger.warning("Schema %s 載入失敗: %s", schema_id, e)
         return None
 
-    base = Path(__file__).resolve().parents[2]
-    filename = f"{schema_id.strip()}.yaml"
-    for root in (base.parent / "config" / "schemas", base / "config" / "schemas"):
-        path = root / filename
-        if path.exists():
-            try:
-                data = yaml.safe_load(path.read_text(encoding="utf-8"))
-                if not isinstance(data, dict):
-                    return None
-                # 確保必要結構存在
-                group_aliases = data.get("group_aliases") or {}
-                value_aliases = data.get("value_aliases") or {}
-                if not isinstance(group_aliases, dict):
-                    group_aliases = {}
-                if not isinstance(value_aliases, dict):
-                    value_aliases = {}
-                return {
-                    "id": data.get("id", schema_id),
-                    "columns": data.get("columns") or {},
-                    "group_aliases": group_aliases,
-                    "value_aliases": value_aliases,
-                }
-            except Exception as e:
-                logger.debug("讀取 schema %s 失敗: %s", schema_id, e)
+
+def _find_schema_path() -> Path | None:
+    """尋找 bi_sales_table.yaml 路徑，支援多種執行環境"""
+    if settings.SCHEMA_CONFIG_DIR:
+        custom = Path(settings.SCHEMA_CONFIG_DIR).resolve() / _SCHEMA_FILENAME
+        if custom.exists():
+            return custom
+    candidates = [
+        # 從 backend/app/services 往上到專案根目錄
+        Path(__file__).resolve().parents[3] / "config" / "schemas" / _SCHEMA_FILENAME,
+        # 從 backend 目錄的父層（專案根）
+        Path(__file__).resolve().parents[2] / ".." / "config" / "schemas" / _SCHEMA_FILENAME,
+        # 從 cwd（若從 backend/ 執行 uvicorn）
+        Path.cwd().parent / "config" / "schemas" / _SCHEMA_FILENAME,
+        # 從 cwd（若從專案根執行）
+        Path.cwd() / "config" / "schemas" / _SCHEMA_FILENAME,
+    ]
+    for p in candidates:
+        resolved = p.resolve()
+        if resolved.exists():
+            return resolved
     return None
+
+
+def load_bi_sales_schema() -> list[dict[str, Any]]:
+    """載入 bi_sales_table.yaml，回傳欄位定義列表"""
+    path = _find_schema_path()
+    if not path:
+        logger.warning("bi_sales_table.yaml 找不到，嘗試路徑: %s", Path(__file__).resolve().parents[3] / "config" / "schemas" / _SCHEMA_FILENAME)
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        return data if isinstance(data, list) else []
+    except yaml.YAMLError as e:
+        logger.exception("bi_sales_table.yaml 解析失敗: %s", e)
+        return []
+    except OSError as e:
+        logger.exception("bi_sales_table.yaml 讀取失敗: %s", e)
+        return []
