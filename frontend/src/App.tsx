@@ -15,6 +15,10 @@ import AdminTenantSettings from './pages/admin/AdminTenantSettings'
 import AdminUsers from './pages/admin/AdminUsers'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
+import ChangePasswordPage from './pages/ChangePasswordPage'
+import ChangePasswordExpiredPage from './pages/ChangePasswordExpiredPage'
+import ForgotPasswordPage from './pages/ForgotPasswordPage'
+import ResetPasswordPage from './pages/ResetPasswordPage'
 import TestLLMChat from './pages/TestLLMChat'
 import TestComputeFlowTool from './pages/TestComputeFlowTool'
 import TestIntentToData from './pages/TestIntentToData'
@@ -27,6 +31,9 @@ function App() {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
+            <Route path="/change-password-expired" element={<ChangePasswordExpiredPage />} />
+            <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+            <Route path="/auth/reset-password" element={<ResetPasswordPage />} />
             <Route path="/" element={<Layout />}>
               <Route
                 index
@@ -60,6 +67,14 @@ function App() {
                 <Route path="tenant-settings" element={<SuperAdminRoute><AdminTenantSettings /></SuperAdminRoute>} />
                 <Route path="users" element={<AdminUsers />} />
               </Route>
+              <Route
+                path="change-password"
+                element={
+                  <ProtectedRoute>
+                    <ChangePasswordPage />
+                  </ProtectedRoute>
+                }
+              />
               <Route
                 path="dev-test-chat"
                 element={

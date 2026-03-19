@@ -31,6 +31,10 @@ interface AuthContextValue extends AuthState {
   login: (email: string, password: string) => Promise<void>
   register: (email: string, password: string, name?: string) => Promise<void>
   logout: () => void
+  changePassword: (old_password: string, new_password: string) => Promise<void>
+  changePasswordExpired: (email: string, old_password: string, new_password: string) => Promise<void>
+  forgotPassword: (email: string) => Promise<void>
+  resetPassword: (token: string, new_password: string) => Promise<void>
   isAuthenticated: boolean
 }
 
@@ -123,16 +127,72 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const msg = Array.isArray(err.message) ? err.message.join(', ') : err.message
       throw new Error(msg || '註冊失敗')
     }
-    const data = await res.json()
-    const token = data.access_token
-    const refreshToken = data.refresh_token
-    const user: AuthUser = data.user
-      ? { id: data.user.id, email: data.user.email, name: data.user.name }
-      : { id: '', email, name: name || '' }
-    localStorage.setItem(TOKEN_KEY, token)
-    if (refreshToken) localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken)
-    localStorage.setItem(USER_KEY, JSON.stringify(user))
-    setState({ user, token, loading: false })
+    // 註冊成功後不自動登入：需先完成 email 確認，再透過登入頁登入
+    setState((s) => ({ ...s, loading: false }))
+  }, [])
+
+  const changePassword = useCallback(async (old_password: string, new_password: string) => {
+    const token = localStorage.getItem(TOKEN_KEY)
+    if (!token) throw new Error('請先登入')
+    const url = `${AUTH_BASE}/auth/password`
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ old_password, new_password }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      const msg = Array.isArray(err.message) ? err.message.join(', ') : err.message
+      throw new Error(msg || '修改密碼失敗')
+    }
+  }, [])
+
+  const changePasswordExpired = useCallback(
+    async (email: string, old_password: string, new_password: string) => {
+      const url = `${AUTH_BASE}/auth/change-password-expired`
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, old_password, new_password }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        const msg = Array.isArray(err.message) ? err.message.join(', ') : err.message
+        throw new Error(msg || '修改密碼失敗')
+      }
+    },
+    []
+  )
+
+  const forgotPassword = useCallback(async (email: string) => {
+    const url = `${AUTH_BASE}/auth/forgot-password`
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      const msg = Array.isArray(err.message) ? err.message.join(', ') : err.message
+      throw new Error(msg || '寄送失敗')
+    }
+  }, [])
+
+  const resetPassword = useCallback(async (token: string, new_password: string) => {
+    const url = `${AUTH_BASE}/auth/reset-password`
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, new_password }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      const msg = Array.isArray(err.message) ? err.message.join(', ') : err.message
+      throw new Error(msg || '重設密碼失敗')
+    }
   }, [])
 
   const value: AuthContextValue = {
@@ -140,6 +200,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     login,
     register,
     logout,
+    changePassword,
+    changePasswordExpired,
+    forgotPassword,
+    resetPassword,
     isAuthenticated: !!state.token,
   }
 

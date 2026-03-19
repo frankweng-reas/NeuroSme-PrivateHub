@@ -591,17 +591,16 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
 
     try {
       const userPrompt = buildUserPrompt(latest)
-      const content = userPrompt ? `${userPrompt}\n\n${text}` : text
       const res = await chatCompletionsComputeToolStream(
         {
           agent_id: agent.id,
           project_id: selectedProject.project_id,
           system_prompt: '',
-          user_prompt: '',
+          user_prompt: userPrompt || '',
           data: '',
           model: latest.model,
           messages: [],
-          content,
+          content: text,
         },
         (stage) => setLoadingStage(stage)
       )

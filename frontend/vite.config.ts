@@ -27,6 +27,13 @@ export default defineConfig(({ mode }) => {
         '/auth': {
           target: `http://localhost:${localAuthPort}`,
           changeOrigin: true,
+          bypass(req) {
+            // 重設密碼頁面由 NeuroSme SPA 提供，僅對 page load (Accept: text/html) 不 proxy
+            const isPageLoad = req.headers.accept?.includes('text/html')
+            if (isPageLoad && req.url?.startsWith('/auth/reset-password')) {
+              return '/index.html'
+            }
+          },
         },
       },
     },

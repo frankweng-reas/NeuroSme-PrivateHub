@@ -89,6 +89,12 @@ npm run dev
 VITE_AUTH_API_URL=http://localhost:4000
 ```
 
+**忘記密碼／註冊驗證信**：預設 `EMAIL_PROVIDER=console` 只會輸出到 log，不會寄信。要實際寄信請在 `localauth/.env` 設定：
+- **Resend**：`EMAIL_PROVIDER=resend`、`RESEND_API_KEY=re_xxx`（見 [localauth/EMAIL_SETUP.md](../localauth/EMAIL_SETUP.md)）
+- **SMTP**：`EMAIL_PROVIDER=smtp`、`SMTP_HOST`、`SMTP_USER`、`SMTP_PASS`
+
+**重設密碼連結**：LocalAuth 寄出的重設連結會導向 `BASE_URL/auth/reset-password?token=xxx`。請在 `localauth/.env` 設定 `BASE_URL=http://localhost:5173`（開發）或正式環境的前端網址，讓使用者點擊後進入 NeuroSme 的重設密碼頁面。
+
 ### 資料庫遷移
 
 ```bash

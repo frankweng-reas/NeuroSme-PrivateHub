@@ -1,29 +1,32 @@
-/** 註冊頁：呼叫 LocalAuth /auth/register */
+/** 密碼過期更換頁：未登入時更換密碼，呼叫 LocalAuth POST /auth/change-password-expired */
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 
 const PASSWORD_HINT =
   '密碼需至少 8 碼，且包含下列 4 種字元中的 3 種：英文大寫、英文小寫、數字、特殊符號 (!$#% 等)'
 
-export default function RegisterPage() {
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [name, setName] = useState('')
+export default function ChangePasswordExpiredPage() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const { changePasswordExpired } = useAuth()
+  const state = location.state as { email?: string; password?: string } | null
+
+  const [email, setEmail] = useState(state?.email ?? '')
+  const [oldPassword, setOldPassword] = useState(state?.password ?? '')
+  const [newPassword, setNewPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const { register } = useAuth()
-  const navigate = useNavigate()
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
     setLoading(true)
     try {
-      await register(email, password, name.trim() || undefined)
-      navigate('/login?registered=1', { replace: true })
+      await changePasswordExpired(email, oldPassword, newPassword)
+      navigate('/login?password_changed=1', { replace: true })
     } catch (err) {
-      setError(err instanceof Error ? err.message : '註冊失敗')
+      setError(err instanceof Error ? err.message : '修改密碼失敗')
     } finally {
       setLoading(false)
     }
@@ -32,7 +35,10 @@ export default function RegisterPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-100 px-4">
       <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-8 shadow-lg">
-        <h1 className="mb-6 text-center text-2xl font-bold text-gray-800">NeuroSme 註冊</h1>
+        <h1 className="mb-2 text-center text-2xl font-bold text-gray-800">密碼已過期</h1>
+        <p className="mb-6 text-center text-sm text-gray-500">
+          請更換密碼後重新登入
+        </p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label htmlFor="email" className="block text-sm font-medium text-gray-700">
@@ -49,27 +55,28 @@ export default function RegisterPage() {
             />
           </div>
           <div>
-            <label htmlFor="name" className="block text-sm font-medium text-gray-700">
-              名稱（選填）
+            <label htmlFor="oldPassword" className="block text-sm font-medium text-gray-700">
+              目前密碼
             </label>
             <input
-              id="name"
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              autoComplete="name"
+              id="oldPassword"
+              type="password"
+              value={oldPassword}
+              onChange={(e) => setOldPassword(e.target.value)}
+              required
+              autoComplete="current-password"
               className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
             />
           </div>
           <div>
-            <label htmlFor="password" className="block text-sm font-medium text-gray-700">
-              密碼
+            <label htmlFor="newPassword" className="block text-sm font-medium text-gray-700">
+              新密碼
             </label>
             <input
-              id="password"
+              id="newPassword"
               type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
               required
               minLength={8}
               autoComplete="new-password"
@@ -87,13 +94,12 @@ export default function RegisterPage() {
             disabled={loading}
             className="w-full rounded-lg bg-indigo-600 px-4 py-2 font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
           >
-            {loading ? '註冊中...' : '註冊'}
+            {loading ? '更換中...' : '更換密碼'}
           </button>
         </form>
         <p className="mt-4 text-center text-sm text-gray-500">
-          已有帳號？{' '}
           <Link to="/login" className="font-medium text-indigo-600 hover:text-indigo-500">
-            前往登入
+            返回登入
           </Link>
         </p>
       </div>

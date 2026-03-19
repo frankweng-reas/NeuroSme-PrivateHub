@@ -7,11 +7,13 @@ const RETURN_URL_KEY = 'login_return_url'
 
 export default function LoginPage() {
   const [email, setEmail] = useState('test01@test.com')
-  const [password, setPassword] = useState('123456')
+  const [password, setPassword] = useState('test@000')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [searchParams] = useSearchParams()
   const isExpired = searchParams.get('expired') === '1'
+  const isRegistered = searchParams.get('registered') === '1'
+  const isPasswordChanged = searchParams.get('password_changed') === '1'
   const { login } = useAuth()
   const navigate = useNavigate()
 
@@ -29,7 +31,15 @@ export default function LoginPage() {
         navigate('/', { replace: true })
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : '登入失敗')
+      const msg = err instanceof Error ? err.message : '登入失敗'
+      if (msg.includes('密碼已過期')) {
+        navigate('/change-password-expired', {
+          replace: true,
+          state: { email, password },
+        })
+        return
+      }
+      setError(msg)
     } finally {
       setLoading(false)
     }
@@ -39,12 +49,28 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-gray-100 px-4">
       <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-8 shadow-lg">
         <h1 className="mb-6 text-center text-2xl font-bold text-gray-800">NeuroSme 登入</h1>
+        {isRegistered && (
+          <div
+            className="mb-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800"
+            role="alert"
+          >
+            註冊成功！請至您的信箱確認註冊，確認後即可登入
+          </div>
+        )}
         {isExpired && (
           <div
             className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
             role="alert"
           >
             您的登入已過期，請重新登入以繼續操作
+          </div>
+        )}
+        {isPasswordChanged && (
+          <div
+            className="mb-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800"
+            role="alert"
+          >
+            密碼已更新，請使用新密碼登入
           </div>
         )}
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -93,6 +119,10 @@ export default function LoginPage() {
           尚未註冊？{' '}
           <Link to="/register" className="font-medium text-indigo-600 hover:text-indigo-500">
             前往註冊
+          </Link>
+          {' · '}
+          <Link to="/forgot-password" className="font-medium text-indigo-600 hover:text-indigo-500">
+            忘記密碼
           </Link>
         </p>
       </div>

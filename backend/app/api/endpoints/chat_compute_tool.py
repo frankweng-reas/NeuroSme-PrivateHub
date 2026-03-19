@@ -491,7 +491,8 @@ schema:
         text_prompt = "根據計算結果撰寫分析文字，使用 Markdown 格式。圖表由後端負責，只輸出文字。"
 
     detail_block = "計算結果：\n" + "\n".join(detail_lines)
-    user_content_text = f"""使用者問題：{req.content}
+    ai_block = f"AI 設定與補充指示：\n{req.user_prompt.strip()}\n\n" if (req.user_prompt or "").strip() else ""
+    user_content_text = f"""{ai_block}使用者問題：{req.content}
 
 {detail_block}
 
@@ -695,7 +696,8 @@ schema:
     if not text_prompt:
         text_prompt = "根據計算結果撰寫分析文字，使用 Markdown 格式。圖表由後端負責，只輸出文字。"
     detail_block = "計算結果：\n" + "\n".join(detail_lines)
-    user_content_text = f"""使用者問題：{req.content}
+    ai_block = f"AI 設定與補充指示：\n{req.user_prompt.strip()}\n\n" if (req.user_prompt or "").strip() else ""
+    user_content_text = f"""{ai_block}使用者問題：{req.content}
 
 {detail_block}
 

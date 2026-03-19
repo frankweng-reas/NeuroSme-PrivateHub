@@ -88,10 +88,17 @@ export default function Layout() {
                   >
                     <p className="text-sm text-gray-600">Email</p>
                     <p className="mt-1 text-sm font-medium text-gray-900">{authUser?.email ?? user?.email ?? '-'}</p>
+                    <Link
+                      to="/change-password"
+                      onClick={() => setUserMenuOpen(false)}
+                      className="mt-3 block w-full rounded border border-gray-200 px-3 py-1.5 text-center text-sm text-gray-600 hover:bg-gray-50"
+                    >
+                      修改密碼
+                    </Link>
                     <button
                       type="button"
                       onClick={() => { logout(); navigate('/login'); setUserMenuOpen(false); }}
-                      className="mt-3 w-full rounded border border-gray-200 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
+                      className="mt-2 w-full rounded border border-gray-200 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
                     >
                       登出
                     </button>
