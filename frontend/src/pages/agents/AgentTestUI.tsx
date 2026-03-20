@@ -1,5 +1,5 @@
 /** Test01 Agent 專用 UI：CSV → Schema Mapping → DuckDB */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
 import { Loader2 } from 'lucide-react'
 import AgentIcon from '@/components/AgentIcon'
@@ -92,6 +92,7 @@ function parseCsvFirstRow(csv: string): Record<string, string> {
 }
 
 export default function AgentTestUI({ agent }: AgentTestUIProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [csvContent, setCsvContent] = useState('')
   const [schema, setSchema] = useState<SchemaField[]>([])
   const [schemaLoading, setSchemaLoading] = useState(true)
@@ -111,6 +112,21 @@ export default function AgentTestUI({ agent }: AgentTestUIProps) {
     input_tokens: number
     output_tokens: number
   } | null>(null)
+
+  const handleCsvFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      const fullText = String(reader.result ?? '')
+      const lines = fullText.trim().split('\n')
+      const header = lines[0] ?? ''
+      const dataRows = lines.slice(1, 4) // 只取前 3 筆資料
+      setCsvContent([header, ...dataRows].join('\n'))
+    }
+    reader.readAsText(file, 'UTF-8')
+    e.target.value = ''
+  }, [])
 
   const csvHeaders = useMemo(() => parseCsvHeaders(csvContent), [csvContent])
   const csvFirstRow = useMemo(() => parseCsvFirstRow(csvContent), [csvContent])
@@ -286,12 +302,6 @@ export default function AgentTestUI({ agent }: AgentTestUIProps) {
     }
   }
 
-  const schemaDisplay = schema.length
-    ? schema.map((f) => `- ${f.field} (${f.type})${f.required ? ' *' : ''}`).join('\n')
-    : schemaError
-      ? `載入失敗：${schemaError}`
-      : '載入中...'
-
   return (
     <AgentPageLayout
       title={agent.agent_name}
@@ -299,36 +309,53 @@ export default function AgentTestUI({ agent }: AgentTestUIProps) {
     >
       {toast && (
         <div
-          className="fixed bottom-8 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-gray-800 px-4 py-2 text-base text-white shadow-lg"
+          className="fixed bottom-8 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-gray-800 px-4 py-2 text-lg text-white shadow-lg"
           role="status"
         >
           {toast}
         </div>
       )}
-      <Group orientation="horizontal" className="flex min-h-0 min-w-0 flex-1 gap-1 text-base">
+      <Group orientation="horizontal" className="flex min-h-0 min-w-0 flex-1 gap-1 text-lg">
         {/* 左邊容器 */}
         <Panel
           defaultSize={50}
           minSize={20}
-          className="flex flex-col rounded-2xl border-2 border-gray-200 bg-white shadow-sm"
+          className="flex flex-col rounded-2xl border-2 border-gray-200 bg-white text-lg shadow-sm"
         >
           <div className="flex min-h-0 flex-1 flex-col gap-4 p-4">
+            <div className="flex shrink-0 flex-col gap-2 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+              <span className="text-gray-700">創建資料模板</span>
+              <div className="flex items-center gap-2">
+                <label className="shrink-0 text-gray-700">資料模板名稱：</label>
+                <input
+                  type="text"
+                  className="min-w-0 flex-1 rounded border border-gray-300 px-3 py-2 focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+                />
+              </div>
+            </div>
+            <div className="flex shrink-0 flex-col gap-2 rounded-lg border border-gray-200 bg-white px-4 py-3">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,text/csv"
+                className="hidden"
+                onChange={handleCsvFileChange}
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="rounded-lg border-2 border-dashed border-gray-300 px-4 py-3 text-gray-600 transition-colors hover:border-gray-400 hover:bg-gray-50"
+              >
+                上傳 CSV 檔案
+              </button>
+            </div>
             <div className="flex min-h-0 flex-1 flex-col gap-2">
               <label className="shrink-0 font-medium text-gray-700">CSV</label>
               <textarea
-                className="min-h-0 flex-1 resize-none rounded-lg border border-gray-300 px-3 py-2 font-mono focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+                className="min-h-0 flex-1 resize-none rounded-lg border border-gray-300 px-3 py-2 font-mono text-lg focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
                 placeholder="貼上 CSV 內容（含 header）..."
                 value={csvContent}
                 onChange={(e) => setCsvContent(e.target.value)}
-              />
-            </div>
-            <div className="flex min-h-0 flex-1 flex-col gap-2">
-              <label className="shrink-0 font-medium text-gray-700">Standard Schema</label>
-              <textarea
-                className="min-h-0 flex-1 resize-none rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 font-mono focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
-                placeholder="Schema 載入中..."
-                value={schemaDisplay}
-                readOnly
               />
             </div>
           </div>
