@@ -32,6 +32,12 @@ export async function getMappingTemplate(templateName: string): Promise<MappingT
   return apiFetch<MappingTemplateDetail>(`/test01/mapping-templates/${encodeURIComponent(templateName)}`)
 }
 
+export async function deleteMappingTemplate(templateName: string): Promise<void> {
+  return apiFetch(`/test01/mapping-templates/${encodeURIComponent(templateName)}`, {
+    method: 'DELETE',
+  })
+}
+
 export async function saveMappingTemplate(params: {
   template_name: string
   mapping: Record<string, string>

@@ -1,10 +1,12 @@
 /** Test01 Agent 專用 UI：CSV → Schema Mapping → DuckDB */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
-import { Loader2 } from 'lucide-react'
+import { ArrowRightLeft, Loader2 } from 'lucide-react'
 import AgentIcon from '@/components/AgentIcon'
 import AgentPageLayout from '@/components/AgentPageLayout'
+import ConfirmModal from '@/components/ConfirmModal'
 import {
+  deleteMappingTemplate,
   getBiSalesSchema,
   getMappingTemplate,
   listMappingTemplates,
@@ -15,6 +17,7 @@ import {
   type MappingTemplateItem,
   type SchemaField,
 } from '@/api/test01'
+import { MODEL_OPTIONS } from '@/constants/aiOptions'
 import type { Agent } from '@/types'
 
 interface AgentTestUIProps {
@@ -106,12 +109,15 @@ export default function AgentTestUI({ agent }: AgentTestUIProps) {
   const [syncLoading, setSyncLoading] = useState(false)
   const [suggestLoading, setSuggestLoading] = useState(false)
   const [saveTemplateLoading, setSaveTemplateLoading] = useState(false)
+  const [deleteTemplateLoading, setDeleteTemplateLoading] = useState(false)
+  const [deleteTemplateConfirm, setDeleteTemplateConfirm] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [suggestLastUsage, setSuggestLastUsage] = useState<{
     model: string
     input_tokens: number
     output_tokens: number
   } | null>(null)
+  const [suggestModel, setSuggestModel] = useState('gpt-4o-mini')
 
   const handleCsvFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -166,6 +172,24 @@ export default function AgentTestUI({ agent }: AgentTestUIProps) {
       setToast(err instanceof Error ? err.message : '儲存失敗')
     } finally {
       setSaveTemplateLoading(false)
+    }
+  }
+
+  const handleDeleteTemplate = async () => {
+    if (!deleteTemplateConfirm || deleteTemplateLoading) return
+    const name = deleteTemplateConfirm
+    setDeleteTemplateLoading(true)
+    try {
+      await deleteMappingTemplate(name)
+      setToast(`已刪除範本：${name}`)
+      setSelectedTemplateName('')
+      setMapping({})
+      loadTemplates()
+      setDeleteTemplateConfirm(null)
+    } catch (err) {
+      setToast(err instanceof Error ? err.message : '刪除失敗')
+    } finally {
+      setDeleteTemplateLoading(false)
     }
   }
 
@@ -233,7 +257,7 @@ export default function AgentTestUI({ agent }: AgentTestUIProps) {
     setSuggestLoading(true)
     setSuggestLastUsage(null)
     try {
-      const res = await suggestMapping({ csv_headers: csvHeaders })
+      const res = await suggestMapping({ csv_headers: csvHeaders, model: suggestModel })
       setMapping((prev) => ({ ...prev, ...res.mapping }))
       setToast(`已建議 ${Object.keys(res.mapping).length} 個欄位對應`)
       if (
@@ -325,12 +349,65 @@ export default function AgentTestUI({ agent }: AgentTestUIProps) {
           <div className="flex min-h-0 flex-1 flex-col gap-4 p-4">
             <div className="flex shrink-0 flex-col gap-2 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
               <span className="text-gray-700">創建資料模板</span>
-              <div className="flex items-center gap-2">
-                <label className="shrink-0 text-gray-700">資料模板名稱：</label>
-                <input
-                  type="text"
-                  className="min-w-0 flex-1 rounded border border-gray-300 px-3 py-2 focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
-                />
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="shrink-0 text-gray-700">資料模板：</label>
+                <select
+                  className="rounded border border-gray-300 px-2 py-1.5 focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+                  value={selectedTemplateName}
+                  onChange={(e) => handleTemplateChange(e.target.value)}
+                >
+                  <option value="">— 未選擇 —</option>
+                  {templates.map((t) => (
+                    <option key={t.template_name} value={t.template_name}>
+                      {t.template_name}
+                    </option>
+                  ))}
+                  <option value={NEW_TEMPLATE_VALUE}>建立資料模板</option>
+                </select>
+                {selectedTemplateName === NEW_TEMPLATE_VALUE ? (
+                  <>
+                    <input
+                      type="text"
+                      placeholder="範本名稱（如：91app銷售報表）"
+                      value={newTemplateName}
+                      onChange={(e) => setNewTemplateName(e.target.value)}
+                      className="min-w-[180px] rounded border border-gray-300 px-2 py-1.5 focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSaveTemplate}
+                      disabled={
+                        saveTemplateLoading ||
+                        Object.keys(mapping).length === 0 ||
+                        !newTemplateName.trim()
+                      }
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+                    >
+                      {saveTemplateLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : '儲存'}
+                    </button>
+                  </>
+                ) : (
+                  selectedTemplateName && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleSaveTemplate}
+                        disabled={saveTemplateLoading || Object.keys(mapping).length === 0}
+                        className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        {saveTemplateLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : '修改'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTemplateConfirm(selectedTemplateName)}
+                        disabled={deleteTemplateLoading}
+                        className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
+                      >
+                        {deleteTemplateLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : '刪除'}
+                      </button>
+                    </>
+                  )
+                )}
               </div>
             </div>
             <div className="flex shrink-0 flex-col gap-2 rounded-lg border border-gray-200 bg-white px-4 py-3">
@@ -373,7 +450,19 @@ export default function AgentTestUI({ agent }: AgentTestUIProps) {
                 <h3 className="font-semibold text-gray-800">
                   {previewRows !== null ? '轉換預覽' : '欄位對應'}
                 </h3>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                <label className="shrink-0 text-gray-600">LLM 模型：</label>
+                <select
+                  value={suggestModel}
+                  onChange={(e) => setSuggestModel(e.target.value)}
+                  className="rounded border border-gray-300 px-2 py-1.5 text-gray-700 focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+                >
+                  {MODEL_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
                 {previewRows !== null && (
                   <button
                     type="button"
@@ -409,47 +498,6 @@ export default function AgentTestUI({ agent }: AgentTestUIProps) {
                 </button>
               </div>
               </div>
-              {previewRows === null && (
-                <div className="flex items-center gap-2">
-                  <label className="shrink-0 text-gray-600">對應模板：</label>
-                  <select
-                    className="rounded border border-gray-300 px-2 py-1.5 focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
-                    value={selectedTemplateName}
-                    onChange={(e) => handleTemplateChange(e.target.value)}
-                  >
-                    <option value="">— 未選擇 —</option>
-                    {templates.map((t) => (
-                      <option key={t.template_name} value={t.template_name}>
-                        {t.template_name}
-                      </option>
-                    ))}
-                    <option value={NEW_TEMPLATE_VALUE}>建立新範本...</option>
-                  </select>
-                  {selectedTemplateName === NEW_TEMPLATE_VALUE && (
-                    <>
-                      <input
-                        type="text"
-                        placeholder="範本名稱（如：91app銷售報表）"
-                        value={newTemplateName}
-                        onChange={(e) => setNewTemplateName(e.target.value)}
-                        className="min-w-[180px] rounded border border-gray-300 px-2 py-1.5 focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleSaveTemplate}
-                        disabled={
-                          saveTemplateLoading ||
-                          Object.keys(mapping).length === 0 ||
-                          !newTemplateName.trim()
-                        }
-                        className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
-                      >
-                        {saveTemplateLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : '儲存'}
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
             </div>
             <div className="min-h-0 flex-1 overflow-auto">
               {previewRows !== null ? (
@@ -500,8 +548,9 @@ export default function AgentTestUI({ agent }: AgentTestUIProps) {
                     <table className="min-w-full table-fixed border-collapse">
                       <thead>
                         <tr className="border-b border-gray-200">
-                          <th className="w-2/5 px-2 py-1.5 text-left font-medium text-gray-600">系統欄位</th>
-                          <th className="w-1/5 px-2 py-1.5 text-left font-medium text-gray-600">來源欄位</th>
+                          <th className="w-[30%] px-2 py-1.5 text-left font-medium text-gray-600">系統欄位</th>
+                          <th className="w-14 px-2 py-1.5 text-center font-medium text-gray-600" />
+                          <th className="w-[30%] px-2 py-1.5 text-left font-medium text-gray-600">來源欄位</th>
                           <th className="w-2/5 px-2 py-1.5 text-left font-medium text-gray-600">內容</th>
                         </tr>
                       </thead>
@@ -523,60 +572,73 @@ export default function AgentTestUI({ agent }: AgentTestUIProps) {
                           const isMappedButEmpty = hasMapping && csvValue === '' && schemaDefault !== ''
                           const isComputedNoMapping = isComputed && !hasMapping
                           const computedVal = isComputed ? computedValues[f.field as keyof typeof computedValues] : undefined
-                          const chineseName = f.aliases?.[0] ?? '—'
-                          const systemFieldLabel = `${f.field} (${chineseName})`
+                          const systemFieldLabel = f.aliases?.[0] ?? f.field
+                          const cardClass = 'flex h-[3.25rem] w-full items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 shadow-sm'
                           return (
                             <tr key={f.field} className="border-b border-gray-100">
-                              <td className="px-2 py-1.5 text-gray-700">
-                                {systemFieldLabel}
-                                {f.required && <span className="text-red-500">*</span>}
+                              <td className="px-2 py-1.5 align-top">
+                                <div className={`${cardClass} text-gray-700`}>
+                                  {systemFieldLabel}
+                                  {f.required && <span className="text-red-500">*</span>}
+                                </div>
                               </td>
-                              <td className="px-2 py-1.5">
-                                <select
-                                  className="w-full min-w-0 rounded border border-gray-300 px-2 py-1.5 focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
-                                  value={selectedCol}
-                                  onChange={(e) =>
-                                    setMapping((prev) => {
-                                      const next = { ...prev }
-                                      if (e.target.value) next[f.field] = e.target.value
-                                      else delete next[f.field]
-                                      return next
-                                    })
+                              <td className="px-2 py-1.5 align-top">
+                                <div
+                                  className={`${cardClass} justify-center ${hasMapping ? 'bg-green-50 border-green-200 text-green-600' : 'bg-red-50 border-red-200 text-red-400'}`}
+                                >
+                                  <ArrowRightLeft className="h-5 w-5 shrink-0" aria-hidden />
+                                </div>
+                              </td>
+                              <td className="px-2 py-1.5 align-top">
+                                <div className={`${cardClass} p-0 [&>select]:h-full [&>select]:min-h-0 [&>select]:min-w-0 [&>select]:flex-1 [&>select]:rounded-lg`}>
+                                  <select
+                                    className="h-full min-h-0 w-full min-w-0 rounded border border-gray-300 bg-white px-0 py-0 focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+                                    value={selectedCol}
+                                    onChange={(e) =>
+                                      setMapping((prev) => {
+                                        const next = { ...prev }
+                                        if (e.target.value) next[f.field] = e.target.value
+                                        else delete next[f.field]
+                                        return next
+                                      })
+                                    }
+                                  >
+                                    <option value="">— 不對應 —</option>
+                                    {csvHeaders.map((h) => (
+                                      <option key={h} value={h}>
+                                        {h}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </td>
+                              <td className="px-2 py-1.5 align-top">
+                                <div
+                                  className={`${cardClass} text-gray-600`}
+                                  title={
+                                    isComputedNoMapping
+                                      ? `由公式計算：${computedVal ?? '—'}`
+                                      : isDefault || isMappedButEmpty
+                                        ? `預設：${displayValue}`
+                                        : displayValue
                                   }
                                 >
-                                  <option value="">— 不對應 —</option>
-                                  {csvHeaders.map((h) => (
-                                    <option key={h} value={h}>
-                                      {h}
-                                    </option>
-                                  ))}
-                                </select>
-                              </td>
-                              <td
-                                className="truncate px-2 py-1.5 text-gray-500"
-                                title={
-                                  isComputedNoMapping
-                                    ? `由公式計算：${computedVal ?? '—'}`
-                                    : isDefault || isMappedButEmpty
-                                      ? `預設：${displayValue}`
-                                      : displayValue
-                                }
-                              >
-                                {isComputedNoMapping ? (
-                                  <>
-                                    {computedVal != null ? String(computedVal) : '—'}
-                                    <span className="ml-1 text-gray-400">(計算)</span>
-                                  </>
-                                ) : displayValue ? (
-                                  <>
-                                    {displayValue}
-                                    {(isDefault || isMappedButEmpty) && (
-                                      <span className="ml-1 text-gray-400">(預設)</span>
-                                    )}
-                                  </>
-                                ) : (
-                                  '—'
-                                )}
+                                  {isComputedNoMapping ? (
+                                    <>
+                                      {computedVal != null ? String(computedVal) : '—'}
+                                      <span className="ml-1 text-gray-400">(計算)</span>
+                                    </>
+                                  ) : displayValue ? (
+                                    <>
+                                      {displayValue}
+                                      {(isDefault || isMappedButEmpty) && (
+                                        <span className="ml-1 text-gray-400">(預設)</span>
+                                      )}
+                                    </>
+                                  ) : (
+                                    '—'
+                                  )}
+                                </div>
                               </td>
                             </tr>
                           )
@@ -601,6 +663,17 @@ export default function AgentTestUI({ agent }: AgentTestUIProps) {
           </div>
         </Panel>
       </Group>
+      <ConfirmModal
+        open={deleteTemplateConfirm !== null}
+        title="刪除資料模板"
+        message={
+          deleteTemplateConfirm ? `確定要刪除「${deleteTemplateConfirm}」嗎？` : ''
+        }
+        confirmText={deleteTemplateLoading ? '處理中…' : '刪除'}
+        variant="danger"
+        onConfirm={handleDeleteTemplate}
+        onCancel={() => !deleteTemplateLoading && setDeleteTemplateConfirm(null)}
+      />
     </AgentPageLayout>
   )
 }

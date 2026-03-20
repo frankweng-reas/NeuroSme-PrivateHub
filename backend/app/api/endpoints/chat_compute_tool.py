@@ -468,9 +468,9 @@ schema:
             debug=debug,
         )
 
-    if "valueSuffix" not in chart_result and "datasets" not in chart_result:
+    # 僅單一指標時補 valueSuffix/yAxisLabel；多指標時不補，避免 LLM 誤解
+    if "valueSuffix" not in chart_result and "datasets" not in chart_result and chart_result.get("valueLabel"):
         chart_result["valueSuffix"] = "元"
-    # 單一 data 時前端用 yAxisLabel 顯示數值含義（如「銷售金額」「營收」），避免只顯示「數值」
     if not chart_result.get("yAxisLabel") and chart_result.get("valueLabel"):
         chart_result["yAxisLabel"] = chart_result["valueLabel"]
     debug["chart_result"] = chart_result
@@ -675,7 +675,8 @@ schema:
         yield _sse_event({"stage": "done", "error_stage": "compute", "content": content, "chart_data": None})
         return
 
-    if "valueSuffix" not in chart_result and "datasets" not in chart_result:
+    # 僅單一指標時補 valueSuffix/yAxisLabel；多指標時不補，避免 LLM 誤解
+    if "valueSuffix" not in chart_result and "datasets" not in chart_result and chart_result.get("valueLabel"):
         chart_result["valueSuffix"] = "元"
     if not chart_result.get("yAxisLabel") and chart_result.get("valueLabel"):
         chart_result["yAxisLabel"] = chart_result["valueLabel"]
@@ -875,10 +876,16 @@ def _load_rows_from_duckdb_only(pid: str, db: Session, user_id: int) -> tuple[li
         raise HTTPException(status_code=404, detail="專案不存在或無權限")
     duckdb_path = get_project_duckdb_path(pid)
     if not duckdb_path:
-        raise HTTPException(status_code=400, detail="請先同步專案至 DuckDB")
+        raise HTTPException(
+            status_code=400,
+            detail=f"DuckDB 檔案不存在（project_id={pid}），請確認專案已匯入資料",
+        )
     df = execute_sql_on_duckdb_file(duckdb_path, "SELECT * FROM data")
     if df is None or df.empty:
-        raise HTTPException(status_code=400, detail="請先同步專案至 DuckDB")
+        raise HTTPException(
+            status_code=400,
+            detail=f"DuckDB 檔案存在但無資料（project_id={pid}），請重新匯入",
+        )
     rows = df.to_dict("records")
     logger.info("從 DuckDB 載入 %d 列", len(rows))
     return rows, proj

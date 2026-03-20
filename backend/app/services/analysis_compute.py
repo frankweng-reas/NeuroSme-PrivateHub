@@ -1505,9 +1505,12 @@ def compute_aggregate(
     out_final: dict[str, Any] = {
         "labels": labels,
         "data": [p[1] for p in pairs],
-        "valueLabel": value_label,
-        "valueSuffix": value_suffix,
     }
+    # 多指標（無分組且 labels 為多個不同指標）時不輸出 valueLabel/valueSuffix，避免 LLM 誤解
+    is_multi_metric = resolved.group_key == "__total__" and len(pairs) > 1
+    if not is_multi_metric:
+        out_final["valueLabel"] = value_label
+        out_final["valueSuffix"] = value_suffix
     if group_details is not None:
         out_final["groupDetails"] = group_details
     return out_final
