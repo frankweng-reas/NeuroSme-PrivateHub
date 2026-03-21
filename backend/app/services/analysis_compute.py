@@ -411,6 +411,7 @@ class _ResolvedColumns:
     group_key: str
     group_keys: list[str]  # 多層時為 [cat_l1, cat_l2, item_name]，單層為 [group_key]
     value_keys: list[str]
+    value_aggregations: list[str]  # 與 value_keys 同序，每欄位的 sum|avg|count
     filter_key: str | None
     series_key: str | None
 
@@ -418,8 +419,7 @@ class _ResolvedColumns:
 def _resolve_columns(
     rows: list[dict[str, Any]],
     group_by_column: str | list[str] | None,
-    value_column: str | None,
-    value_columns: list[str] | None,
+    value_columns: list[dict[str, Any]],
     filter_column: str | None,
     series_by_column: str | None,
     *,
@@ -429,11 +429,16 @@ def _resolve_columns(
 ) -> _ResolvedColumns | None:
     """
     將 intent 的欄位名稱解析為實際的 row keys。
+    value_columns 為 [{ column, aggregation }, ...]，每項必含 column 與 aggregation。
     group_by_column 可為 str 或 list[str]（多層階級）。
     """
     if not rows:
         if error_out is not None:
             error_out.append("rows 為空")
+        return None
+    if not value_columns:
+        if error_out is not None:
+            error_out.append("value_columns 為空")
         return None
     gb_raw = group_by_column
     gb_list: list[str] = []
@@ -449,30 +454,30 @@ def _resolve_columns(
     g_aliases = group_aliases or _FALLBACK_GROUP_ALIASES
     v_aliases = value_aliases or _FALLBACK_VALUE_ALIASES
 
-    # value_keys
+    # value_keys, value_aggregations（從 value_columns 物件陣列解析）
     value_keys: list[str] = []
-    if value_columns:
-        for vc in value_columns:
-            vc_clean = str(vc).strip()
-            if not vc_clean:
-                continue
-            k = next((ak for ak in actual_keys if ak.strip() == vc_clean), None) or _find_matching_column(actual_keys, vc_clean, v_aliases)
-            if k and k not in value_keys:
-                value_keys.append(k)
-        if not value_keys:
-            for vc in value_columns:
-                vc_clean = str(vc).strip().lower()
-                for ak in actual_keys:
-                    if vc_clean in ak.strip().lower() or ak.strip().lower() in vc_clean:
-                        if ak not in value_keys:
-                            value_keys.append(ak)
-                        break
-    if not value_keys and value_column:
-        k = next((ak for ak in actual_keys if ak.strip() == value_column.strip()), None) or _find_matching_column(actual_keys, value_column, v_aliases)
-        if k:
-            value_keys = [k]
+    value_aggregations: list[str] = []
+    for vc in value_columns:
+        if not isinstance(vc, dict):
+            continue
+        col = vc.get("column")
+        agg = (vc.get("aggregation") or "sum").strip().lower()
+        if agg not in ("sum", "avg", "count"):
+            agg = "sum"
+        if not col or not str(col).strip():
+            continue
+        vc_clean = str(col).strip()
+        k = next((ak for ak in actual_keys if ak.strip() == vc_clean), None) or _find_matching_column(actual_keys, vc_clean, v_aliases)
+        if not k:
+            for ak in actual_keys:
+                if vc_clean.lower() in ak.strip().lower() or ak.strip().lower() in vc_clean.lower():
+                    k = ak
+                    break
+        if k and k not in value_keys:
+            value_keys.append(k)
+            value_aggregations.append(agg)
     if not value_keys:
-        msg = f"找不到 value 欄位: value_column={value_column!r} value_columns={value_columns!r}"
+        msg = f"找不到 value 欄位: value_columns={value_columns!r}"
         logger.warning("%s", msg)
         if error_out is not None:
             error_out.append(msg)
@@ -501,7 +506,14 @@ def _resolve_columns(
     if series_by_column:
         series_key = next((ak for ak in actual_keys if ak.strip() == series_by_column.strip()), None) or _find_matching_column(actual_keys, series_by_column, g_aliases)
 
-    return _ResolvedColumns(group_key=group_key, group_keys=group_keys, value_keys=value_keys, filter_key=filter_key, series_key=series_key)
+    return _ResolvedColumns(
+        group_key=group_key,
+        group_keys=group_keys,
+        value_keys=value_keys,
+        value_aggregations=value_aggregations,
+        filter_key=filter_key,
+        series_key=series_key,
+    )
 
 
 # =============================================================================
@@ -550,14 +562,25 @@ _INDICATOR_COLUMN_NAMES: dict[str, tuple[str, str]] = {
     "discount_rate": ("discount_amount", "sales_amount"),  # fallback 會解析 net_amount
 }
 def _get_indicator_keys(ind: str, value_keys: list[str]) -> tuple[str, str, bool] | None:
-    """依欄位名稱解析 indicator 的 num_key, denom_key, as_percent。用於多 indicator 時。"""
-    if ind not in _INDICATOR_COLUMN_NAMES or ind not in _COMPOUND_INDICATORS:
-        return None
-    num_col, denom_col = _INDICATOR_COLUMN_NAMES[ind]
-    _, _, as_pct = _COMPOUND_INDICATORS[ind]
-    num_key = next((k for k in value_keys if k.strip().lower() == num_col.lower() or num_col.lower() in k.strip().lower()), None)
-    denom_key = next((k for k in value_keys if k.strip().lower() == denom_col.lower() or denom_col.lower() in k.strip().lower()), None)
-    return (num_key, denom_key, as_pct) if num_key and denom_key else None
+    """依欄位名稱解析 indicator 的 num_key, denom_key, as_percent。支援預設與運算式 (A/B)。"""
+    # 預設指標
+    if ind in _INDICATOR_COLUMN_NAMES and ind in _COMPOUND_INDICATORS:
+        num_col, denom_col = _INDICATOR_COLUMN_NAMES[ind]
+        _, _, as_pct = _COMPOUND_INDICATORS[ind]
+        num_key = next((k for k in value_keys if k.strip().lower() == num_col.lower() or num_col.lower() in k.strip().lower()), None)
+        denom_key = next((k for k in value_keys if k.strip().lower() == denom_col.lower() or denom_col.lower() in k.strip().lower()), None)
+        return (num_key, denom_key, as_pct) if num_key and denom_key else None
+    # 運算式指標 (A/B)
+    if ind and "/" in ind:
+        parts = ind.strip().split("/")
+        if len(parts) == 2:
+            num_col, denom_col = parts[0].strip(), parts[1].strip()
+            if num_col and denom_col:
+                num_key = next((k for k in value_keys if k.strip().lower() == num_col.lower()), None)
+                denom_key = next((k for k in value_keys if k.strip().lower() == denom_col.lower()), None)
+                if num_key and denom_key:
+                    return (num_key, denom_key, True)  # 運算式比例預設顯示為 %
+    return None
 
 
 # 複合指標小數位數：arpu 客單價顯示整數
@@ -633,6 +656,41 @@ def _dataset_item(lbl: str, data: list[float]) -> dict[str, Any]:
     return {"label": lbl, "data": data, "valueLabel": lbl, "valueSuffix": suffix}
 
 
+def _filter_datasets_by_display_fields(
+    datasets: list[tuple[str, list[float]]],
+    display_fields: list[str] | None,
+) -> list[tuple[str, list[float]]]:
+    """
+    依 display_fields 過濾 datasets。
+    datasets 格式：(label, [vals])，label 可能為 "銷售金額" 或 "銷售金額 - momo"。
+    若 display_fields 為空，回傳原 datasets（顯示全部）。
+    支援運算式指標：df 與 label 完全相符時直接納入。
+    """
+    if not display_fields:
+        return datasets
+    label_to_data = {lbl: data for lbl, data in datasets}
+    filtered: list[tuple[str, list[float]]] = []
+    seen: set[str] = set()
+    for df in display_fields:
+        df_clean = (df or "").strip()
+        if not df_clean:
+            continue
+        if df_clean in label_to_data and df_clean not in seen:
+            filtered.append((df_clean, label_to_data[df_clean]))
+            seen.add(df_clean)
+            continue
+        for label, aliases in _DISPLAY_FIELD_ALIASES.items():
+            if df_clean not in aliases and df_clean != label:
+                continue
+            for lbl, data in datasets:
+                base = lbl.split(" - ")[0].strip() if " - " in lbl else lbl
+                if (base == label or base in aliases) and lbl not in seen:
+                    filtered.append((lbl, data))
+                    seen.add(lbl)
+            break
+    return filtered if filtered else datasets
+
+
 def _apply_display_fields(
     pairs: list[tuple[str, float]],
     display_fields: list[str],
@@ -665,29 +723,37 @@ def _aggregate_indicator_plus_values_by_group(
     denom_key: str,
     as_percent: bool,
     extra_value_keys: list[str],
-    aggregation: str,
+    extra_value_aggregations: list[str],
     ind: str,
     group_keys: list[str] | None = None,
 ) -> tuple[list[str], list[tuple[str, list[float]]]]:
     """
-    indicator + 額外 value 欄位，依 group 分組。
+    indicator + 額外 value 欄位，依 group 分組。extra 欄位各有 aggregation。
     回傳 (group_vals, datasets)，順序：indicator、extra1、extra2...
     """
-    agg = (aggregation or "sum").lower()
     groups_num: dict[str, float] = {}
     groups_denom: dict[str, float] = {}
     pivots: dict[str, dict[str, float]] = {vk: {} for vk in extra_value_keys}
+    counts: dict[str, int] = {}
     for r in rows:
         gv = _get_group_value(r, group_key, group_keys)
         groups_num[gv] = groups_num.get(gv, 0) + _parse_num(r.get(num_key))
         groups_denom[gv] = groups_denom.get(gv, 0) + _parse_num(r.get(denom_key))
-        for vk in extra_value_keys:
+        counts[gv] = counts.get(gv, 0) + 1
+        for i, vk in enumerate(extra_value_keys):
+            agg = (extra_value_aggregations[i] if i < len(extra_value_aggregations) else "sum").lower()
             val = 1.0 if agg == "count" else _parse_num(r.get(vk))
             pivots[vk][gv] = pivots[vk].get(gv, 0) + val
     group_vals = sorted(
         {g for g in groups_num} | {g for p in pivots.values() for g in p}
     )
-    ind_label = _INDICATOR_LABELS.get(ind, ind.upper())
+    for i, vk in enumerate(extra_value_keys):
+        agg = (extra_value_aggregations[i] if i < len(extra_value_aggregations) else "sum").lower()
+        if agg == "avg":
+            for gv in pivots[vk]:
+                if counts.get(gv, 0) > 0:
+                    pivots[vk][gv] = pivots[vk][gv] / counts[gv]
+    ind_label = _INDICATOR_LABELS.get(ind, ind)  # 運算式保留原樣
     decimals = _INDICATOR_DECIMAL_PLACES.get((ind or "").strip().lower(), 4)
     datasets: list[tuple[str, list[float]]] = []
     vals = []
@@ -741,17 +807,18 @@ def _aggregate_indicator_ratio(
 def _aggregate_multi_value(
     rows: list[dict[str, Any]],
     value_keys: list[str],
-    aggregation: str,
+    value_aggregations: list[str],
 ) -> list[tuple[str, float]]:
-    """多欄位分別彙總：每個 value_key 獨立 sum，回傳 [(label, value), ...]"""
-    agg = (aggregation or "sum").lower()
+    """多欄位分別彙總（無分組）：每欄位可有不同 aggregation，回傳 [(label, value), ...]"""
     result: list[tuple[str, float]] = []
-    for vk in value_keys:
+    n = len(rows)
+    for i, vk in enumerate(value_keys):
+        agg = (value_aggregations[i] if i < len(value_aggregations) else "sum").lower()
         total = sum(_parse_num(r.get(vk)) for r in rows)
-        if agg == "avg" and rows:
-            total = total / len(rows)
+        if agg == "avg" and n > 0:
+            total = total / n
         elif agg == "count":
-            total = float(len(rows))
+            total = float(n)
         label = _VALUE_DISPLAY_NAMES.get(vk, vk)
         result.append((label, round(total, 2)))
     return result
@@ -761,27 +828,26 @@ def _aggregate_multi_value_by_group(
     rows: list[dict[str, Any]],
     group_key: str,
     value_keys: list[str],
-    aggregation: str,
+    value_aggregations: list[str],
     group_keys: list[str] | None = None,
 ) -> tuple[list[str], list[tuple[str, list[float]]]]:
     """
-    多 value 欄位分別彙總，依 group_key 分組。
+    多 value 欄位分別彙總，依 group_key 分組。每欄位可有不同 aggregation。
     回傳 (group_vals, [(series_label, [val per group]), ...])
     """
-    agg = (aggregation or "sum").lower()
     pivots: dict[str, dict[str, float]] = {vk: {} for vk in value_keys}
+    counts: dict[str, int] = {}
     for r in rows:
         gv = _get_group_value(r, group_key, group_keys)
-        for vk in value_keys:
+        counts[gv] = counts.get(gv, 0) + 1
+        for i, vk in enumerate(value_keys):
+            agg = (value_aggregations[i] if i < len(value_aggregations) else "sum").lower()
             val = 1.0 if agg == "count" else _parse_num(r.get(vk))
             pivots[vk][gv] = pivots[vk].get(gv, 0) + val
     group_vals = sorted({g for p in pivots.values() for g in p.keys()})
-    if agg == "avg":
-        counts: dict[str, int] = {}
-        for r in rows:
-            gv = _get_group_value(r, group_key, group_keys)
-            counts[gv] = counts.get(gv, 0) + 1
-        for vk in pivots:
+    for i, vk in enumerate(value_keys):
+        agg = (value_aggregations[i] if i < len(value_aggregations) else "sum").lower()
+        if agg == "avg":
             for gv in pivots[vk]:
                 if counts.get(gv, 0) > 0:
                     pivots[vk][gv] = pivots[vk][gv] / counts[gv]
@@ -797,12 +863,12 @@ def _aggregate_single_series(
     rows: list[dict[str, Any]],
     group_key: str,
     value_keys: list[str],
-    aggregation: str,
+    value_aggregations: list[str],
     group_keys: list[str] | None = None,
 ) -> list[tuple[str, float]]:
-    """單一系列：依 group_key 分組，對 value_keys 彙總。回傳 [(label, value), ...]"""
+    """單一系列：依 group_key 分組，對 value_keys 彙總（單一數值輸出時多欄位合併）。回傳 [(label, value), ...]"""
+    agg = (value_aggregations[0] if value_aggregations else "sum").lower()
     groups: dict[str, float] = {}
-    agg = (aggregation or "sum").lower()
     for r in rows:
         gv = _get_group_value(r, group_key, group_keys)
         val = 1.0 if agg == "count" else sum(_parse_num(r.get(k)) for k in value_keys)
@@ -823,35 +889,35 @@ def _aggregate_multi_series(
     group_key: str,
     series_key: str,
     value_keys: list[str],
-    aggregation: str,
+    value_aggregations: list[str],
     group_keys: list[str] | None = None,
 ) -> tuple[list[str], list[tuple[str, list[float]]]]:
-    """多系列：pivot[(group_val, series_val)] = value。回傳 (labels, [(series_label, [vals])])"""
-    pivot: dict[tuple[str, str], float] = {}
-    agg = (aggregation or "sum").lower()
+    """多系列：每 (group_val, series_val) 每欄位獨立彙總。回傳 (labels, [(series_label, [vals])])"""
+    pivots: dict[str, dict[tuple[str, str], float]] = {vk: {} for vk in value_keys}
+    counts: dict[tuple[str, str], int] = {}
     for r in rows:
         gv = _get_group_value(r, group_key, group_keys)
         sv = str(r.get(series_key, "") or "").strip() or "(空)"
-        val = sum(_parse_num(r.get(k)) for k in value_keys)
-        if agg == "count":
-            val = 1.0
         key = (gv, sv)
-        pivot[key] = pivot.get(key, 0) + val
-    if agg == "avg":
-        counts: dict[tuple[str, str], float] = {}
-        for r in rows:
-            gv = _get_group_value(r, group_key, group_keys)
-            sv = str(r.get(series_key, "") or "").strip() or "(空)"
-            counts[(gv, sv)] = counts.get((gv, sv), 0) + 1
-        for k in pivot:
-            if counts.get(k, 0) > 0:
-                pivot[k] = pivot[k] / counts[k]
-    group_vals = sorted({g for g, _ in pivot.keys()})
-    series_vals = sorted({s for _, s in pivot.keys()})
+        counts[key] = counts.get(key, 0) + 1
+        for i, vk in enumerate(value_keys):
+            agg = (value_aggregations[i] if i < len(value_aggregations) else "sum").lower()
+            val = 1.0 if agg == "count" else _parse_num(r.get(vk))
+            pivots[vk][key] = pivots[vk].get(key, 0) + val
+    group_vals = sorted({g for p in pivots.values() for g, _ in p.keys()})
+    series_vals = sorted({s for p in pivots.values() for _, s in p.keys()})
+    for i, vk in enumerate(value_keys):
+        agg = (value_aggregations[i] if i < len(value_aggregations) else "sum").lower()
+        if agg == "avg":
+            for key in pivots[vk]:
+                if counts.get(key, 0) > 0:
+                    pivots[vk][key] = pivots[vk][key] / counts[key]
     datasets: list[tuple[str, list[float]]] = []
-    for sv in series_vals:
-        data = [pivot.get((gv, sv), 0) for gv in group_vals]
-        datasets.append((sv, data))
+    for vk in value_keys:
+        lbl = _VALUE_DISPLAY_NAMES.get(vk, vk)
+        for sv in series_vals:
+            data = [round(pivots[vk].get((gv, sv), 0), 2) for gv in group_vals]
+            datasets.append((f"{lbl} - {sv}", data))
     return group_vals, datasets
 
 
@@ -860,57 +926,50 @@ def _aggregate_multi_series_with_metrics(
     group_key: str,
     series_key: str,
     value_keys: list[str],
-    aggregation: str,
+    value_aggregations: list[str],
     indicator: str | None,
     display_fields: list[str],
     group_keys: list[str] | None = None,
 ) -> tuple[list[str], list[tuple[str, list[float]]]]:
-    """多系列 + 多指標：支援 indicator (ROI 等) 與 display_fields。"""
+    """多系列 + 多指標：支援 indicator (ROI 等) 與 display_fields。每欄位可有不同 aggregation。"""
     ind = (indicator or "").strip().lower()
-    # 每個 value_key 的 pivot
     pivots: dict[str, dict[tuple[str, str], float]] = {}
     for vk in value_keys:
         pivots[vk] = {}
     pivot_ind_num: dict[tuple[str, str], float] = {}
     pivot_ind_denom: dict[tuple[str, str], float] = {}
+    counts: dict[tuple[str, str], int] = {}
     num_key = denom_key = None
     if ind in _INDICATOR_COLUMN_NAMES:
         nc, dc = _INDICATOR_COLUMN_NAMES[ind]
         num_key = next((k for k in value_keys if k == nc or nc in k), None)
         denom_key = next((k for k in value_keys if k == dc or dc in k), None)
-    agg = (aggregation or "sum").lower()
     for r in rows:
         gv = _get_group_value(r, group_key, group_keys)
         sv = str(r.get(series_key, "") or "").strip() or "(空)"
         key = (gv, sv)
-        for vk in value_keys:
-            pivots[vk][key] = pivots[vk].get(key, 0) + _parse_num(r.get(vk))
+        counts[key] = counts.get(key, 0) + 1
+        for i, vk in enumerate(value_keys):
+            agg = (value_aggregations[i] if i < len(value_aggregations) else "sum").lower()
+            val = 1.0 if agg == "count" else _parse_num(r.get(vk))
+            pivots[vk][key] = pivots[vk].get(key, 0) + val
         if num_key and denom_key:
             pivot_ind_num[key] = pivot_ind_num.get(key, 0) + _parse_num(r.get(num_key))
             pivot_ind_denom[key] = pivot_ind_denom.get(key, 0) + _parse_num(r.get(denom_key))
+    for i, vk in enumerate(value_keys):
+        agg = (value_aggregations[i] if i < len(value_aggregations) else "sum").lower()
+        if agg == "avg":
+            for key in pivots[vk]:
+                if counts.get(key, 0) > 0:
+                    pivots[vk][key] = pivots[vk][key] / counts[key]
     group_vals = sorted({g for p in pivots.values() for g, _ in p.keys()} | {g for g, _ in pivot_ind_num.keys()})
     series_vals = sorted({s for p in pivots.values() for _, s in p.keys()} | {s for _, s in pivot_ind_num.keys()})
-    # 依 display_fields 組 datasets
+    # datasets = 全部 value_keys + indicator；回傳前依 display_fields 過濾
     metrics_to_show: list[tuple[str, str, str]] = []  # (display_label, type, key)
-    for df in (display_fields or []):
-        df_clean = (df or "").strip()
-        if not df_clean:
-            continue
-        for label, aliases in _DISPLAY_FIELD_ALIASES.items():
-            if any(_normalize_for_match(str(a)) == _normalize_for_match(df_clean) for a in aliases) or _normalize_for_match(df_clean) == _normalize_for_match(label):
-                if label == _INDICATOR_LABELS.get(ind, ind.upper() if ind else ""):
-                    metrics_to_show.append((label, "indicator", ind))
-                else:
-                    vk = next((k for k, v in _VALUE_DISPLAY_NAMES.items() if v == label), None) or next((k for k in value_keys if _VALUE_DISPLAY_NAMES.get(k) == label), None)
-                    if vk and vk in value_keys:
-                        metrics_to_show.append((label, "value", vk))
-                break
-    if not metrics_to_show and display_fields:
-        for vk in value_keys:
-            lbl = _VALUE_DISPLAY_NAMES.get(vk, vk)
-            metrics_to_show.append((lbl, "value", vk))
-        if ind in _INDICATOR_LABELS:
-            metrics_to_show.append((_INDICATOR_LABELS[ind], "indicator", ind))
+    for vk in value_keys:
+        metrics_to_show.append((_VALUE_DISPLAY_NAMES.get(vk, vk), "value", vk))
+    if ind and num_key and denom_key and ind in _INDICATOR_LABELS:
+        metrics_to_show.append((_INDICATOR_LABELS[ind], "indicator", ind))
     ind_decimals = _INDICATOR_DECIMAL_PLACES.get((ind or "").strip().lower(), 4)
     datasets_out: list[tuple[str, list[float]]] = []
     for metric_label, mtype, mkey in metrics_to_show:
@@ -924,6 +983,7 @@ def _aggregate_multi_series_with_metrics(
             elif mtype == "value":
                 vals = [round(pivots.get(mkey, {}).get((gv, sv), 0), 2) for gv in group_vals]
                 datasets_out.append((f"{metric_label} - {sv}", vals))
+    datasets_out = _filter_datasets_by_display_fields(datasets_out, display_fields)
     return group_vals, datasets_out
 
 
@@ -941,6 +1001,9 @@ def _resolve_having_column_to_values(
     if not col_lower:
         return None
     if pairs is not None:
+        # 運算式指標：column 等於 indicator 時，回傳 pairs 的數值序列
+        if indicator and "/" in indicator and col_lower == indicator.strip().lower():
+            return [p[1] for p in pairs]
         if is_total:
             for lbl, v in pairs:
                 if col_lower == (lbl or "").strip().lower():
@@ -980,6 +1043,17 @@ def _resolve_having_column_to_values(
         if col_lower == ind_name or col_lower == (ind_label or "").strip().lower():
             for label, data in datasets:
                 if (label or "").strip() == ind_label:
+                    return data
+    # 運算式指標：column 等於 indicator 時，從 datasets 找對應 label
+    if indicator and "/" in indicator:
+        ind_lower = indicator.strip().lower()
+        if col_lower == ind_lower:
+            for label, data in datasets:
+                if (label or "").strip().lower() == ind_lower:
+                    return data
+            # 若 datasets 用 indicator 作 label 可能有大小寫差異，直接比對
+            for label, data in datasets:
+                if indicator in (label or "") or (label or "").replace(" ", "") == indicator.replace(" ", ""):
                     return data
     for label, aliases in _DISPLAY_FIELD_ALIASES.items():
         alist = aliases if isinstance(aliases, list) else [aliases]
@@ -1070,8 +1144,7 @@ def _to_pie_percent(pairs: list[tuple[str, float]]) -> list[tuple[str, float]]:
 def compute_aggregate(
     rows: list[dict[str, Any]],
     group_by_column: str | list[str],
-    value_column: str | None,
-    aggregation: str,
+    value_columns: list[dict[str, Any]],
     chart_type: str,
     *,
     series_by_column: str | None = None,
@@ -1079,7 +1152,6 @@ def compute_aggregate(
     top_n: int | None = None,
     sort_order: str = "desc",
     time_order: bool = False,
-    value_columns: list[str] | None = None,
     indicator: str | list[str] | None = None,
     display_fields: list[str] | None = None,
     having_filters: list[dict[str, Any]] | None = None,
@@ -1090,9 +1162,9 @@ def compute_aggregate(
 ) -> dict[str, Any] | None:
     """
     主入口：依 intent 參數對 rows 做彙總，回傳 chart 資料。
-    filters：維度篩選（彙總前）。having_filters：結果篩選（彙總後，如營收>100萬、ROI<1.5）。
+    value_columns 為 [{ column, aggregation }, ...]，每欄位必帶 aggregation (sum|avg|count)。
+    filters：維度篩選（彙總前）。having_filters：結果篩選（彙總後）。
     indicator：複合指標，如 margin_rate/roi/arpu/discount_rate，需搭配 value_columns 兩欄。
-    display_fields：用戶明確要求的項目，過濾並排序輸出。
     """
     if not rows:
         if error_out is not None:
@@ -1108,7 +1180,7 @@ def compute_aggregate(
     if gb_empty:
         group_by_column = _SYNTHETIC_GROUP
         ind_key = _indicator_str(indicator)
-        synth_label = _INDICATOR_LABELS.get(ind_key, "總計")
+        synth_label = _INDICATOR_LABELS.get(ind_key, ind_key if ind_key else "總計")
         work_rows = [{**r, _SYNTHETIC_GROUP: synth_label} for r in rows]
     else:
         work_rows = rows
@@ -1133,7 +1205,7 @@ def compute_aggregate(
                 group_by_column = _TIME_GRAIN_BUCKET_COL
     g_aliases = group_aliases or _FALLBACK_GROUP_ALIASES
     resolved = _resolve_columns(
-        work_rows, group_by_column, value_column, value_columns, None, series_by_column,
+        work_rows, group_by_column, value_columns, None, series_by_column,
         group_aliases=g_aliases, value_aliases=value_aliases or _FALLBACK_VALUE_ALIASES,
         error_out=error_out,
     )
@@ -1226,18 +1298,16 @@ def compute_aggregate(
         else:
             has_indicator_cols = False
         if has_indicator_cols:
-            dfs = display_fields or []
-            if not dfs:
-                dfs = [_VALUE_DISPLAY_NAMES.get(vk, vk) for vk in resolved.value_keys] + [_INDICATOR_LABELS.get(ind_check, ind_check.upper())]
             group_vals, datasets = _aggregate_multi_series_with_metrics(
-                work, resolved.group_key, resolved.series_key, resolved.value_keys, aggregation,
-                ind_check, dfs, group_keys=gk,
+                work, resolved.group_key, resolved.series_key, resolved.value_keys,
+                resolved.value_aggregations, ind_check, display_fields, group_keys=gk,
             )
         else:
             group_vals, datasets = _aggregate_multi_series(
-                work, resolved.group_key, resolved.series_key, resolved.value_keys, aggregation,
-                group_keys=gk,
+                work, resolved.group_key, resolved.series_key, resolved.value_keys,
+                resolved.value_aggregations, group_keys=gk,
             )
+            datasets = _filter_datasets_by_display_fields(datasets, display_fields)
         if time_order:
             group_vals = sorted(group_vals, key=_time_sort_key)
         if having_filters:
@@ -1259,53 +1329,56 @@ def compute_aggregate(
             out["groupDetails"] = group_details
         return out
 
-    # 複合指標：indicator 可為 string 或 array
+    # 複合指標：indicator 可為 string 或 array。支援預設 (margin_rate 等) 與運算式 (A/B)
     def _normalize_indicator(indic: Any) -> list[str]:
+        def _valid(ind_s: str) -> bool:
+            s = ind_s.strip().lower()
+            return s in _COMPOUND_INDICATORS or ("/" in s and len(s.split("/")) == 2)
         if isinstance(indic, list):
-            return [str(x).strip().lower() for x in indic if x and str(x).strip().lower() in _COMPOUND_INDICATORS]
+            return [str(x).strip() for x in indic if x and _valid(str(x).strip())]
         if indic and str(indic).strip():
-            i = str(indic).strip().lower()
-            if i in _COMPOUND_INDICATORS:
+            i = str(indic).strip()
+            if _valid(i):
                 return [i]
         return []
 
     ind_list = _normalize_indicator(indicator)
     ind = ind_list[0] if len(ind_list) == 1 else ""
 
-    # 多 indicator + 有 group：各自計算後合併 datasets
-    if len(ind_list) > 1 and resolved.group_key != "__total__" and len(resolved.value_keys) >= 2:
+    # 統一：indicator(s) + 有 group → 全 value 彙總 + 各 indicator，再依 display_fields 過濾
+    if len(ind_list) >= 1 and resolved.group_key != "__total__" and len(resolved.value_keys) >= 2:
         all_group_vals: set[str] = set()
         indicator_results: list[tuple[str, dict[str, float]]] = []
         for ind_name in ind_list:
             keys = _get_indicator_keys(ind_name, resolved.value_keys)
+            if not keys and ind_name in _COMPOUND_INDICATORS:
+                num_idx, denom_idx, as_pct = _COMPOUND_INDICATORS[ind_name]
+                if num_idx < len(resolved.value_keys) and denom_idx < len(resolved.value_keys):
+                    keys = (resolved.value_keys[num_idx], resolved.value_keys[denom_idx], as_pct)
             if not keys:
                 continue
-            num_key, denom_key, as_pct = keys
+            nk, dk, ap = keys
             pairs = _aggregate_indicator_ratio(
-                work, resolved.group_key, num_key, denom_key, as_pct, group_keys=gk, indicator=ind_name
+                work, resolved.group_key, nk, dk, ap, group_keys=gk, indicator=ind_name
             )
             gv_to_val = {gv: v for gv, v in pairs}
             all_group_vals.update(gv_to_val.keys())
-            indicator_results.append((_INDICATOR_LABELS.get(ind_name, ind_name.upper()), gv_to_val))
+            label = _INDICATOR_LABELS.get(ind_name, ind_name)  # 運算式保留原樣
+            indicator_results.append((label, gv_to_val))
         if not indicator_results:
             pass
         else:
+            # datasets = value_columns 全彙總 + indicators；顯示時依 display_fields 過濾
+            label_to_gv_val: dict[str, dict[str, float]] = {lbl: gv2v for lbl, gv2v in indicator_results}
+            v_grp, v_ds = _aggregate_multi_value_by_group(
+                work, resolved.group_key, resolved.value_keys, resolved.value_aggregations, group_keys=gk
+            )
+            all_group_vals.update(v_grp)
+            for lbl, data in v_ds:
+                label_to_gv_val[lbl] = {gv: data[i] for i, gv in enumerate(v_grp)}
             group_vals = sorted(all_group_vals)
-            datasets = [(label, [gv_to_val.get(gv, 0.0) for gv in group_vals]) for label, gv_to_val in indicator_results]
-            if display_fields:
-                label_to_ds = {lbl: data for lbl, data in datasets}
-                filtered: list[tuple[str, list[float]]] = []
-                for df in display_fields:
-                    df_clean = (df or "").strip()
-                    if not df_clean:
-                        continue
-                    for label, aliases in _DISPLAY_FIELD_ALIASES.items():
-                        if df_clean in aliases or df_clean == label:
-                            if label in label_to_ds:
-                                filtered.append((label, label_to_ds[label]))
-                            break
-                if filtered:
-                    datasets = filtered
+            datasets = [(lbl, [gv2v.get(gv, 0.0) for gv in group_vals]) for lbl, gv2v in label_to_gv_val.items()]
+            datasets = _filter_datasets_by_display_fields(datasets, display_fields)
             if having_filters:
                 keep_idx = _apply_having_filters(
                     group_vals, having_filters,
@@ -1333,58 +1406,64 @@ def compute_aggregate(
                 out_multi["groupDetails"] = group_details
             return out_multi
 
-    # 單一 indicator：indicator + value_columns（至少 2 欄，第 3 欄起為額外彙總）
-    if ind in _COMPOUND_INDICATORS and len(resolved.value_keys) >= 2:
-        num_idx, denom_idx, as_pct = _COMPOUND_INDICATORS[ind]
-        num_key = resolved.value_keys[num_idx]
-        denom_key = resolved.value_keys[denom_idx]
-        extra_keys = list(resolved.value_keys[2:]) if len(resolved.value_keys) > 2 else []
-        # having_filters 若引用 value 欄位（如 net_amount），需一併彙總才能篩選
-        if having_filters and resolved.group_key != "__total__":
-            for hf in having_filters:
-                if not isinstance(hf, dict):
-                    continue
-                col = (hf.get("column") or "").strip().lower()
-                if not col:
-                    continue
-                for vk in resolved.value_keys:
-                    if col == vk.strip().lower() and vk not in extra_keys:
-                        extra_keys.append(vk)
-                        break
-                    lbl = (_VALUE_DISPLAY_NAMES.get(vk, vk) or "").strip().lower()
-                    if lbl and col == lbl and vk not in extra_keys:
-                        extra_keys.append(vk)
-                        break
-        if extra_keys and resolved.group_key != "__total__":
-            group_vals, datasets = _aggregate_indicator_plus_values_by_group(
-                work, resolved.group_key, num_key, denom_key, as_pct,
-                extra_keys, aggregation, ind, group_keys=gk,
+    # 多 indicator + __total__：raw_pairs + 各 indicator（labels = 指標名）
+    if len(ind_list) > 1 and resolved.group_key == "__total__" and len(resolved.value_keys) >= 2:
+        raw_pairs = _aggregate_multi_value(work, resolved.value_keys, resolved.value_aggregations)
+        for ind_name in ind_list:
+            keys = _get_indicator_keys(ind_name, resolved.value_keys)
+            if not keys and ind_name in _COMPOUND_INDICATORS:
+                num_idx, denom_idx, as_pct = _COMPOUND_INDICATORS[ind_name]
+                if num_idx < len(resolved.value_keys) and denom_idx < len(resolved.value_keys):
+                    keys = (resolved.value_keys[num_idx], resolved.value_keys[denom_idx], as_pct)
+            if keys:
+                nk, dk, ap = keys
+                ipairs = _aggregate_indicator_ratio(
+                    work, resolved.group_key, nk, dk, ap, group_keys=gk, indicator=ind_name
+                )
+                lbl = _INDICATOR_LABELS.get(ind_name, ind_name)
+                raw_pairs.append((lbl, ipairs[0][1] if ipairs else 0.0))
+        pairs = raw_pairs
+    else:
+        # 單一 indicator：__total__ 或統一 block 無結果時，用 pairs 格式
+        keys_result = _get_indicator_keys(ind, resolved.value_keys) if ind else None
+        if not keys_result and ind in _COMPOUND_INDICATORS:
+            num_idx, denom_idx, as_pct = _COMPOUND_INDICATORS[ind]
+            num_key = resolved.value_keys[num_idx]
+            denom_key = resolved.value_keys[denom_idx]
+            keys_result = (num_key, denom_key, as_pct)
+        if len(resolved.value_keys) >= 2 and ind and keys_result:
+            num_key, denom_key, as_pct = keys_result
+            ind_pairs = _aggregate_indicator_ratio(
+                work, resolved.group_key, num_key, denom_key, as_pct, group_keys=gk, indicator=ind
             )
-            # display_fields 過濾要顯示的 series（與 multi_value_by_group 一致）
-            if display_fields:
-                label_to_ds = {lbl: data for lbl, data in datasets}
-                filtered: list[tuple[str, list[float]]] = []
-                for df in display_fields:
-                    df_clean = (df or "").strip()
-                    if not df_clean:
-                        continue
-                    for label, aliases in _DISPLAY_FIELD_ALIASES.items():
-                        if df_clean in aliases or df_clean == label:
-                            if label in label_to_ds:
-                                filtered.append((label, label_to_ds[label]))
-                            break
-                if filtered:
-                    datasets = filtered
+            # 單一總計時，一併回傳組成欄位（如「總毛利、總成本、ROI」三值）
+            if resolved.group_key == "__total__":
+                raw_pairs = _aggregate_multi_value(work, resolved.value_keys, resolved.value_aggregations)
+                ind_label = _INDICATOR_LABELS.get(ind, ind)  # 運算式保留原樣
+                ind_val = ind_pairs[0][1] if ind_pairs else 0.0
+                pairs = raw_pairs + [(ind_label, ind_val)]
+            else:
+                pairs = ind_pairs
+        elif len(resolved.value_keys) > 1 and not ind and resolved.group_key == "__total__":
+            # 多欄位分別彙總（如「總毛利、總成本」）：每欄獨立 aggregation
+            pairs = _aggregate_multi_value(work, resolved.value_keys, resolved.value_aggregations)
+        elif len(resolved.value_keys) > 1 and not ind:
+            # 多 value 欄位 + 有 group：每欄位獨立彙總，回傳 datasets
+            group_vals, datasets = _aggregate_multi_value_by_group(
+                work, resolved.group_key, resolved.value_keys, resolved.value_aggregations, group_keys=gk,
+            )
+            datasets = _filter_datasets_by_display_fields(datasets, display_fields)
             if having_filters:
                 keep_idx = _apply_having_filters(
                     group_vals, having_filters,
-                    datasets=datasets, value_keys=resolved.value_keys, indicator=ind,
+                    datasets=datasets, value_keys=resolved.value_keys, indicator=None,
                 )
                 if keep_idx:
                     group_vals = [group_vals[i] for i in keep_idx]
                     datasets = [(lbl, [data[i] for i in keep_idx]) for lbl, data in datasets]
                 else:
                     group_vals, datasets = [], []
+            # sort / top_n 依第一組 data 排序
             order_pairs = [(group_vals[i], datasets[0][1][i]) for i in range(len(group_vals))] if group_vals else []
             order_pairs = _apply_sort_top_n(order_pairs, sort_order, top_n, time_order)
             new_group_vals = [p[0] for p in order_pairs]
@@ -1394,76 +1473,15 @@ def compute_aggregate(
                 for lbl, data in datasets
             ]
             labels, group_details = _to_labels_and_details(new_group_vals)
-            ret: dict[str, Any] = {
+            ret2: dict[str, Any] = {
                 "labels": labels,
                 "datasets": [_dataset_item(lbl, d) for lbl, d in new_datasets],
             }
             if group_details is not None:
-                ret["groupDetails"] = group_details
-            return ret
-        ind_pairs = _aggregate_indicator_ratio(
-            work, resolved.group_key, num_key, denom_key, as_pct, group_keys=gk, indicator=ind
-        )
-        # 單一總計時，一併回傳組成欄位（如「總毛利、總成本、ROI」三值）
-        if resolved.group_key == "__total__":
-            raw_pairs = _aggregate_multi_value(work, resolved.value_keys, aggregation)
-            ind_label = _INDICATOR_LABELS.get(ind, ind.upper())
-            ind_val = ind_pairs[0][1] if ind_pairs else 0.0
-            pairs = raw_pairs + [(ind_label, ind_val)]
+                ret2["groupDetails"] = group_details
+            return ret2
         else:
-            pairs = ind_pairs
-    elif len(resolved.value_keys) > 1 and not ind and resolved.group_key == "__total__":
-        # 多欄位分別彙總（如「總毛利、總成本」）：每欄獨立 sum
-        pairs = _aggregate_multi_value(work, resolved.value_keys, aggregation)
-    elif len(resolved.value_keys) > 1 and not ind:
-        # 多 value 欄位 + 有 group：每欄位獨立彙總，回傳 datasets
-        group_vals, datasets = _aggregate_multi_value_by_group(
-            work, resolved.group_key, resolved.value_keys, aggregation, group_keys=gk,
-        )
-        # display_fields 過濾要顯示的 series
-        if display_fields:
-            label_to_ds = {lbl: data for lbl, data in datasets}
-            filtered: list[tuple[str, list[float]]] = []
-            for df in display_fields:
-                df_clean = (df or "").strip()
-                if not df_clean:
-                    continue
-                for label, aliases in _DISPLAY_FIELD_ALIASES.items():
-                    if df_clean in aliases or df_clean == label:
-                        if label in label_to_ds:
-                            filtered.append((label, label_to_ds[label]))
-                        break
-            if filtered:
-                datasets = filtered
-        if having_filters:
-            keep_idx = _apply_having_filters(
-                group_vals, having_filters,
-                datasets=datasets, value_keys=resolved.value_keys, indicator=None,
-            )
-            if keep_idx:
-                group_vals = [group_vals[i] for i in keep_idx]
-                datasets = [(lbl, [data[i] for i in keep_idx]) for lbl, data in datasets]
-            else:
-                group_vals, datasets = [], []
-        # sort / top_n 依第一組 data 排序
-        order_pairs = [(group_vals[i], datasets[0][1][i]) for i in range(len(group_vals))] if group_vals else []
-        order_pairs = _apply_sort_top_n(order_pairs, sort_order, top_n, time_order)
-        new_group_vals = [p[0] for p in order_pairs]
-        gv_to_idx = {gv: i for i, gv in enumerate(group_vals)}
-        new_datasets = [
-            (lbl, [data[gv_to_idx[gv]] for gv in new_group_vals])
-            for lbl, data in datasets
-        ]
-        labels, group_details = _to_labels_and_details(new_group_vals)
-        ret2: dict[str, Any] = {
-            "labels": labels,
-            "datasets": [_dataset_item(lbl, d) for lbl, d in new_datasets],
-        }
-        if group_details is not None:
-            ret2["groupDetails"] = group_details
-        return ret2
-    else:
-        pairs = _aggregate_single_series(work, resolved.group_key, resolved.value_keys, aggregation, group_keys=gk)
+            pairs = _aggregate_single_series(work, resolved.group_key, resolved.value_keys, resolved.value_aggregations, group_keys=gk)
     if having_filters and pairs:
         if resolved.group_key == "__total__":
             group_vals_p = ["__total__"]
@@ -1493,7 +1511,10 @@ def compute_aggregate(
         _, _, as_pct = _COMPOUND_INDICATORS[ind]
         value_label = _INDICATOR_LABELS.get(ind, ind)
         value_suffix = "%" if as_pct else ("元" if ind == "arpu" else "")
-    elif aggregation == "count":
+    elif ind and "/" in ind:
+        value_label = ind
+        value_suffix = "%"
+    elif resolved.value_aggregations and (resolved.value_aggregations[0] if resolved.value_aggregations else "") == "count":
         value_label = "筆數"
         value_suffix = ""
     else:
