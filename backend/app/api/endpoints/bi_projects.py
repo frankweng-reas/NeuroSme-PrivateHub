@@ -35,7 +35,7 @@ class ImportCsvFileItem(BaseModel):
 
 
 class ImportCsvBlockItem(BaseModel):
-    """schema_id：使用 bi_schemas（優先）。template_name：舊版 mapping 範本（與 UserSchemaMapping 對應）"""
+    """schema_id：bi_schemas 表主鍵 id（如 汽車業-01），勿傳顯示名稱 name。template_name：舊版 mapping 範本"""
     schema_id: str | None = None
     template_name: str | None = None
     files: list[ImportCsvFileItem]
@@ -142,7 +142,7 @@ def update_bi_project(
     db: Session = Depends(get_db),
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):
-    """更新商務分析專案（名稱、描述、對話紀錄）"""
+    """更新商務分析專案（名稱、描述、對話紀錄、schema_id）"""
     tenant_id, aid = _check_agent_access(db, current, agent_id)
 
     proj = (
@@ -158,15 +158,31 @@ def update_bi_project(
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if body.project_name is not None:
+    patch = body.model_dump(exclude_unset=True)
+    if "project_name" in patch:
         name = (body.project_name or "").strip()
         if not name:
             raise HTTPException(status_code=400, detail="專案名稱不可為空")
         proj.project_name = name
-    if body.project_desc is not None:
+    if "project_desc" in patch:
         proj.project_desc = (body.project_desc or "").strip() or None
-    if body.conversation_data is not None:
+    if "conversation_data" in patch:
         proj.conversation_data = body.conversation_data
+    if "schema_id" in patch:
+        raw = patch["schema_id"]
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            proj.schema_id = None
+        else:
+            schema_def = load_schema_from_db(str(raw).strip(), db)
+            if not schema_def:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Schema「{raw}」不存在，請確認 bi_schemas 表已匯入",
+                )
+            canon = str(schema_def.get("id") or "").strip()
+            if not canon:
+                raise HTTPException(status_code=500, detail="Schema 設定異常：bi_schemas 列缺少主鍵 id")
+            proj.schema_id = canon
 
     db.commit()
     db.refresh(proj)
@@ -270,6 +286,7 @@ def import_csv_to_duckdb(
         raise HTTPException(status_code=404, detail="Project not found")
 
     all_rows: list[dict[str, Any]] = []
+    schema_ids_used: list[str] = []
     for block in body.blocks:
         if not block.files:
             continue
@@ -281,6 +298,13 @@ def import_csv_to_duckdb(
                     status_code=404,
                     detail=f"Schema「{block.schema_id}」不存在，請確認 bi_schemas 表已匯入",
                 )
+            canonical_sid = str(schema_def.get("id") or "").strip()
+            if not canonical_sid:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Schema 設定異常：bi_schemas 列缺少主鍵 id",
+                )
+            schema_ids_used.append(canonical_sid)
             columns = schema_def.get("columns")
             schema_fields = bi_schema_columns_to_fields(columns)
             if not schema_fields:
@@ -346,14 +370,7 @@ def import_csv_to_duckdb(
     msg = f"DuckDB 已匯入 ({row_count} 筆)" if ok else f"DuckDB 匯入失敗：{err_detail}" if err_detail else "DuckDB 匯入失敗"
     out: dict[str, Any] = {"ok": ok, "message": msg, "row_count": row_count}
     if ok:
-        # 與 chat compute 對齊：分析從 bi_projects.schema_id 載入 bi_schemas，須與匯入所用模板一致
-        schema_ids_used: list[str] = []
-        for block in body.blocks:
-            if not block.files:
-                continue
-            sid = (block.schema_id or "").strip()
-            if sid:
-                schema_ids_used.append(sid)
+        # bi_projects.schema_id 僅存 bi_schemas 主鍵 id（若請求曾帶 name，此處已改為解析後的 id）
         unique = list(dict.fromkeys(schema_ids_used))
         if unique:
             chosen = unique[0]

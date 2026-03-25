@@ -22,6 +22,7 @@ import ResetPasswordPage from './pages/ResetPasswordPage'
 import TestLLMChat from './pages/TestLLMChat'
 import TestComputeFlowTool from './pages/TestComputeFlowTool'
 import TestIntentToData from './pages/TestIntentToData'
+import TestComputeEngine from './pages/TestComputeEngine'
 
 function App() {
   return (
@@ -96,6 +97,14 @@ function App() {
                 element={
                   <ProtectedRoute>
                     <TestIntentToData />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="dev-test-compute-engine"
+                element={
+                  <ProtectedRoute>
+                    <TestComputeEngine />
                   </ProtectedRoute>
                 }
               />

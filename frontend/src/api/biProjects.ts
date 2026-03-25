@@ -42,6 +42,8 @@ export async function updateBiProject(
     project_name?: string
     project_desc?: string | null
     conversation_data?: MessageStored[]
+    /** bi_schemas.id；傳 null 可清除 */
+    schema_id?: string | null
   }
 ): Promise<BiProjectItem> {
   return apiFetch<BiProjectItem>(
@@ -85,7 +87,12 @@ export async function getDuckdbStatus(
 export async function importCsvToDuckdb(
   agentId: string,
   projectId: string,
-  blocks: { schema_id?: string; template_name?: string; files: { file_name: string; content: string }[] }[]
+  blocks: {
+    /** bi_schemas.id（選項 value），勿傳顯示名稱 */
+    schema_id?: string
+    template_name?: string
+    files: { file_name: string; content: string }[]
+  }[]
 ): Promise<{ ok: boolean; message: string; row_count?: number; schema_id?: string }> {
   return apiFetch<{ ok: boolean; message: string; row_count?: number; schema_id?: string }>(
     `/bi-projects/${encodeURIComponent(projectId)}/import-csv?agent_id=${encodeURIComponent(agentId)}`,

@@ -1,6 +1,7 @@
 """Chat Compute Tool API：POST /chat/completions-compute-tool。LLM 意圖萃取 → Backend 計算 → 文字生成
 
-全新 Tool Calling 路徑：不產生 SQL，LLM 只輸出結構化 JSON，計算由 analysis_compute 負責。
+Tool Calling 路徑：LLM 只輸出結構化 intent v2；彙總一律經 run_compute_engine（DuckDB SQL）。
+schema 摘要等仍可能依端點載入列資料（全表或抽樣）供 LLM 與除錯用。
 """
 import json
 import logging
@@ -12,7 +13,7 @@ from typing import Any
 import litellm
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 from uuid import UUID
 
@@ -27,7 +28,9 @@ from app.core.database import get_db
 from app.models.bi_project import BiProject
 from app.core.security import get_current_user
 from app.models.user import User
-from app.services.analysis_compute import compute_aggregate, get_schema_summary
+from app.schemas.intent_v2 import IntentV2, USER_FACING_INTENT_VALIDATION_MESSAGE
+from app.services.analysis_compute import get_schema_summary
+from app.services.compute_engine import run_compute_engine
 from app.services.duckdb_store import execute_sql_on_duckdb_file, get_project_duckdb_path
 from app.services.schema_loader import load_schema_from_db
 
@@ -43,17 +46,66 @@ def _resolve_schema_def(
     req_schema_id: str | None,
     proj_schema_id: str | None,
 ) -> tuple[str, dict[str, Any]]:
-    """依請求覆寫或專案欄位解析 bi_schemas，無預設 id。"""
-    schema_id = (req_schema_id or "").strip() or (proj_schema_id or "").strip()
-    if not schema_id:
+    """依請求覆寫或專案欄位解析 bi_schemas，無預設 id。
+
+    回傳的 str 一律為 **bi_schemas 主鍵 id**（與資料列一致），不因請求曾帶入 name 而回傳顯示名稱。
+    """
+    lookup = (req_schema_id or "").strip() or (proj_schema_id or "").strip()
+    if not lookup:
         raise HTTPException(status_code=400, detail=_MISSING_SCHEMA_MSG)
-    schema_def = load_schema_from_db(schema_id, db)
+    schema_def = load_schema_from_db(lookup, db)
     if not schema_def:
         raise HTTPException(
             status_code=404,
-            detail=f"Schema 不存在：{schema_id}，請確認 bi_schemas 表已匯入範本",
+            detail=f"Schema 不存在：{lookup}，請確認 bi_schemas 表已匯入範本",
         )
-    return schema_id, schema_def
+    canonical = str(schema_def.get("id") or "").strip()
+    if not canonical:
+        raise HTTPException(status_code=500, detail="Schema 資料異常：bi_schemas 列缺少主鍵 id")
+    return canonical, schema_def
+
+
+_SQL_ONLY_NO_PROJECT = (
+    "計算已統一為 DuckDB SQL：請使用帶 project_id 的 API（例如 intent-to-compute-by-project）"
+    " 或 POST /chat/compute-engine（duckdb_name）；不接受僅 in-memory rows。"
+)
+
+
+def _compute_with_intent_v2(
+    intent: dict[str, Any],
+    schema_def: dict[str, Any],
+    *,
+    duckdb_project_id: str | None = None,
+) -> tuple[dict[str, Any] | None, list[str], dict[str, Any] | None]:
+    """Intent v2 計算一律經 run_compute_engine（DuckDB SQL）。無 project_id 時無法執行。"""
+    if not (duckdb_project_id or "").strip():
+        return None, [_SQL_ONLY_NO_PROJECT], None
+    name = duckdb_project_id.strip()
+    chart, err_detail, dbg = run_compute_engine(name, intent, schema_def)
+    if chart is not None:
+        extra = dict(dbg) if dbg else {}
+        extra["compute_engine_sql"] = True
+        return chart, [], extra
+    out_errs = [err_detail] if err_detail else ["DuckDB SQL 計算失敗"]
+    return None, out_errs, dbg
+
+
+def _user_message_for_compute_errors(err_list: list[str], *, detail: bool = False) -> str:
+    msg = "; ".join(err_list) if err_list else ""
+    if "篩選後無資料" in msg or "無資料" in msg:
+        return "查無符合條件的資料，請調整篩選條件或時間範圍。"
+    if "計算已統一為 DuckDB SQL" in msg or "僅 in-memory rows" in msg:
+        return msg
+    if USER_FACING_INTENT_VALIDATION_MESSAGE in msg or "Intent v2 驗證失敗" in msg:
+        return USER_FACING_INTENT_VALIDATION_MESSAGE
+    if "value_columns 為空" in msg:
+        return "無法解析數值欄位：請在 intent 的 metrics 提供 aggregate 指標。"
+    if "_resolve_columns" in msg or "rows 為空" in msg:
+        return "無法解析欄位對應，請確認問題描述與資料 schema。"
+    if detail and msg:
+        return f"後端計算失敗：{msg}"
+    return "後端計算失敗，請稍後再試或調整問題描述。"
+
 
 def _build_indicator_default_value_columns(schema_def: dict[str, Any] | None) -> dict[str, list[str]]:
     """從 schema 動態產生 indicator -> value_columns 對應（無硬編碼欄位名）。"""
@@ -414,7 +466,16 @@ def _chart_result_to_detail_lines(chart_result: dict[str, Any]) -> list[str]:
 
     datasets = chart_result.get("datasets")
     if datasets and isinstance(datasets, list) and len(datasets) > 0:
-        for i, x_label in enumerate(display_labels):
+        min_ds_len = None
+        for ds in datasets:
+            if isinstance(ds, dict) and isinstance(ds.get("data"), list):
+                n = len(ds["data"])
+                min_ds_len = n if min_ds_len is None else min(min_ds_len, n)
+        n_rows = len(display_labels)
+        if min_ds_len is not None:
+            n_rows = min(n_rows, min_ds_len)
+        for i in range(n_rows):
+            x_label = display_labels[i]
             parts = []
             for ds in datasets:
                 if isinstance(ds, dict):
@@ -445,7 +506,7 @@ class ChatResponseComputeTool(BaseModel):
 
 
 class IntentToComputeRequest(BaseModel):
-    """dev-test-intent-to-data 專用：直接傳入 intent JSON 呼叫 compute_aggregate"""
+    """dev-test-intent-to-data 專用：直接傳入 Intent v2 JSON（Python 聚合路徑）"""
     agent_id: str
     project_id: str
     intent: dict[str, Any]
@@ -466,9 +527,24 @@ class IntentToComputeByProjectRequest(BaseModel):
     schema_id: str = ""  # 可覆寫專案 schema；與專案皆空則 400
 
 
+class ComputeEngineRequest(BaseModel):
+    """compute_engine：DuckDB 名稱 + intent；schema_id 可於請求或 intent 根層級帶入。"""
+    duckdb_name: str
+    intent: dict[str, Any]
+    schema_id: str = ""
+
+
 class IntentToComputeResponse(BaseModel):
     chart_result: dict[str, Any] | None
     error_detail: str | None = None  # chart_result 為 null 時的詳細原因
+
+
+class ComputeEngineResponse(BaseModel):
+    """compute_engine 專用：含 debug（例如產生的 SQL）。"""
+    chart_result: dict[str, Any] | None
+    error_detail: str | None = None
+    debug: dict[str, Any] = Field(default_factory=dict)
+    generated_sql: str | None = Field(None, description="與 debug.sql 相同，供前端直接顯示")
 
 
 class ExtractIntentResponse(BaseModel):
@@ -617,16 +693,15 @@ async def extract_intent_only(
             error_message="無法解析您的分析意圖，請換個方式詢問。",
             system_prompt=intent_prompt,
         )
-    filters = _parse_filters_from_intent(intent)
-    has_aggregate = intent.get("value_column") or intent.get("value_columns") or intent.get("indicator")
-    has_group = bool(intent.get("group_by_column"))
-    has_filters = bool(filters)
-    if not has_group and not has_aggregate and not has_filters:
+    try:
+        IntentV2.model_validate(intent)
+    except ValidationError as e:
+        logger.info("IntentV2 驗證失敗（extract-intent）: %s", e.errors())
         return ExtractIntentResponse(
             intent=None,
             usage=usage1,
             model=model,
-            error_message="無法解析您的分析意圖，請換個方式詢問。",
+            error_message=USER_FACING_INTENT_VALIDATION_MESSAGE,
             system_prompt=intent_prompt,
         )
 
@@ -694,13 +769,12 @@ async def chat_completions_compute_tool(
             chart_data=None,
             debug=debug,
         )
-    filters = _parse_filters_from_intent(intent)
-    has_aggregate = intent.get("value_column") or intent.get("value_columns") or intent.get("indicator")
-    has_group = bool(intent.get("group_by_column"))
-    has_filters = bool(filters)
-    if not has_group and not has_aggregate and not has_filters:
+    try:
+        IntentV2.model_validate(intent)
+    except ValidationError as e:
+        logger.info("IntentV2 驗證失敗（completions-compute-tool）: %s", e.errors())
         return ChatResponseComputeTool(
-            content="無法解析您的分析意圖，請換個方式詢問。",
+            content=USER_FACING_INTENT_VALIDATION_MESSAGE,
             model=model,
             usage=usage1,
             chart_data=None,
@@ -709,50 +783,14 @@ async def chat_completions_compute_tool(
 
     debug["intent"] = intent
 
-    group_by = _normalize_group_by(intent.get("group_by_column"))
-    having_filters = _parse_having_filters_from_intent(intent)
-    indicator = _parse_indicator_from_intent(intent)
-    value_cols = _parse_value_columns_from_intent(intent, indicator, schema_def)
-    series_by = intent.get("series_by_column")
-    if series_by and not isinstance(series_by, str):
-        series_by = None
-    top_n = _get_top_n_from_intent(intent)
-    sort_order = _get_sort_order_from_intent(intent)
-    time_order = bool(intent.get("time_order"))
-    time_grain_raw = intent.get("time_grain")
-    time_grain = str(time_grain_raw).strip().lower() if time_grain_raw else None
-    if time_grain and time_grain not in ("day", "week", "month", "quarter", "year"):
-        time_grain = None
-
-    error_list: list[str] = []
-    chart_result = compute_aggregate(
-        rows,
-        group_by,
-        value_cols,
-        series_by_column=series_by,
-        filters=filters,
-        having_filters=having_filters,
-        top_n=top_n,
-        sort_order=sort_order,
-        time_order=time_order,
-        time_grain=time_grain,
-        indicator=indicator,
-        display_fields=_parse_display_fields_from_intent(intent),
-        schema_def=schema_def,
-        compare_periods=_parse_compare_periods_from_intent(intent),
-        error_out=error_list,
+    chart_result, error_list, ce_debug = _compute_with_intent_v2(
+        intent, schema_def, duckdb_project_id=pid
     )
+    if ce_debug:
+        debug.update(ce_debug)
 
     if not chart_result:
-        err_msg = "; ".join(error_list) if error_list else ""
-        if "篩選後無資料" in err_msg or "無資料" in err_msg:
-            content = "查無符合條件的資料，請調整篩選條件或時間範圍。"
-        elif "value_columns 為空" in err_msg:
-            content = "無法解析數值欄位：請在 intent 提供 value_columns，或提供可對應 schema 的 indicator。"
-        elif "_resolve_columns" in err_msg or "rows 為空" in err_msg:
-            content = "無法解析欄位對應，請確認問題描述與資料 schema。"
-        else:
-            content = "後端計算失敗，請稍後再試或調整問題描述。"
+        content = _user_message_for_compute_errors(error_list)
         return ChatResponseComputeTool(
             content=content,
             model=model,
@@ -868,56 +906,21 @@ async def compute_from_intent(
         "duckdb_path": duckdb_path_str,
         "row_count": len(rows),
     }
-    filters = _parse_filters_from_intent(intent)
-    group_by = _normalize_group_by(intent.get("group_by_column"))
-    having_filters = _parse_having_filters_from_intent(intent)
-    indicator = _parse_indicator_from_intent(intent)
-    value_cols = _parse_value_columns_from_intent(intent, indicator, schema_def)
-    series_by = intent.get("series_by_column")
-    if series_by and not isinstance(series_by, str):
-        series_by = None
-    top_n = _get_top_n_from_intent(intent)
-    sort_order = _get_sort_order_from_intent(intent)
-    time_order = bool(intent.get("time_order"))
-    time_grain_raw = intent.get("time_grain")
-    time_grain = str(time_grain_raw).strip().lower() if time_grain_raw else None
-    if time_grain and time_grain not in ("day", "week", "month", "quarter", "year"):
-        time_grain = None
+    try:
+        IntentV2.model_validate(intent)
+    except ValidationError as e:
+        logger.info("IntentV2 驗證失敗（compute-from-intent）: %s", e.errors())
+        raise HTTPException(status_code=400, detail=USER_FACING_INTENT_VALIDATION_MESSAGE)
 
-    error_list: list[str] = []
-    chart_result = compute_aggregate(
-        rows,
-        group_by,
-        value_cols,
-        series_by_column=series_by,
-        filters=filters,
-        having_filters=having_filters,
-        top_n=top_n,
-        sort_order=sort_order,
-        time_order=time_order,
-        time_grain=time_grain,
-        indicator=indicator,
-        display_fields=_parse_display_fields_from_intent(intent),
-        schema_def=schema_def,
-        compare_periods=_parse_compare_periods_from_intent(intent),
-        error_out=error_list,
+    chart_result, error_list, ce_debug = _compute_with_intent_v2(
+        intent, schema_def, duckdb_project_id=pid
     )
+    if ce_debug:
+        debug.update(ce_debug)
 
     if not chart_result:
-        err_msg = "; ".join(error_list) if error_list else ""
         debug["compute_aggregate_errors"] = error_list
-        if "篩選後無資料" in err_msg or "無資料" in err_msg:
-            content = "查無符合條件的資料，請調整篩選條件或時間範圍。"
-        elif "value_columns 為空" in err_msg:
-            content = "無法解析數值欄位：請在 intent 提供 value_columns，或提供可對應 schema 的 indicator。"
-        elif "_resolve_columns" in err_msg or "rows 為空" in err_msg:
-            content = "無法解析欄位對應，請確認問題描述與資料 schema。"
-        else:
-            content = (
-                f"後端計算失敗：{err_msg}"
-                if err_msg
-                else "後端計算失敗，請稍後再試或調整問題描述。"
-            )
+        content = _user_message_for_compute_errors(error_list, detail=True)
         return ChatResponseComputeTool(
             content=content,
             model=model,
@@ -1004,20 +1007,13 @@ async def _stream_compute_tool(
         yield _sse_event({"stage": "done", "error_stage": "setup", "content": e.detail, "chart_data": None})
         return
 
-    schema_id = (req.schema_id or "").strip() or (getattr(proj, "schema_id", None) or "").strip()
-    if not schema_id:
-        yield _sse_event({"stage": "done", "error_stage": "setup", "content": _MISSING_SCHEMA_MSG, "chart_data": None})
-        return
-    schema_def = load_schema_from_db(schema_id, db)
-    if not schema_def:
-        yield _sse_event(
-            {
-                "stage": "done",
-                "error_stage": "setup",
-                "content": f"Schema 不存在：{schema_id}，請確認 bi_schemas 表已匯入範本",
-                "chart_data": None,
-            }
+    try:
+        _, schema_def = _resolve_schema_def(
+            db, req_schema_id=req.schema_id, proj_schema_id=getattr(proj, "schema_id", None)
         )
+    except HTTPException as e:
+        detail = e.detail if isinstance(e.detail, str) else str(e.detail)
+        yield _sse_event({"stage": "done", "error_stage": "setup", "content": detail, "chart_data": None})
         return
     model = (req.model or "").strip() or "gpt-4o-mini"
     intent_prompt = _load_intent_prompt(schema_def)
@@ -1045,65 +1041,26 @@ async def _stream_compute_tool(
             "chart_data": None,
         })
         return
-    filters = _parse_filters_from_intent(intent)
-    has_aggregate = intent.get("value_column") or intent.get("value_columns") or intent.get("indicator")
-    has_group = bool(intent.get("group_by_column"))
-    has_filters = bool(filters)
-    if not has_group and not has_aggregate and not has_filters:
+    try:
+        IntentV2.model_validate(intent)
+    except ValidationError as e:
+        logger.info("IntentV2 驗證失敗（compute-tool-stream）: %s", e.errors())
         yield _sse_event({
             "stage": "done",
             "error_stage": "intent",
-            "content": "無法解析您的分析意圖，請換個方式詢問。",
+            "content": USER_FACING_INTENT_VALIDATION_MESSAGE,
             "chart_data": None,
         })
         return
 
     yield _sse_event({"stage": "compute"})
 
-    group_by = _normalize_group_by(intent.get("group_by_column"))
-    having_filters = _parse_having_filters_from_intent(intent)
-    indicator = _parse_indicator_from_intent(intent)
-    value_cols = _parse_value_columns_from_intent(intent, indicator, schema_def)
-    series_by = intent.get("series_by_column")
-    if series_by and not isinstance(series_by, str):
-        series_by = None
-    top_n = _get_top_n_from_intent(intent)
-    sort_order = _get_sort_order_from_intent(intent)
-    time_order = bool(intent.get("time_order"))
-    time_grain_raw = intent.get("time_grain")
-    time_grain = str(time_grain_raw).strip().lower() if time_grain_raw else None
-    if time_grain and time_grain not in ("day", "week", "month", "quarter", "year"):
-        time_grain = None
-
-    error_list: list[str] = []
-    chart_result = compute_aggregate(
-        rows,
-        group_by,
-        value_cols,
-        series_by_column=series_by,
-        filters=filters,
-        having_filters=having_filters,
-        top_n=top_n,
-        sort_order=sort_order,
-        time_order=time_order,
-        time_grain=time_grain,
-        indicator=indicator,
-        display_fields=_parse_display_fields_from_intent(intent),
-        schema_def=schema_def,
-        compare_periods=_parse_compare_periods_from_intent(intent),
-        error_out=error_list,
+    chart_result, error_list, _ce_debug = _compute_with_intent_v2(
+        intent, schema_def, duckdb_project_id=pid
     )
 
     if not chart_result:
-        err_msg = "; ".join(error_list) if error_list else ""
-        if "篩選後無資料" in err_msg or "無資料" in err_msg:
-            content = "查無符合條件的資料，請調整篩選條件或時間範圍。"
-        elif "value_columns 為空" in err_msg:
-            content = "無法解析數值欄位：請在 intent 提供 value_columns，或提供可對應 schema 的 indicator。"
-        elif "_resolve_columns" in err_msg or "rows 為空" in err_msg:
-            content = "無法解析欄位對應，請確認問題描述與資料 schema。"
-        else:
-            content = "後端計算失敗，請稍後再試或調整問題描述。"
+        content = _user_message_for_compute_errors(error_list)
         logger.info("compute 階段失敗: error_list=%s -> content=%s", error_list, content)
         yield _sse_event({"stage": "done", "error_stage": "compute", "content": content, "chart_data": None})
         return
@@ -1203,7 +1160,7 @@ async def intent_to_compute(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    """dev-test-intent-to-data 專用：接受 intent JSON，從 DuckDB 或 CSV 載入專案資料後呼叫 compute_aggregate。"""
+    """dev-test-intent-to-data 專用：接受 Intent v2 JSON，以專案 DuckDB 經 SQL 計算。"""
     if not (req.agent_id or "").strip():
         raise HTTPException(status_code=400, detail="agent_id is required")
     pid = (req.project_id or "").strip()
@@ -1218,52 +1175,21 @@ async def intent_to_compute(
     except HTTPException:
         raise
 
-    try:
-        uuid_pid = UUID(pid)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="project_id 格式錯誤")
-
     user_id = int(getattr(current, "id", 0) or 0)
-    rows, proj = _load_rows_from_duckdb_only(pid, db, user_id)
+    proj = _ensure_bi_project_duckdb_has_data(pid, db, user_id)
 
     _, schema_def = _resolve_schema_def(
         db, req_schema_id=req.schema_id, proj_schema_id=getattr(proj, "schema_id", None)
     )
 
-    group_by = _normalize_group_by(intent.get("group_by_column"))
-    indicator = _parse_indicator_from_intent(intent)
-    value_cols = _parse_value_columns_from_intent(intent, indicator, schema_def)
-    series_by = intent.get("series_by_column")
-    if series_by and not isinstance(series_by, str):
-        series_by = None
-    filters = _parse_filters_from_intent(intent)
-    having_filters = _parse_having_filters_from_intent(intent)
-    top_n = _get_top_n_from_intent(intent)
-    sort_order = _get_sort_order_from_intent(intent)
-    time_order = bool(intent.get("time_order"))
-    time_grain_raw = intent.get("time_grain")
-    time_grain = str(time_grain_raw).strip().lower() if time_grain_raw else None
-    if time_grain and time_grain not in ("day", "week", "month", "quarter", "year"):
-        time_grain = None
-    display_fields = _parse_display_fields_from_intent(intent)
+    try:
+        IntentV2.model_validate(intent)
+    except ValidationError as e:
+        logger.info("IntentV2 驗證失敗（intent-to-compute）: %s", e.errors())
+        raise HTTPException(status_code=400, detail=USER_FACING_INTENT_VALIDATION_MESSAGE)
 
-    error_list: list[str] = []
-    chart_result = compute_aggregate(
-        rows,
-        group_by,
-        value_cols,
-        series_by_column=series_by,
-        filters=filters,
-        having_filters=having_filters,
-        top_n=top_n,
-        sort_order=sort_order,
-        time_order=time_order,
-        time_grain=time_grain,
-        indicator=indicator,
-        display_fields=display_fields,
-        schema_def=schema_def,
-        compare_periods=_parse_compare_periods_from_intent(intent),
-        error_out=error_list,
+    chart_result, error_list, _ce_debug = _compute_with_intent_v2(
+        intent, schema_def, duckdb_project_id=pid
     )
     error_detail = "; ".join(error_list) if error_list and not chart_result else None
     return IntentToComputeResponse(chart_result=chart_result, error_detail=error_detail)
@@ -1295,13 +1221,38 @@ def _load_rows_from_duckdb_only(pid: str, db: Session, user_id: int) -> tuple[li
     return rows, proj
 
 
+def _ensure_bi_project_duckdb_has_data(pid: str, db: Session, user_id: int) -> BiProject:
+    """驗證專案權限、DuckDB 存在且 data 表有資料；不做 SELECT * 全表載入。"""
+    try:
+        uuid_pid = UUID(pid)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="project_id 格式錯誤")
+    proj = db.query(BiProject).filter(BiProject.project_id == uuid_pid).first()
+    if proj is None or str(getattr(proj, "user_id", "")) != str(user_id):
+        raise HTTPException(status_code=404, detail="專案不存在或無權限")
+    duckdb_path = get_project_duckdb_path(pid)
+    if not duckdb_path:
+        raise HTTPException(
+            status_code=400,
+            detail=f"DuckDB 檔案不存在（project_id={pid}），請確認專案已匯入資料",
+        )
+    df = execute_sql_on_duckdb_file(duckdb_path, "SELECT COUNT(*) AS c FROM data")
+    if df is None or df.empty or int(df.iloc[0]["c"]) < 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"DuckDB 檔案存在但無資料（project_id={pid}），請重新匯入",
+        )
+    logger.info("已驗證專案 DuckDB 有資料 project_id=%s", pid)
+    return proj
+
+
 @router.post("/intent-to-compute-by-project", response_model=IntentToComputeResponse)
 async def intent_to_compute_by_project(
     req: IntentToComputeByProjectRequest,
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    """dev-test-intent-to-data 專用：僅需 project_id，從 DuckDB 載入資料。無需 agent_id。"""
+    """dev-test-intent-to-data 專用：僅需 project_id，以 DuckDB SQL 計算。無需 agent_id。"""
     pid = (req.project_id or "").strip()
     if not pid:
         raise HTTPException(status_code=400, detail="project_id is required")
@@ -1310,46 +1261,20 @@ async def intent_to_compute_by_project(
         raise HTTPException(status_code=400, detail="intent 必須為 JSON 物件")
 
     user_id = int(getattr(current, "id", 0) or 0)
-    rows, proj = _load_rows_from_duckdb_only(pid, db, user_id)
+    proj = _ensure_bi_project_duckdb_has_data(pid, db, user_id)
 
     _, schema_def = _resolve_schema_def(
         db, req_schema_id=req.schema_id, proj_schema_id=getattr(proj, "schema_id", None)
     )
 
-    group_by = _normalize_group_by(intent.get("group_by_column"))
-    indicator = _parse_indicator_from_intent(intent)
-    value_cols = _parse_value_columns_from_intent(intent, indicator, schema_def)
-    series_by = intent.get("series_by_column")
-    if series_by and not isinstance(series_by, str):
-        series_by = None
-    filters = _parse_filters_from_intent(intent)
-    having_filters = _parse_having_filters_from_intent(intent)
-    top_n = _get_top_n_from_intent(intent)
-    sort_order = _get_sort_order_from_intent(intent)
-    time_order = bool(intent.get("time_order"))
-    time_grain_raw = intent.get("time_grain")
-    time_grain = str(time_grain_raw).strip().lower() if time_grain_raw else None
-    if time_grain and time_grain not in ("day", "week", "month", "quarter", "year"):
-        time_grain = None
-    display_fields = _parse_display_fields_from_intent(intent)
+    try:
+        IntentV2.model_validate(intent)
+    except ValidationError as e:
+        logger.info("IntentV2 驗證失敗（intent-to-compute-by-project）: %s", e.errors())
+        raise HTTPException(status_code=400, detail=USER_FACING_INTENT_VALIDATION_MESSAGE)
 
-    error_list: list[str] = []
-    chart_result = compute_aggregate(
-        rows,
-        group_by,
-        value_cols,
-        series_by_column=series_by,
-        filters=filters,
-        having_filters=having_filters,
-        top_n=top_n,
-        sort_order=sort_order,
-        time_order=time_order,
-        time_grain=time_grain,
-        indicator=indicator,
-        display_fields=display_fields,
-        schema_def=schema_def,
-        compare_periods=_parse_compare_periods_from_intent(intent),
-        error_out=error_list,
+    chart_result, error_list, _ce_debug = _compute_with_intent_v2(
+        intent, schema_def, duckdb_project_id=pid
     )
     error_detail = "; ".join(error_list) if error_list and not chart_result else None
     return IntentToComputeResponse(chart_result=chart_result, error_detail=error_detail)
@@ -1361,51 +1286,44 @@ async def intent_to_compute_raw(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    """dev-test-intent-to-data 專用：接受 intent + rows，無需 agent/project。schema 從 bi_schemas 載入。"""
-    intent = req.intent or {}
-    rows = req.rows or []
-    if not isinstance(intent, dict):
-        raise HTTPException(status_code=400, detail="intent 必須為 JSON 物件")
-    if not isinstance(rows, list) or not rows:
-        raise HTTPException(status_code=400, detail="rows 必須為非空陣列")
-    if not isinstance(rows[0], dict):
-        raise HTTPException(status_code=400, detail="rows 每筆必須為物件")
-
-    _, schema_def = _resolve_schema_def(db, req_schema_id=req.schema_id, proj_schema_id=None)
-    filters = _parse_filters_from_intent(intent)
-    having_filters = _parse_having_filters_from_intent(intent)
-    display_fields = _parse_display_fields_from_intent(intent)
-    group_by = _normalize_group_by(intent.get("group_by_column"))
-    indicator = _parse_indicator_from_intent(intent)
-    value_cols = _parse_value_columns_from_intent(intent, indicator, schema_def)
-    series_by = intent.get("series_by_column")
-    if series_by and not isinstance(series_by, str):
-        series_by = None
-    top_n = _get_top_n_from_intent(intent)
-    sort_order = _get_sort_order_from_intent(intent)
-    time_order = bool(intent.get("time_order"))
-    time_grain_raw = intent.get("time_grain")
-    time_grain = str(time_grain_raw).strip().lower() if time_grain_raw else None
-    if time_grain and time_grain not in ("day", "week", "month", "quarter", "year"):
-        time_grain = None
-
-    error_list: list[str] = []
-    chart_result = compute_aggregate(
-        rows,
-        group_by,
-        value_cols,
-        series_by_column=series_by,
-        filters=filters,
-        having_filters=having_filters,
-        top_n=top_n,
-        sort_order=sort_order,
-        time_order=time_order,
-        time_grain=time_grain,
-        indicator=indicator,
-        display_fields=display_fields,
-        schema_def=schema_def,
-        compare_periods=_parse_compare_periods_from_intent(intent),
-        error_out=error_list,
+    """已廢止：計算統一走 DuckDB SQL，不接受僅 in-memory rows。"""
+    _ = (req, db, current)
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "intent-to-compute-raw 已不支援：計算統一為 DuckDB SQL。"
+            " 請改用 POST /chat/intent-to-compute-by-project（帶 project_id）"
+            " 或 POST /chat/compute-engine（duckdb_name）。"
+        ),
     )
-    error_detail = "; ".join(error_list) if error_list and not chart_result else None
-    return IntentToComputeResponse(chart_result=chart_result, error_detail=error_detail)
+
+
+@router.post("/compute-engine", response_model=ComputeEngineResponse)
+async def compute_engine_endpoint(
+    req: ComputeEngineRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """依 DuckDB 名稱載入 data 表，經 compute_engine 產出圖表結構。"""
+    _ = current
+    if not (req.duckdb_name or "").strip():
+        raise HTTPException(status_code=400, detail="duckdb_name 必填")
+    intent_in = req.intent or {}
+    if not isinstance(intent_in, dict):
+        raise HTTPException(status_code=400, detail="intent 必須為 JSON 物件")
+    schema_id = (req.schema_id or "").strip() or str(intent_in.get("schema_id") or "").strip()
+    intent = {k: v for k, v in intent_in.items() if k != "schema_id"}
+    if not schema_id:
+        raise HTTPException(
+            status_code=400,
+            detail="schema_id 必填（請求欄位 schema_id 或 intent 內 schema_id，bi_schemas.id）",
+        )
+    _, schema_def = _resolve_schema_def(db, req_schema_id=schema_id, proj_schema_id=None)
+    chart_result, error_detail, debug = run_compute_engine(req.duckdb_name, intent, schema_def)
+    gen_sql = debug.get("sql") if isinstance(debug.get("sql"), str) else None
+    return ComputeEngineResponse(
+        chart_result=chart_result,
+        error_detail=error_detail,
+        debug=debug,
+        generated_sql=gen_sql,
+    )

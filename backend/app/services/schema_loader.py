@@ -40,17 +40,28 @@ def load_schema_from_db(schema_id: str, db: Any) -> dict[str, Any] | None:
     """
     從 bi_schemas 表載入 schema（**唯一正式來源**）。
     回傳 dict（含 id, columns, indicators 等）或 None。
+
+    查詢順序：先依主鍵 **id**，再依 **name** 完全相符（相容舊資料或誤將顯示名稱寫入
+    bi_projects.schema_id 之情況）。回傳的 id 一律以資料列主鍵為準。
     """
     if not schema_id or not str(schema_id).strip():
         return None
     try:
         from app.models import BiSchema
 
-        row = db.query(BiSchema).filter(BiSchema.id == schema_id.strip()).first()
+        key = schema_id.strip()
+        row = db.query(BiSchema).filter(BiSchema.id == key).first()
+        if not row:
+            row = db.query(BiSchema).filter(BiSchema.name == key).first()
+            if row:
+                logger.info(
+                    "load_schema_from_db：以 name 解析 schema（請將專案／請求的 schema_id 改為 bi_schemas.id=%s）",
+                    row.id,
+                )
         if not row or not row.schema_json:
             return None
         data = dict(row.schema_json)
-        data.setdefault("id", schema_id.strip())
+        data["id"] = row.id
         return data
     except Exception:
         return None

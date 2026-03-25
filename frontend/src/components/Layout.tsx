@@ -1,5 +1,5 @@
 /** 共用版面：Header（含 NeuroSme 品牌、用戶區）+ Outlet；agent、admin 頁面隱藏 Header */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { getMe } from '@/api/users'
 import { useAuth } from '@/contexts/AuthContext'
@@ -8,8 +8,20 @@ import type { User } from '@/types'
 export default function Layout() {
   const location = useLocation()
   const navigate = useNavigate()
+  /** 網址列為 //path 時子路由對不到，Outlet 空白；導回單一前導 slash。 */
+  useLayoutEffect(() => {
+    const p = location.pathname
+    if (p.length > 1 && p.startsWith('//')) {
+      navigate(p.replace(/^\/+/, '/') || '/', { replace: true })
+    }
+  }, [location.pathname, navigate])
   const { user: authUser, logout } = useAuth()
-  const hideHeader = location.pathname.startsWith('/agent/') || location.pathname.startsWith('/admin') || location.pathname === '/dev-test-chat' || location.pathname === '/dev-test-compute-tool'
+  const hideHeader =
+    location.pathname.startsWith('/agent/') ||
+    location.pathname.startsWith('/admin') ||
+    location.pathname === '/dev-test-chat' ||
+    location.pathname === '/dev-test-compute-tool' ||
+    location.pathname === '/dev-test-compute-engine'
   const [user, setUser] = useState<User | null>(null)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const userMenuRef = useRef<HTMLDivElement>(null)
@@ -111,7 +123,7 @@ export default function Layout() {
       </header>
       )}
 
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         <Outlet />
       </main>
     </div>

@@ -218,3 +218,26 @@ export async function intentToComputeRaw(req: IntentToComputeRawRequest): Promis
     body: JSON.stringify(req),
   })
 }
+
+/** Test compute_engine：DuckDB 名稱 + intent（不含 rows，由後端讀檔） */
+export interface ComputeEngineRequest {
+  duckdb_name: string
+  intent: Record<string, unknown>
+  schema_id?: string
+}
+
+export interface ComputeEngineResponse {
+  chart_result: Record<string, unknown> | null
+  error_detail?: string | null
+  /** 後端除錯資訊，含 sql、sql_params、sql_pushdown 等 */
+  debug?: Record<string, unknown>
+  /** 與 debug.sql 相同 */
+  generated_sql?: string | null
+}
+
+export async function computeEngine(req: ComputeEngineRequest): Promise<ComputeEngineResponse> {
+  return apiFetch<ComputeEngineResponse>('/chat/compute-engine', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  })
+}

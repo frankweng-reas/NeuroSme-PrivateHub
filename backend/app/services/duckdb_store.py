@@ -37,6 +37,40 @@ def _get_base_dir() -> Path:
     return p
 
 
+def resolve_duckdb_path(name: str) -> Path | None:
+    """
+    依使用者輸入的 DuckDB「名稱」解析實際檔案路徑。
+    - 絕對路徑且檔案存在：直接使用
+    - 其餘：在 DUCKDB_DATA_DIR 下依序嘗試 {name}.duckdb、{name}（后者需已含副檔名或完整檔名）
+    """
+    raw = (name or "").strip()
+    if not raw:
+        return None
+    p = Path(raw)
+    if p.is_absolute():
+        if p.exists() and p.is_file():
+            return p.resolve()
+        return None
+    base = _get_base_dir()
+    if not base or not str(base).strip():
+        return None
+    candidates: list[Path] = []
+    if raw.lower().endswith(".duckdb"):
+        candidates.append((base / raw).resolve())
+    else:
+        candidates.append((base / f"{raw}.duckdb").resolve())
+        candidates.append((base / raw).resolve())
+    seen: set[str] = set()
+    for c in candidates:
+        k = str(c)
+        if k in seen:
+            continue
+        seen.add(k)
+        if c.exists() and c.is_file():
+            return c
+    return None
+
+
 def get_project_duckdb_path(project_id: str) -> Path | None:
     """
     取得專案 DuckDB 檔路徑。
@@ -176,16 +210,21 @@ def get_project_data_as_csv(project_id: str) -> str | None:
     return df.to_csv(index=False)
 
 
-def execute_sql_on_duckdb_file(path: Path, sql: str) -> pd.DataFrame | None:
+def execute_sql_on_duckdb_file(
+    path: Path,
+    sql: str,
+    params: list[Any] | tuple[Any, ...] | None = None,
+) -> pd.DataFrame | None:
     """
     在長存 DuckDB 檔上執行 SQL，回傳 DataFrame。
-    表名為 data。
+    表名為 data。可選 params 用於 ? 占位（避免字串拼接）。
     """
     if not path or not path.exists() or not sql or not sql.strip():
         return None
     try:
         conn = duckdb.connect(str(path), read_only=True)
-        result = conn.execute(sql.strip().rstrip(";").strip()).df()
+        s = sql.strip().rstrip(";").strip()
+        result = conn.execute(s, params).df() if params is not None else conn.execute(s).df()
         conn.close()
         return result
     except Exception as e:

@@ -17,7 +17,7 @@ interface AgentBusinessUIProps {
 三欄式 layout，使用 `react-resizable-panels` 的 `Group` + `Panel`，可拖曳調整寬度。左、右欄 `collapsible`，可折疊。
 
 - **左欄**：`SourceFileManager`，管理該 Agent 的來源檔案（CSV）；標題列右側有 Help 按鈕，點擊顯示 Online Help
-- **中欄**：對話區，訊息列表 + 輸入 form，呼叫 `chatCompletions`
+- **中欄**：對話區，訊息列表 + 輸入 form，透過 `chatCompletionsComputeToolStream` 送問
 - **右欄**：AI 設定，Model 下拉選單、User Prompt textarea
 
 ## 狀態
@@ -36,7 +36,7 @@ Key：`agent-business-ui-{agentId}`
 
 ## 前端 API
 
-`chatCompletionsComputeTool`（`@/api/chat`）：POST `/api/v1/chat/completions-compute-tool`，傳入 `agent_id`、`project_id`、`model`、`content`。採用 Intent 萃取 → 後端計算 → 文字生成流程。
+`chatCompletionsComputeToolStream`（`@/api/chat`）：POST `/api/v1/chat/completions-compute-tool-stream`，傳入 `agent_id`、`project_id`、`model`、`content`（等）。採用 **Intent JSON v2**（`version: 2`、以 `metrics` 為中心）萃取 → 後端以 `IntentV2` 驗證並計算 → 文字生成流程；串流回傳階段與部分中繼訊息（`ComputeStage`）。意圖格式細節見 [`docs/intent-generation.md`](intent-generation.md)。
 
 ---
 
@@ -46,7 +46,7 @@ Key：`agent-business-ui-{agentId}`
 
 ### Endpoint
 
-`POST /api/v1/chat/completions-compute-tool`，需 JWT 認證。
+商務 UI 實際呼叫：`POST /api/v1/chat/completions-compute-tool-stream`（SSE 串流）。同模組亦提供非串流 `POST /api/v1/chat/completions-compute-tool`，需 JWT 認證。
 
 ### 流程
 
@@ -54,11 +54,11 @@ Key：`agent-business-ui-{agentId}`
 
 2. **資料取得**：`_get_bi_sources_content(db, user_id, project_id)` 取得 BI 專案的資料（CSV/DuckDB），經 `parse_csv_content` 轉為 rows。
 
-3. **System Prompt**：意圖萃取用 `system_prompt_analysis_intent_tool.md`，文字生成用 `system_prompt_analysis_text_tool.md`。
+3. **System Prompt**：意圖萃取用 `system_prompt_analysis_intent_tool.md`（規範 **Intent JSON v2**），文字生成用 `system_prompt_analysis_text_tool.md`。
 
-4. **意圖萃取**：LLM 依 schema 與問題輸出 intent JSON。
+4. **意圖萃取**：LLM 依 **v2** schema 與問題輸出 intent；以 Pydantic `IntentV2`（`backend/app/schemas/intent_v2.py`）驗證。
 
-5. **後端計算**：`compute_aggregate(rows, intent)` 產生 chart_result。
+5. **後端計算**：`run_compute_engine(project_id, intent, schema_def)`（DuckDB SQL，`compute_engine`）產生 `chart_result`；意圖契約為 v2。
 
 6. **文字生成**：LLM 依 chart_result 撰寫分析文字，回傳 `{ content, chart_data }`。
 
@@ -85,5 +85,5 @@ Key：`agent-business-ui-{agentId}`
 ## 相依
 
 - `SourceFileManager`、`ConfirmModal`、`HelpModal`、`AgentIcon`
-- `chatCompletions`、`ApiError`
+- `chatCompletionsComputeToolStream`、`ApiError`
 - `react-resizable-panels`、`react-markdown`、`lucide-react`

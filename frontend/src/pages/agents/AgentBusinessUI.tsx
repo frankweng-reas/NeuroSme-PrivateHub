@@ -221,7 +221,7 @@ function BlockCard({
 
       if (!block.selectedSchemaId.trim()) {
         for (const file of fileList) {
-          invalidFiles.push({ file, reason: '請先選擇資料模板' })
+          invalidFiles.push({ file, reason: '請先選擇資料 Schema（bi_schemas）' })
         }
       } else {
         let validationCtx: { allowedHeaders: Set<string>; columnFieldNames: string[] } | null = null
@@ -315,8 +315,12 @@ function BlockCard({
       </div>
       <div className="flex flex-col gap-5 p-4">
         <div className="flex flex-col gap-2">
-          <label className="text-lg font-medium text-gray-700">資料模板</label>
+          <label className="text-lg font-medium text-gray-700" htmlFor={`block-schema-${block.id}`}>
+            資料 Schema（bi_schemas）
+          </label>
           <select
+            id={`block-schema-${block.id}`}
+            aria-label="從 bi_schemas 選擇一筆 schema"
             className="w-full rounded-lg border border-gray-300 px-3 py-2 text-lg focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
             value={block.selectedSchemaId}
             onChange={(e) => onSchemaChange(block.id, e.target.value)}
@@ -324,7 +328,7 @@ function BlockCard({
             <option value="">— 未選擇 —</option>
             {schemas.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.name}
+                {s.name?.trim() ? s.name : s.id}
               </option>
             ))}
           </select>
@@ -374,7 +378,7 @@ function BlockCard({
                 ? 'hover:border-gray-300 hover:bg-gray-100'
                 : 'cursor-not-allowed opacity-60'
             }`}
-            title={!block.selectedSchemaId ? '請先選擇資料模板' : '點擊或拖曳檔案至此'}
+            title={!block.selectedSchemaId ? '請先選擇資料 Schema（bi_schemas）' : '點擊或拖曳檔案至此'}
           >
             <div className="flex items-center justify-between px-3">
               <span className="text-lg text-gray-600">
@@ -582,6 +586,23 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
         b.id === id ? { ...b, selectedSchemaId: value, selectedFiles: [] } : b
       )
     )
+    const pid = selectedProject?.project_id
+    if (!pid) return
+    const sid = value.trim()
+    void updateBiProject(agent.id, pid, { schema_id: sid || null })
+      .then((updated) => {
+        setProjects((prev) =>
+          prev.map((p) => (p.project_id === updated.project_id ? { ...p, schema_id: updated.schema_id } : p))
+        )
+        setSelectedProject((prev) =>
+          prev?.project_id === updated.project_id ? { ...prev, schema_id: updated.schema_id } : prev
+        )
+      })
+      .catch((err) => {
+        const msg =
+          err instanceof ApiError ? err.detail ?? err.message : err instanceof Error ? err.message : '更新專案 Schema 失敗'
+        setCsvAdapterToast(String(msg))
+      })
   }
   const updateBlockFiles = (id: string, files: File[]) => {
     setBlocks((prev) =>
@@ -784,7 +805,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
       (b) => b.selectedSchemaId.trim() && b.selectedFiles.length > 0
     )
     if (blocksWithFiles.length === 0) {
-      setCsvAdapterToast('請先選擇資料模板並上傳至少一個 CSV 檔案')
+      setCsvAdapterToast('請先選擇資料 Schema（bi_schemas）並上傳至少一個 CSV 檔案')
       return
     }
     setImportCsvLoading(true)
@@ -950,7 +971,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
         {
           role: 'assistant',
           content:
-            '此專案尚未設定資料 schema。請在「匯入資料」區選擇資料模板並上傳 CSV 完成匯入後，再進行分析對話。',
+            '此專案尚未設定資料 schema。請在「匯入資料」區從 bi_schemas 選擇 Schema 並上傳 CSV 完成匯入後，再進行分析對話。',
         },
       ])
       return

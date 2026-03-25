@@ -9,6 +9,22 @@
   }
 }
 
+/*
+ * OS／瀏覽器為深色模式時，若頁面未宣告 color-scheme，表單控制項可能走 dark native styling，
+ * 選取後複製到 Word、Notion、Slack 等常帶入「黑底白字」的 RTF。此類頁面包在 .force-light-form-widgets 即可。
+ */
+@layer components {
+  .force-light-form-widgets {
+    color-scheme: light;
+  }
+  .force-light-form-widgets textarea::selection,
+  .force-light-form-widgets input::selection,
+  .force-light-form-widgets pre::selection {
+    background-color: rgb(226 232 240);
+    color: rgb(15 23 42);
+  }
+}
+
 /* 助理思考中：點點波浪動畫（依序淡入淡出） */
 @keyframes thinking-dot {
   0%, 100% {

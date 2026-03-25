@@ -289,7 +289,11 @@ def test_arpu_with_guest_count():
     assert "datasets" in r
     labels = [d["label"] for d in r["datasets"]]
     assert any("客單價" in lbl or "arpu" in lbl.lower() for lbl in labels), "應含 ARPU 客單價"
-    assert any("銷售金額" in lbl or "sales" in lbl.lower() for lbl in labels), "應含銷售金額"
+    # fact_business_operations 中 sales_amount 首個 alias 為「營收」，未必出現「銷售金額」字面
+    joined = " ".join(labels).lower()
+    assert any(
+        tok in joined for tok in ("營收", "銷售金額", "sales_amount", "revenue", "sales", "金額")
+    ), f"應含營收/銷售額相關序列，實際 labels={labels!r}"
 
 
 def test_indicator_as_array():
@@ -307,7 +311,13 @@ pchome,2000,20"""
         schema_def=SCHEMA_FACT,
     )
     assert r, "indicator 為陣列應成功"
-    data_by_label = dict(zip(r["labels"], r["data"]))
+    assert "labels" in r and "datasets" in r
+    ind_ds = next(
+        d
+        for d in r["datasets"]
+        if "客單" in (d.get("label") or "") or "arpu" in (d.get("label") or "").lower()
+    )
+    data_by_label = dict(zip(r["labels"], ind_ds["data"]))
     assert data_by_label.get("momo") == 100.0  # 1000/10
     assert data_by_label.get("pchome") == 100.0  # 2000/20
 
@@ -328,9 +338,10 @@ shopee,500,100"""
         schema_def=SCHEMA_CHANNEL_NET,
     )
     assert r, "indicator margin_rate 應成功"
-    assert "labels" in r and "data" in r
+    assert "labels" in r and "datasets" in r
+    margin_ds = next(d for d in r["datasets"] if d.get("label") == "毛利率")
     # momo: 300/1000=30%, pchome: 600/2000=30%, shopee: 100/500=20%
-    data_by_label = dict(zip(r["labels"], r["data"]))
+    data_by_label = dict(zip(r["labels"], margin_ds["data"]))
     assert data_by_label.get("momo") == 30.0
     assert data_by_label.get("pchome") == 30.0
     assert data_by_label.get("shopee") == 20.0
@@ -404,7 +415,9 @@ shopee,500,100"""
         schema_def=SCHEMA_FACT,
     )
     assert r, "新 schema sales_amount + store_name 應成功"
-    data_by_label = dict(zip(r["labels"], r["data"]))
+    assert "labels" in r and "datasets" in r
+    margin_ds = next(d for d in r["datasets"] if d.get("label") == "毛利率")
+    data_by_label = dict(zip(r["labels"], margin_ds["data"]))
     assert data_by_label.get("momo") == 30.0
     assert data_by_label.get("pchome") == 30.0
     assert data_by_label.get("shopee") == 20.0
@@ -443,8 +456,9 @@ shopee,50,500,450"""
         schema_def=SCHEMA_DISC,
     )
     assert r, "運算式指標應成功"
-    assert "labels" in r and "data" in r
-    data_by_label = dict(zip(r["labels"], r["data"]))
+    assert "labels" in r and "datasets" in r
+    expr_ds = next(d for d in r["datasets"] if "/" in (d.get("label") or ""))
+    data_by_label = dict(zip(r["labels"], expr_ds["data"]))
     # momo: 100/1000=10%, pchome: 200/2000=10%, shopee: 50/500=10%
     assert data_by_label.get("momo") == 10.0
     assert data_by_label.get("pchome") == 10.0
@@ -492,6 +506,75 @@ def test_per_column_aggregation():
     if got_count:
         assert 1 in got_count and 2 in got_count
     print("OK: per-column aggregation (avg + count)")
+
+
+def test_group_domain_fills_missing_groups_with_zero():
+    """columns.col_6.group_domain 固定分組順序，缺資料列補 0。"""
+    schema = {
+        "columns": {
+            "col_6": {
+                "type": "str",
+                "attr": "dim",
+                "aliases": ["車系", "col_6"],
+                "group_domain": ["Wagon", "SUV", "Sedan"],
+            },
+            "col_10": {"type": "num", "attr": "val", "aliases": ["售後保養金", "col_10"]},
+        },
+        "indicators": {},
+    }
+    rows = [
+        {"col_6": "Wagon", "col_10": 8000},
+        {"col_6": "SUV", "col_10": 6000},
+        {"col_6": "SUV", "col_10": 8000},
+    ]
+    r = ac.compute_aggregate(
+        rows,
+        ["col_6"],
+        [{"column": "col_10", "aggregation": "avg"}],
+        display_fields=["col_6", "col_10"],
+        schema_def=schema,
+    )
+    assert r and r["labels"] == ["Wagon", "SUV", "Sedan"]
+    assert r["data"] == [8000.0, 7000.0, 0.0]
+
+
+def test_display_fields_group_display_name_vs_category_value():
+    """
+    維度欄第一別名為「車系」時，display_field_aliases 鍵為「車系」。
+    若資料裡某分組值字面也等於「車系」，舊版 _apply_display_fields 會把「車系」當成
+    要保留的 label，只留該桶；修正後應保留所有車系分組。
+    （與第一別名是否為 SUV 無關；SUV 僅為一般分組值範例。）
+    """
+    schema = {
+        "columns": {
+            "col_2": {"type": "str", "attr": "dim_time", "aliases": ["日期"]},
+            "col_6": {"type": "str", "attr": "dim", "aliases": ["車系", "col_6"]},
+            "col_10": {"type": "num", "attr": "val", "aliases": ["售後保養金", "col_10"]},
+        },
+        "indicators": {},
+    }
+    rows = [
+        {"col_2": "2026-06-01", "col_6": "車系", "col_10": 4000},
+        {"col_2": "2026-06-01", "col_6": "SUV", "col_10": 6000},
+        {"col_2": "2026-07-01", "col_6": "SUV", "col_10": 6500},
+        {"col_2": "2026-06-01", "col_6": "轎車", "col_10": 7000},
+        {"col_2": "2026-06-01", "col_6": "MPV", "col_10": 5000},
+    ]
+    r = ac.compute_aggregate(
+        rows,
+        ["col_6"],
+        [{"column": "col_10", "aggregation": "avg"}],
+        filters=[{"column": "col_2", "op": "==", "value": "2026-01-01/2026-12-31"}],
+        display_fields=["col_6", "col_10"],
+        schema_def=schema,
+    )
+    assert r and "labels" in r and "data" in r
+    assert set(r["labels"]) == {"SUV", "MPV", "轎車", "車系"}
+    by_lbl = dict(zip(r["labels"], r["data"]))
+    assert abs(by_lbl["SUV"] - 6250.0) < 0.01
+    assert by_lbl["轎車"] == 7000.0
+    assert by_lbl["MPV"] == 5000.0
+    assert by_lbl["車系"] == 4000.0
 
 
 if __name__ == "__main__":

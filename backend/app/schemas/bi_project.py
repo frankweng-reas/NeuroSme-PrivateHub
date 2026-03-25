@@ -16,6 +16,11 @@ class BiProjectUpdate(BaseModel):
     project_name: str | None = Field(None, max_length=255)
     project_desc: str | None = Field(None, max_length=2000)
     conversation_data: list[dict[str, Any]] | None = Field(None, description="對話紀錄 JSON 陣列")
+    schema_id: str | None = Field(
+        None,
+        description="bi_schemas 主鍵 id；傳 null 或空字串可清除專案綁定",
+        max_length=100,
+    )
 
 
 class BiProjectResponse(BaseModel):
@@ -26,7 +31,7 @@ class BiProjectResponse(BaseModel):
     conversation_data: list[dict[str, Any]] | None = None
     schema_id: str | None = Field(
         None,
-        description="與 DuckDB / 分析意圖對齊的 bi_schemas.id；匯入 CSV 時會依所選模板更新",
+        description="bi_schemas 主鍵 id（非 name）；匯入 CSV 成功後由後端寫入",
     )
 
     class Config:

@@ -970,6 +970,29 @@ def _schema_column_codes_and_aliases(col: str, cfg: _SchemaConfig) -> set[str]:
     return out
 
 
+def _alias_entry_is_resolved_group_column(
+    entry_label: str,
+    entry_aliases: Any,
+    resolved: _ResolvedColumns,
+) -> bool:
+    """
+    display_field_aliases 的一條目是否對應到目前的 group_by 欄位（物理名或別名）。
+    若維度顯示名／別名與某分組值字面相同（例如維度第一別名為「車系」且某列 col_6=「車系」），
+    避免把該顯示名誤當成「只保留此桶」過濾 pairs。
+    """
+    if resolved.group_keys:
+        gcols = [str(x).strip() for x in resolved.group_keys if x]
+    else:
+        gcols = [str(resolved.group_key).strip()] if resolved.group_key else []
+    gnorm = {g.lower() for g in gcols if g}
+    alist: list[str] = entry_aliases if isinstance(entry_aliases, list) else [entry_aliases]
+    tokens = {str(entry_label).strip().lower()}
+    for a in alist:
+        if a is not None and str(a).strip():
+            tokens.add(str(a).strip().lower())
+    return bool(gnorm & tokens)
+
+
 def _apply_display_fields(
     pairs: list[tuple[str, float]],
     display_fields: list[str],
@@ -978,8 +1001,8 @@ def _apply_display_fields(
     resolved: _ResolvedColumns | None = None,
 ) -> list[tuple[str, float]]:
     """
-    依 display_fields 過濾 pairs。
-    有分組時 pairs 為 (分組值, 數值)，若 display_fields 只含分組欄與數值欄代碼／別名，應保留整段序列（勿誤當指標 label 過濾）。
+    依 display_fields 過濾 pairs（多指標／總計列等仍須子集合時使用）。
+    註：有分組且僅單一 value、無 indicator 時，caller 不會呼叫此函式（見 compute_aggregate）。
     """
     if not display_fields or not pairs:
         return pairs
@@ -994,6 +1017,8 @@ def _apply_display_fields(
             if label in seen:
                 continue
             if df_clean in aliases or df_clean == label:
+                if resolved and _alias_entry_is_resolved_group_column(label, aliases, resolved):
+                    break
                 if label in label_to_val:
                     result.append((label, label_to_val[label]))
                     seen.add(label)
@@ -1210,6 +1235,35 @@ def _aggregate_multi_value_by_group(
         data = [round(pivots[vk].get(gv, 0), 2) for gv in group_vals]
         datasets.append((label, data))
     return group_vals, datasets
+
+
+def _read_group_domain_for_column(schema_def: dict[str, Any] | None, group_col: str) -> list[str] | None:
+    """
+    維度欄可選 group_domain 或 allowed_values（字串列表），用於固定輸出分組順序並對缺資料組別補 0。
+    """
+    if not schema_def or not group_col or not str(group_col).strip():
+        return None
+    cols = schema_def.get("columns")
+    if not isinstance(cols, dict):
+        return None
+    meta = cols.get(group_col)
+    if not isinstance(meta, dict):
+        return None
+    raw = meta.get("group_domain")
+    if raw is None:
+        raw = meta.get("allowed_values")
+    if not isinstance(raw, list) or not raw:
+        return None
+    out = [str(x).strip() for x in raw if x is not None and str(x).strip()]
+    return out or None
+
+
+def _pairs_reordered_by_domain(
+    pairs: list[tuple[str, float]],
+    domain: list[str],
+) -> list[tuple[str, float]]:
+    lut = {str(k): float(v) for k, v in pairs}
+    return [(g, lut.get(g, 0.0)) for g in domain]
 
 
 def _aggregate_single_series(
@@ -2030,6 +2084,33 @@ def compute_aggregate(
             schema_def,
         )
 
+    # Intent v2 兩期比較：常見情況是 dimensions.compare_periods + 單一 aggregate 的 as_name，
+    # 但 indicator 列表僅有「本期」別名，未含 *_yoy_growth／schema 的 compare 對照鍵。
+    # 原邏輯在此會落入單期彙總，chart 結構易與後續「格式化給 LLM」步驟不一致 → detail 列為空。
+    # 略過 is_ratio_indicator（應由上列 ratio flow 處理；未滿足鍵時不強制改走簡單兩期以免誤算比率）。
+    if (
+        cp
+        and compare_periods_has_group
+        and resolved.value_keys
+        and not is_ratio_indicator
+    ):
+        return _run_compare_periods_flow(
+            work_rows,
+            group_by_column,
+            resolved,
+            filters,
+            cp,
+            resolved.value_keys[0],
+            top_n,
+            sort_order,
+            display_fields,
+            having_filters,
+            g_aliases,
+            error_out,
+            cfg,
+            schema_def,
+        )
+
     work = work_rows
     actual_keys = [k for k in work_rows[0].keys() if k and k.strip()]
     # 依 (column, op) 合併：op=="==" 時同欄位 OR（IN）；op=="!=" 時 NOT IN
@@ -2315,8 +2396,22 @@ def compute_aggregate(
                 pairs = [p for i, p in enumerate(pairs) if i in keep_set]
             else:
                 pairs = []
-    pairs = _apply_sort_top_n(pairs, sort_order, top_n, time_order, datasets=None, cfg=cfg)
-    pairs = _apply_display_fields(pairs, display_fields or [], cfg, resolved=resolved)
+    group_domain = _read_group_domain_for_column(schema_def, resolved.group_key)
+    simple_grouped_one_metric = (
+        resolved.group_key != _SYNTHETIC_GROUP
+        and len(resolved.value_keys) == 1
+    )
+    if simple_grouped_one_metric and group_domain:
+        pairs = _pairs_reordered_by_domain(pairs, group_domain)
+        if top_n is not None and top_n > 0:
+            pairs = pairs[:top_n]
+    else:
+        pairs = _apply_sort_top_n(pairs, sort_order, top_n, time_order, datasets=None, cfg=cfg)
+
+    # 有分組 + 僅一個量值：pairs 即 GROUP BY × 該欄 aggregation；display_fields 只描述呈現欄位，不應再當築跅寫 pairs。
+    #（即使 ind_list 非空但若落到此段 pairs，仍不篩分組，避免误殺多 bucket。）
+    if not simple_grouped_one_metric:
+        pairs = _apply_display_fields(pairs, display_fields or [], cfg, resolved=resolved)
     if ind in cfg.indicator_column_names:
         as_pct = cfg.indicator_as_percent.get(ind, False)
         value_label = cfg.indicator_labels.get(ind, ind)

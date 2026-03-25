@@ -151,12 +151,7 @@ function columnSelectLabel(c: SchemaColumn): string {
 const indicatorFieldSelectCompactClass =
   'min-w-[10rem] flex-1 basis-0 rounded border border-gray-300 px-2 py-1.5 text-sm text-gray-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500'
 
-/** 表頭是否含中文（CJK 統一漢字區） */
-function headerHasChinese(header: string): boolean {
-  return /[\u4e00-\u9fff]/.test(header.trim())
-}
-
-/** 從 CSV 預覽行推導初始 schema；表頭為中文時欄位名稱使用 col_1、col_2…，原始表頭寫入別名 */
+/** 從 CSV 預覽行推導初始 schema；欄位名稱統一 col_1、col_2…，原始表頭寫入別名 */
 function deriveSchemaFromCsv(rows: string[][]): SchemaColumn[] {
   if (rows.length < 1) return []
   const headers = rows[0]
@@ -164,16 +159,15 @@ function deriveSchemaFromCsv(rows: string[][]): SchemaColumn[] {
   return headers.map((col, i) => {
     const sample = (firstDataRow[i] ?? '').trim()
     const rawHeader = col.trim()
-    const chinese = headerHasChinese(rawHeader)
-    const columnName = chinese ? `col_${i + 1}` : rawHeader
-    // 型別推斷仍用原始表頭，以辨識「日期」「金額」等中文關鍵字
+    const columnName = `col_${i + 1}`
+    // 型別推斷仍用原始表頭，以辨識「日期」「金額」等中英文關鍵字
     const dataType = inferDataType(sample, rawHeader)
     return {
       columnName,
       dataType,
       attr: inferAttr(dataType),
       sampleData: sample,
-      aliases: chinese ? rawHeader : '',
+      aliases: rawHeader,
     }
   })
 }
