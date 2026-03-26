@@ -385,9 +385,6 @@ def _try_build_sql_expression_v2(
     for gc in group_cols:
         if gc not in allowlist:
             return None
-    for c in expr_m.refs["columns"]:
-        if c not in allowlist:
-            return None
 
     where_clause = f"WHERE {' AND '.join(filter_parts)}" if filter_parts else ""
     pa = intent.post_aggregate
@@ -426,6 +423,8 @@ def _try_build_sql_expression_v2(
         "dataset_labels": [_dataset_label_for_formula_alias(expr_m.as_name, schema_def)],
         "value_specs": [],
         "formula": True,
+        # chart：0～1 比率欄位改為百分比數字（×100，小數兩位），供 chart_result／LLM 摘要
+        "chart_percent_aliases": [expr_m.as_name],
     }
     return sql, [], meta
 
@@ -456,9 +455,6 @@ def _try_build_sql_agg_plus_expression_v2(
     fq = _formula_quote_allowlisted_cols(expanded, allowlist)
     if fq is None:
         return None
-    for c in expr_m.refs["columns"]:
-        if c not in allowlist:
-            return None
 
     select_parts: list[str] = []
     for gc in group_cols:
@@ -531,6 +527,7 @@ def _try_build_sql_agg_plus_expression_v2(
         "dataset_labels": dataset_labels,
         "value_specs": specs,
         "formula": True,
+        "chart_percent_aliases": [expr_m.as_name],
     }
     return sql, [], meta
 

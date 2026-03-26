@@ -5,7 +5,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict  # type: ignore[i
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
+    # extra：略過 .env 內未定義之鍵（如 docker 常用 POSTGRES_*），避免啟動／測試被擋
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
     PROJECT_NAME: str = "NeuroSme API"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"

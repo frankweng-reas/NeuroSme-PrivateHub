@@ -114,24 +114,17 @@ class MetricAggregateV2(BaseModel):
 
 
 class MetricExpressionV2(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    """
+    欄位依賴僅由 `expression` 內之 col_* 決定（見 validate_intent_v2_columns、組 SQL 之公式解析）。
+    舊版 JSON 若含 `refs`／`refs.columns`，因 extra=ignore 會略過，向後相容。
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     id: str = Field(min_length=1)
     kind: Literal["expression"] = "expression"
     expression: str = Field(min_length=1)
     as_name: str = Field(alias="as", min_length=1)
-    refs: dict[str, list[str]] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def refs_columns(self) -> Self:
-        cols = self.refs.get("columns")
-        if not cols or not isinstance(cols, list):
-            raise ValueError("expression 須提供 refs.columns（非空陣列）")
-        cleaned = [str(c).strip() for c in cols if str(c).strip()]
-        if not cleaned:
-            raise ValueError("refs.columns 不可為空")
-        self.refs = {"columns": cleaned}
-        return self
 
 
 class MetricGrandShareV2(BaseModel):
@@ -409,11 +402,7 @@ def validate_intent_v2_columns(intent: IntentV2, schema_def: dict[str, Any]) -> 
             for i, nf in enumerate(m.numerator_filters):
                 check_col(nf.column, f"metric[{m.id}].numerator_filters[{i}]")
         elif isinstance(m, MetricExpressionV2):
-            for c in m.refs["columns"]:
-                check_col(c, f"metric[{m.id}].refs")
             for c in set(_FILTER_COL_NAMES.findall(m.expression)):
-                if c not in m.refs["columns"]:
-                    err.append(f"metric[{m.id}]：式子中的 {c!r} 應列入 refs.columns")
                 check_col(c, f"metric[{m.id}].expression")
 
     pa = intent.post_aggregate
@@ -430,10 +419,11 @@ def validate_intent_v2_columns(intent: IntentV2, schema_def: dict[str, Any]) -> 
     return err
 
 
-def intent_sql_blockers_v2(intent: IntentV2, schema_def: dict[str, Any]) -> list[str]:
+def intent_sql_blockers_v2(intent: IntentV2, schema_def: dict[str, Any]) -> tuple[list[str], IntentV2]:
+    """回傳 (錯誤訊息列表, intent)；與組 SQL 使用同一 intent 即可。"""
     block: list[str] = []
     block.extend(validate_intent_v2_columns(intent, schema_def))
-    return [b for b in block if b]
+    return [b for b in block if b], intent
 
 
 def parse_intent_v2(data: dict[str, Any]) -> IntentV2:

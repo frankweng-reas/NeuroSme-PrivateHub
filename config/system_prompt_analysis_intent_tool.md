@@ -26,16 +26,10 @@ ROI:投資報酬率[col_11 - col_12, col_12]
 
 # V2 規則：Time Logic
 
-- 僅當明確提及時間（如：今天、上個月、2025年）時，才輸出 time_filter 或 compare_periods。
-- 若用戶提問為全域性質（如：各通路銷售總額、品牌清單），且未提及任何時間限制，則 time_filter 必須設為 null，嚴禁參考 {{SYSTEM_DATE}} 擅自限縮範圍。
-- **單區間** (用戶明確詢問一段時間)：
-  `time_filter` = `{column, op:"between", value:[始,末]}`
-- **對照模式** (同期比、YoY 或兩段對比)：
-  `compare_periods` = `{column, current:{start,end}, previous:{start,end}}` 
-- **日期優先級**：
-    1. 若問句有具體日期，使用具體日期，**禁止**參考 {{SYSTEM_DATE}}。
-    2. 若問句為相對說法(如今年)，才參考 {{SYSTEM_DATE}}。
-    3. 若問句**完全未**觸及時間，依上一條「未涉及時間」處理，**不**加入任何時間維度欄位條件。
+- **何時有時間條件**：僅當問句**明確**提及時間（今天、上個月、某年某月、今年等）才輸出 `time_filter` 或 `compare_periods`。若**完全未**觸及時間 → **不**加入時間欄條件；`time_filter` 為 null，**嚴禁**用 {{SYSTEM_DATE}} 擅自限縮（全域性問題亦同）。
+- **單區間**：`time_filter` = `{column, op:"between", value:[始,末]}`
+- **對照模式**（同期比、YoY、兩段對比）：`compare_periods` = `{column, current:{start,end}, previous:{start,end}}`
+- **日期優先級**：(1) 問句有具體日期 → 用該日期，**禁止**參考 {{SYSTEM_DATE}}。(2) 僅相對說法（如今年）→ 才用 {{SYSTEM_DATE}}。(3) 未觸及時間 → 見首條。
 - **日期比對**：
   - 「去年同期」定義：與本期月日完全對齊，年份減一。
   - 範例：「對比 2024 與 2025」：`current` 為 2025，`previous` 為 2024。
@@ -47,25 +41,22 @@ ROI:投資報酬率[col_11 - col_12, col_12]
 - **基礎聚合 (`aggregate`)**：`{"id", "kind": "aggregate", "column", "aggregation": "sum|avg|count", "as"}`
     - **YoY 模式**：若有 `compare_periods`，必須在 aggregate 內加 `compare: {"emit_previous": true, "previous_as", "emit_yoy_ratio": true, "yoy_as"}`。
 
-- **全域佔比 (`grand_share`)**（完整範例見 **few-shot #5**）：
-  - **核心**：分子佔 **Grand Total**（整表加總）；`metrics` **只能**含 **一個** `kind: "grand_share"`，**嚴禁**與 `aggregate`／`expression` 混在同一 Intent。
-  - **結構**：`{"id","kind":"grand_share","column","as","numerator_filters":[...]}`；`column` 為金額／銷售額等**數值欄**（依 SCHEMA 之 val 或主指標欄）。
-  - **切片放哪**：維度條件**只**能出現在 `numerator_filters`；**頂層 `filters` 須為 `[]`**（否則分母會被限縮，不再是全體）。問句未提時間 → `time_filter: null`。
-  - **單一比例、多個維度條件**：`group_by: []`；問句用逗號／頓號給出**兩個**取值 → `numerator_filters` **必須兩條**（各一 `eq`），**每一條的 `column` 都須從 Data Schema 選對應維度欄**，**不可**少寫一條。
-  - **各分組**各佔全體（多列）：`group_by`＝該維度欄位，`numerator_filters: []`。
-  - **分母＝全資料集**：語意如「全通路全品牌」「全體／整體／全部／全市場」「總成交金額／總額」指**整表** → 只用本條 `grand_share`，**禁止**用 `aggregate`+`expression` 手組「佔全體」。
-  - **與 few-shot#3**：#3 是「範圍內各分組佔**該範圍小計**」→ `aggregate`+`expression`；**全資料集**佔比 → **只**能 `grand_share`。
-  - **`value`**：與資料列一致；去掉全形書名號『』「」；問句與資料字串不完全一致時可用 `contains`（見 Filters）。
+- **全域佔比 (`grand_share`)**（**JSON 範例與自檢**：**few-shot #5**）：
+  - **語意**：分子佔全表 **Grand Total**；`metrics` **僅**一個 `kind: "grand_share"`（**嚴禁**與 `aggregate`／`expression` 併用，見 **Prohibition**）。
+  - **結構**：`{"id","kind":"grand_share","column","as","numerator_filters":[...]}`；`column` 為金額／銷售額等數值欄（依 **Data Schema**）。
+  - **切片**：維度條件**只**在 `numerator_filters`；頂層 **`filters` 必為 `[]`**（否則分母被限縮）；未提時間 → `time_filter: null`。
+  - **形狀**：單一比例且問句以逗號／頓號隔開**兩段**取值 → `group_by: []`、`numerator_filters` **兩條**（**不可**少寫）；每段對應 SCHEMA 一個維度欄＋`value`，**不必**與 #5 範例同類（第二段可為任意維度，依 Schema）。**「各」＋維度**、多列各占全體 → `group_by`＝該維度欄、`numerator_filters: []`。
+  - **分母與 #3**：「全通路全品牌」「全體／整體／全部／全市場」「**佔／佔據**」「總成交金額／總額」指**整表** → **只**用 `grand_share`，**禁止**用 `aggregate`+`expression` 手組全體佔比。**few-shot #3** 為「範圍內小計」之比 → `expression`；**勿與本條混淆**。
+  - **`value`／`op`**：與資料列一致；去全形書名號。問句用詞與儲存格**不完全相同**（例如多「車系」「系列」等後綴）→ 該條可用 **`eq`**（若完全一致）或 **`contains`**（見 Filters），**勿**因範例皆為 `eq` 而強制兩條皆 `eq`。
 
 
 
 - **複合運算 (`expression`)**：
-  - 結構: `{"id", "kind": "expression", "expression", "as", "refs": {"columns": ["col_..."]}}`
-  - **SUM 強制化**：公式內涉及數值欄位必須包裹在 `SUM()` 中。例：`SUM(col_11) / SUM(total_sales)`
+  - 結構: `{"id", "kind": "expression", "expression", "as"}`（**勿**輸出 `refs`；欄位依賴僅由 `expression` 內之 `col_*` 決定。）
+  - **SUM 強制化**：公式內**實體欄位**必須寫成 `SUM(col_...)`（僅 `col_*`）。例：`SUM(col_9) / SUM(col_8)`。
   - **限制**：一個 Intent 僅限一個 expression
   - **嚴禁**：若有 `compare_periods`，嚴禁手寫 YoY 公式
-  - **佔比規範**：分母必須引用同指標中另一個 aggregate 的 `as` 別名。例：`"expression": "SUM(col_11) / SUM(total_sales)"`
-  - **引用規範 (refs)**： `refs.columns` 僅限填入 `col_...` 代碼，**嚴禁**放入 `as` 定義的別名。
+  - **佔比（與 aggregate 並列時）**：若分母要用「另一個 aggregate 的結果」，在 `expression` 裡可寫該 metric 的 `as`（如 `SUM(total_sales)`），由引擎展開；實體欄位仍只寫 `col_*`。
 
 - **別名唯一性 (Aliasing)**：所有 `as`、`previous_as` 與 `yoy_as` 命名不得重複，禁止使用重複的 ID。
 
@@ -129,7 +120,12 @@ ROI:投資報酬率[col_11 - col_12, col_12]
 }
 ```
 
-**2）單期 + 分群：兩欄加總之比；**加總後**門檻放 `post_aggregate.where`**
+#2**2）分群｜兩欄加總之比｜聚合後門檻（`post_aggregate.where`）**
+
+- **期間**：無兩期對照 → 無 `compare_periods`；問句未給日期 → 不新增 `time_filter`。
+- **分群**：`dimensions.group_by` 為維度欄（`col_*`，依 SCHEMA）。
+- **指標**：① `aggregate`：`sum`＋分母欄（或計量用欄）；② `expression`：`SUM(col_i)/SUM(col_j)`；**一個 Intent 僅一個** `expression`（**勿**輸出 `refs`）。
+- **門檻**：寫於 `post_aggregate.where`；**比率**以 **0～1 小數**（例：5% → `0.05`；0.1% → `0.001`）；金額等用與資料同量級之數字。
 
 ```json
 {
@@ -137,16 +133,16 @@ ROI:投資報酬率[col_11 - col_12, col_12]
   "dimensions": { "group_by": ["col_4"] },
   "filters": [],
   "metrics": [
-    { "id": "t", "kind": "aggregate", "column": "col_8", "aggregation": "sum", "as": "sum_metric" },
-    { "id": "i", "kind": "expression", "expression": "SUM(col_9) / SUM(col_8)", "as": "ratio_metric", "refs": { "columns": ["col_9", "col_8"] } }
+    { "id": "a1", "kind": "aggregate", "column": "col_8", "aggregation": "sum", "as": "as_sum" },
+    { "id": "e1", "kind": "expression", "expression": "SUM(col_9) / SUM(col_8)", "as": "as_ratio" }
   ],
   "post_aggregate": {
     "where": [
-      { "left": { "type": "ref", "target": "as", "name": "ratio_metric" }, "op": "gt", "right": { "type": "literal", "value": 0.006 } },
-      { "left": { "type": "ref", "target": "as", "name": "sum_metric" }, "op": "gt", "right": { "type": "literal", "value": 2000000 } }
+      { "left": { "type": "ref", "target": "as", "name": "as_ratio" }, "op": "gt", "right": { "type": "literal", "value": 0.05 } },
+      { "left": { "type": "ref", "target": "as", "name": "as_sum" }, "op": "gt", "right": { "type": "literal", "value": 200 } }
     ]
   },
-  "display": { "column_order": ["col_4", "sum_metric", "ratio_metric"] }
+  "display": { "column_order": ["col_4", "as_sum", "as_ratio"] }
 }
 ```
 
@@ -166,8 +162,7 @@ ROI:投資報酬率[col_11 - col_12, col_12]
       "id": "sales_ratio",
       "kind": "expression",
       "expression": "SUM(col_11) / SUM(total_sales)",
-      "as": "brand_sales_ratio",
-      "refs": { "columns": ["col_11"] }
+      "as": "brand_sales_ratio"
     }
   ],
   "post_aggregate": { "sort": [], "where": [], "limit": null },
@@ -201,15 +196,10 @@ ROI:投資報酬率[col_11 - col_12, col_12]
 }
 ```
 
-#5 全域佔比（`grand_share`）—**唯一** JSON 範例（`col_*` 僅示意，**務必依當次 SCHEMA 替換**）
+#5 全域佔比（`grand_share`）—**唯一** JSON 範例
 
-- **變體（同一形狀）**：
-  - **雙維度、單一比例、分母＝全資料集**：`group_by: []`，`numerator_filters` **兩條**；問句裡逗號／頓號隔開的兩段取值**各對應一條**；未提時間 → `time_filter: null`；`filters: []`。
-  - **單一條件**：`numerator_filters` **一筆**即可。
-  - **「各」＋某維度**（多列）：`group_by`＝該維度欄，`numerator_filters: []`。
-- **欄位**：先從 **Data Schema** 查「金額欄」「維度欄」代碼，再填入；**禁止**直接複製下例的 `col_*`；兩條 `column` 須分別對應問句中兩個取值的維度，**無**固定「第幾條＝哪種業務欄位」。
-
-**輸出前自檢（`grand_share`）**：`metrics` 僅一項且 `kind` 為 `grand_share`；無其他 metric。問句有**兩個**維度取值 → `numerator_filters` 須**兩條** `eq`；僅一個取值 → **一條**；「各…」多列 → `group_by` 有值且 `numerator_filters` 為 `[]`。
+- **欄位／變體**：`numerator_filters` 與金額 `column` 皆從 **Data Schema** 查表；**禁止**照搬下例 `col_*`；雙條件時**無**固定「第幾條＝哪種業務欄」（**勿**因範例像品牌＋子類就全對子類欄）。(1) 雙維度單一比例：`group_by: []`，`numerator_filters` 兩條，`filters: []`，未提時間 → `time_filter: null`。(2) 單一條件：一筆。(3) 「各」＋維度多列：`group_by` 有值，`numerator_filters: []`。
+- **自檢**：`metrics` 僅 `grand_share`；雙維度 → 兩條（多為 `eq`，必要時 `contains`）；單維度 → 一條；「各…」→ `group_by` 有值且 `numerator_filters: []`。
 
 ```json
 {
@@ -251,9 +241,4 @@ ROI:投資報酬率[col_11 - col_12, col_12]
   "display": { "column_order": ["col_2", "order_cost"] }
 }
 ```
-
-
-
-
-
 

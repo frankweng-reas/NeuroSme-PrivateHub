@@ -278,7 +278,8 @@ def intent_sql_blockers(intent: dict[str, Any], schema_def: dict[str, Any]) -> l
     except ValidationError as e:
         logger.info("IntentV2 驗證失敗（intent_sql_blockers）: %s", e.errors())
         return [USER_FACING_INTENT_VALIDATION_MESSAGE]
-    return intent_sql_blockers_v2(v2, schema_def)
+    blockers, _ = intent_sql_blockers_v2(v2, schema_def)
+    return blockers
 
 
 def chart_from_sql_dataframe(
@@ -322,10 +323,21 @@ def chart_from_sql_dataframe(
                 return str(c)
         return str(alias)
 
+    percent_aliases = meta.get("chart_percent_aliases")
+    percent_alias_set: set[str] = (
+        {str(a).strip() for a in percent_aliases if str(a).strip()}
+        if isinstance(percent_aliases, list)
+        else set()
+    )
+
     datasets: list[dict[str, Any]] = []
     for alias, lbl in zip(aliases, meta["dataset_labels"]):
         col_name = _resolve_df_column(df, alias)
-        ratio_like = bool(meta.get("grand_share")) or _sql_chart_series_is_ratio_like(lbl, alias)
+        ratio_like = (
+            bool(meta.get("grand_share"))
+            or alias in percent_alias_set
+            or _sql_chart_series_is_ratio_like(lbl, alias)
+        )
         if ratio_like:
             series = [_sql_chart_ratio_to_percent_display(cell_float(x)) for x in df[col_name].tolist()]
             lbl_out = _sql_chart_label_append_percent_unit(lbl)
@@ -364,7 +376,7 @@ def run_sql_compute_engine(
         logger.info("IntentV2 驗證失敗（run_sql_compute_engine）: %s", e.errors())
         return None, USER_FACING_INTENT_VALIDATION_MESSAGE, debug
 
-    blockers = intent_sql_blockers_v2(intent_v2, schema_def)
+    blockers, intent_v2 = intent_sql_blockers_v2(intent_v2, schema_def)
     if blockers:
         msg = "此 intent 無法轉為 SQL：" + "；".join(blockers)
         return None, msg, {**debug, "blockers": blockers}

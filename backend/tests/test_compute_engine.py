@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.services.compute_engine import _aggregate_pairs, _apply_filters_v1
-from app.schemas.intent_v2 import IntentV2, intent_sql_blockers_v2
+from app.schemas.intent_v2 import IntentV2, MetricExpressionV2, intent_sql_blockers_v2
 from app.services.compute_engine_sql import chart_from_sql_dataframe, intent_sql_blockers
 from app.services.compute_engine_sql_v2 import try_build_sql_v2
 
@@ -367,7 +367,6 @@ def test_sql_builder_aggregate_plus_expression():
                     "kind": "expression",
                     "expression": "SUM(col_9) / SUM(col_8)",
                     "as": "insurance_share",
-                    "refs": {"columns": ["col_9", "col_8"]},
                 },
             ],
             post_aggregate={
@@ -409,7 +408,6 @@ def test_sql_builder_aggregate_plus_expression_expands_agg_alias_in_sum():
                     "kind": "expression",
                     "expression": 'SUM(col_11) / SUM(total_sales)',
                     "as": "sales_ratio",
-                    "refs": {"columns": ["col_11"]},
                 },
             ],
             time_filter={"column": "col_1", "op": "between", "value": ["2025-03-01", "2025-03-31"]},
@@ -635,7 +633,6 @@ def test_sql_builder_formula_group_sort():
                     "kind": "expression",
                     "expression": "SUM(col_9) / COUNT(col_1)",
                     "as": "avg_insurance_p_unit",
-                    "refs": {"columns": ["col_9", "col_1"]},
                 }
             ],
             time_filter={"column": "col_2", "op": "between", "value": ["2026-01-01", "2026-03-25"]},
@@ -666,7 +663,6 @@ def test_formula_ratio_post_aggregate_where():
                     "kind": "expression",
                     "expression": "SUM(col_9) / SUM(col_8)",
                     "as": "col_9_ratio",
-                    "refs": {"columns": ["col_8", "col_9"]},
                 }
             ],
             post_aggregate={
@@ -707,7 +703,6 @@ def test_expression_and_compare_periods_rejected_at_validation():
                         "kind": "expression",
                         "expression": "SUM(col_8)",
                         "as": "x",
-                        "refs": {"columns": ["col_8"]},
                     }
                 ],
             )
@@ -1006,7 +1001,7 @@ def test_intent_v2_column_not_in_schema():
         )
     )
     schema = {"columns": {k: {} for k in ("col_6", "col_8")}, "indicators": {}}
-    b = intent_sql_blockers_v2(intent, schema)
+    b, _ = intent_sql_blockers_v2(intent, schema)
     assert not b
     bad = IntentV2.model_validate(
         _v2(
@@ -1014,8 +1009,34 @@ def test_intent_v2_column_not_in_schema():
             metrics=[{"id": "m1", "kind": "aggregate", "column": "col_99", "aggregation": "sum", "as": "s"}],
         )
     )
-    b2 = intent_sql_blockers_v2(bad, schema)
+    b2, _ = intent_sql_blockers_v2(bad, schema)
     assert any("col_99" in x for x in b2)
+
+
+def test_expression_legacy_refs_in_json_ignored():
+    """舊版 JSON 若含 refs（含誤填別名），解析時略過；欄位校驗與 SQL 僅依 expression 內 col_*。"""
+    raw = _v2(
+        group_by=["col_4"],
+        metrics=[
+            {"id": "sales", "kind": "aggregate", "column": "col_11", "aggregation": "sum", "as": "total_sales"},
+            {
+                "id": "r",
+                "kind": "expression",
+                "expression": "SUM(col_11) / SUM(total_sales)",
+                "as": "discount_ratio",
+                "refs": {"columns": ["col_11", "total_sales"]},
+            },
+        ],
+    )
+    intent = IntentV2.model_validate(raw)
+    expr_m = next(m for m in intent.metrics if isinstance(m, MetricExpressionV2))
+    assert not hasattr(expr_m, "refs")
+    schema = {"columns": {k: {} for k in ("col_4", "col_11")}, "indicators": {}}
+    blockers, _ = intent_sql_blockers_v2(intent, schema)
+    assert not blockers
+    allow = {"col_4", "col_11"}
+    built = try_build_sql_v2(intent, allow, schema)
+    assert built is not None
 
 
 def test_having_previous_without_compare_blocked():
