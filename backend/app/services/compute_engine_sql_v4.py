@@ -45,7 +45,37 @@ from app.services.compute_engine_sql import (
     _sql_ident,
     column_allowlist_from_schema,
 )
-from app.services.compute_engine_sql_v2 import _schema_column_type_lower, _sql_literal, _time_filter_lhs_sql
+
+
+def _schema_column_type_lower(schema_def: dict[str, Any] | None, col: str) -> str:
+    """回傳 schema 中欄位 attr 小寫，如 'dim_time' → 'dim_time'；找不到回傳空字串。"""
+    if not schema_def or not isinstance(schema_def.get("columns"), dict):
+        return ""
+    meta = schema_def["columns"].get(col)
+    if not isinstance(meta, dict):
+        return ""
+    attr = (meta.get("attr") or "").strip().lower()
+    # dim_time 欄位在 filter 時需要 CAST AS DATE
+    if attr == "dim_time":
+        return "time"
+    return attr
+
+
+def _sql_literal(v: Any) -> str:
+    """將 Python 值轉為 DuckDB SQL 字面量（字串加單引號、數字直接輸出）。"""
+    if v is None:
+        return "NULL"
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, (int, float)):
+        return str(v)
+    s = str(v).replace("'", "''")
+    return f"'{s}'"
+
+
+def _time_filter_lhs_sql(col_sql: str) -> str:
+    """時間欄位 filter 左側：TRY_CAST(col AS DATE)。"""
+    return f"TRY_CAST({col_sql} AS DATE)"
 
 _GROUP_FN = re.compile(
     r"^\s*([A-Za-z_][a-zA-Z0-9_]*)\s*\(\s*(col_[a-zA-Z0-9_]+)\s*\)\s*$",
@@ -53,6 +83,10 @@ _GROUP_FN = re.compile(
 )
 _ATOMIC_AGG = re.compile(
     r"^\s*([A-Za-z_][a-zA-Z0-9_]*)\s*\(\s*(col_[a-zA-Z0-9_]+)\s*\)\s*$",
+    re.IGNORECASE,
+)
+_COUNT_DISTINCT_AGG = re.compile(
+    r"^\s*COUNT\s*\(\s*DISTINCT\s+(col_[a-zA-Z0-9_]+)\s*\)\s*$",
     re.IGNORECASE,
 )
 _METRIC_REF = re.compile(r"\bm\d+\b", re.IGNORECASE)
@@ -157,6 +191,16 @@ def _group_expr_sql(raw: str, allowlist: set[str], schema_def: dict[str, Any] | 
 
 
 def _parse_atomic_agg(metric: MetricV4) -> tuple[str, str] | None:
+    """解析 atomic formula，回傳 (agg_call_sql, col)。
+    支援：SUM(col_x)、COUNT(DISTINCT col_x)。
+    agg_call_sql 是完整的 SQL 片段（已含 DISTINCT 關鍵字）。
+    """
+    # COUNT(DISTINCT col_x)
+    md = _COUNT_DISTINCT_AGG.match(metric.formula)
+    if md:
+        col = md.group(1)
+        return f"COUNT(DISTINCT {_sql_ident(col)})", col
+    # 一般 AGG(col_x)
     m = _ATOMIC_AGG.match(metric.formula)
     if not m:
         return None
@@ -344,7 +388,7 @@ def _build_calculate_sql(
     atomic_ids: list[str] = []
     derived_ids: list[str] = []
     atomic_col_by_id: dict[str, str] = {}
-    agg_fn_by_id: dict[str, str] = {}
+    agg_call_by_id: dict[str, str] = {}   # 完整 SQL 聚合呼叫，如 SUM("col_11") 或 COUNT(DISTINCT "col_3")
     kind_by_id: dict[str, str] = {}
 
     for m in intent.metrics:
@@ -353,7 +397,7 @@ def _build_calculate_sql(
         if parsed is None:
             derived_ids.append(mid)
         else:
-            fn, col = parsed
+            agg_call_or_fn, col = parsed
             if col not in allow:
                 raise ValueError(
                     f"metric '{m.id}' 的 formula 使用了不存在於 schema 的欄位 '{col}'。"
@@ -361,7 +405,11 @@ def _build_calculate_sql(
                 )
             atomic_ids.append(mid)
             atomic_col_by_id[mid] = col
-            agg_fn_by_id[mid] = fn
+            # COUNT(DISTINCT ...) 已包含完整 SQL；一般 AGG 需補欄位識別字
+            if "DISTINCT" in agg_call_or_fn.upper():
+                agg_call_by_id[mid] = agg_call_or_fn
+            else:
+                agg_call_by_id[mid] = f"{agg_call_or_fn}({_sql_ident(col)})"
             kind_by_id[mid] = _metric_kind(m)
 
     deps_map: dict[str, set[str]] = {}
@@ -394,8 +442,7 @@ def _build_calculate_sql(
         wh = _where_from_clauses(list(m.filters), schema_def)
         if wh is None:
             raise ValueError(f"metric {aid} 過濾條件無法轉譯")
-        col_ident = _sql_ident(atomic_col_by_id[aid])
-        agg_call = f"{agg_fn_by_id[aid]}({col_ident})"
+        agg_call = agg_call_by_id[aid]
         agg_alias = _sql_ident(m.alias)
         safe = re.sub(r"[^a-zA-Z0-9_]", "_", m.id) or "m"
         cte_safe_by_id[aid] = safe

@@ -107,6 +107,11 @@ import re as _re
 _ATOMIC_FORMULA_RE = _re.compile(
     r"^\s*[A-Za-z_][A-Za-z0-9_]*\s*\(\s*col_[a-zA-Z0-9_]+\s*\)\s*$"
 )
+# COUNT(DISTINCT col_x) 額外支援
+_COUNT_DISTINCT_FORMULA_RE = _re.compile(
+    r"^\s*COUNT\s*\(\s*DISTINCT\s+(col_[a-zA-Z0-9_]+)\s*\)\s*$",
+    _re.IGNORECASE,
+)
 _RAW_AGG_IN_FORMULA_RE = _re.compile(
     r"\b(SUM|COUNT|AVG|MIN|MAX)\s*\(", _re.IGNORECASE
 )
@@ -138,6 +143,9 @@ class MetricV4(BaseModel):
         # Atomic：SUM(col_x) 格式 → 合法
         if _ATOMIC_FORMULA_RE.match(s):
             return s
+        # COUNT(DISTINCT col_x) → 合法
+        if _COUNT_DISTINCT_FORMULA_RE.match(s):
+            return s
         # Derived：含 m1/m2 引用 → 合法；但不能同時含原始聚合函數
         has_metric_ref = bool(_METRIC_REF_RE.search(s))
         has_raw_agg = bool(_RAW_AGG_IN_FORMULA_RE.search(s))
@@ -150,7 +158,8 @@ class MetricV4(BaseModel):
             )
         if not has_metric_ref and has_raw_agg and not _ATOMIC_FORMULA_RE.match(s):
             raise ValueError(
-                f"formula 不合法：atomic metric 只能是單一聚合單一欄位，如 SUM(col_11)。"
+                f"formula 不合法：atomic metric 只能是單一聚合單一欄位（如 SUM(col_11)）"
+                f"或 COUNT(DISTINCT col_x)。"
                 f"若需複合計算，請拆成多個 atomic metric 再用衍生 metric 組合。原始 formula: {s!r}"
             )
         return s

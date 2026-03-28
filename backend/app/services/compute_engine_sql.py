@@ -1,8 +1,8 @@
 """
 DuckDB SQL 執行與查詢結果 → chart 結構。
 
-**組 SQL**：`compute_engine_sql_v2.try_build_sql_v2`（Intent v2）、`compute_engine_sql_v32.try_build_sql_v32`（Intent v3.2）。本檔另提供共用工具：
-欄位白名單、識別字引用、公式內 col_* 替換、dataset 標籤、兩期 CTE 別名映射、SQL 片段等。
+共用工具：欄位白名單、識別字引用、公式內 col_* 替換、dataset 標籤。
+SQL 組建由 compute_engine_sql_v4.try_build_sql_v4 負責。
 """
 from __future__ import annotations
 
@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-
-from app.schemas.intent_v2 import USER_FACING_INTENT_VALIDATION_MESSAGE
 
 logger = logging.getLogger(__name__)
 
@@ -265,21 +263,6 @@ def _agg_select_fragment(col: str, agg: str, out_alias: str, *, plain_ident: boo
     return f"COUNT({qc}) AS {qa}"
 
 
-def intent_sql_blockers(intent: dict[str, Any], schema_def: dict[str, Any]) -> list[str]:
-    """若非空，intent（v2）目前無法轉成 SQL。"""
-    from pydantic import ValidationError
-
-    from app.schemas.intent_v2 import IntentV2, intent_sql_blockers_v2
-
-    if not column_allowlist_from_schema(schema_def):
-        return ["schema 無 columns 可供欄位白名單校驗"]
-    try:
-        v2 = IntentV2.model_validate(intent)
-    except ValidationError as e:
-        logger.info("IntentV2 驗證失敗（intent_sql_blockers）: %s", e.errors())
-        return [USER_FACING_INTENT_VALIDATION_MESSAGE]
-    blockers, _ = intent_sql_blockers_v2(v2, schema_def)
-    return blockers
 
 
 def chart_from_sql_dataframe(
@@ -421,57 +404,6 @@ def chart_from_list_sql_dataframe(
     }
 
 
-def run_sql_compute_engine_v32(
-    path: Path,
-    intent: dict[str, Any],
-    schema_def: dict[str, Any],
-    *,
-    engine_version: int = 32,
-) -> tuple[dict[str, Any] | None, str | None, dict[str, Any]]:
-    """Intent v3.2（含 dims）→ SQL → 圖表。"""
-    from pydantic import ValidationError
-
-    from app.schemas.intent_v32 import IntentV32, USER_FACING_INTENT_V32_VALIDATION_MESSAGE
-    from app.services.compute_engine_sql_v32 import try_build_sql_v32
-
-    debug: dict[str, Any] = {"sql_only": True, "sql_pushdown": False, "intent_version": "v3.2"}
-    try:
-        v32 = IntentV32.model_validate(intent)
-    except ValidationError as e:
-        logger.info("IntentV32 驗證失敗: %s", e.errors())
-        return None, USER_FACING_INTENT_V32_VALIDATION_MESSAGE, debug
-
-    built = try_build_sql_v32(v32, schema_def)
-    if not built:
-        return None, "無法自 v3.2 intent 組出 SQL（請檢查 dims、metrics、formula）", {**debug}
-
-    sql, params, meta = built
-    debug = {
-        "sql_only": True,
-        "sql_pushdown": True,
-        "sql": sql,
-        "sql_params": list(params),
-        "intent_version": "v3.2",
-        **meta,
-    }
-    df = execute_sql_on_duckdb_file(path, sql, params if params else None)
-    if df is None:
-        debug["sql_execute_ok"] = False
-        return None, "DuckDB 執行 SQL 失敗", debug
-
-    debug["sql_execute_ok"] = True
-    if df.empty:
-        return None, "篩選或聚合後無資料列", debug
-
-    if meta.get("is_list"):
-        chart = chart_from_list_sql_dataframe(
-            df, meta, sql_pushdown=True, engine_version=engine_version
-        )
-    else:
-        chart = chart_from_sql_dataframe(df, meta, sql_pushdown=True, engine_version=engine_version)
-    return chart, None, debug
-
-
 def run_sql_compute_engine_v4(
     path: Path,
     intent: dict[str, Any],
@@ -525,68 +457,3 @@ def run_sql_compute_engine_v4(
         chart = chart_from_sql_dataframe(df, meta, sql_pushdown=True, engine_version=engine_version)
     return chart, None, debug
 
-
-def run_sql_compute_engine(
-    path: Path,
-    intent: dict[str, Any],
-    schema_def: dict[str, Any],
-    *,
-    engine_version: int = 2,
-) -> tuple[dict[str, Any] | None, str | None, dict[str, Any]]:
-    """
-    intent → SQL → DuckDB（Intent v2）。
-    回傳 (chart_result, error_detail, debug)。
-    """
-    from pydantic import ValidationError
-
-    from app.schemas.intent_v2 import IntentV2, intent_sql_blockers_v2
-    from app.services.compute_engine_sql_v2 import try_build_sql_v2
-
-    debug: dict[str, Any] = {"sql_only": True, "sql_pushdown": False}
-    try:
-        intent_v2 = IntentV2.model_validate(intent)
-    except ValidationError as e:
-        logger.info("IntentV2 驗證失敗（run_sql_compute_engine）: %s", e.errors())
-        return None, USER_FACING_INTENT_VALIDATION_MESSAGE, debug
-
-    blockers, intent_v2 = intent_sql_blockers_v2(intent_v2, schema_def)
-    if blockers:
-        msg = "此 intent 無法轉為 SQL：" + "；".join(blockers)
-        return None, msg, {**debug, "blockers": blockers}
-
-    allow = column_allowlist_from_schema(schema_def)
-    built = try_build_sql_v2(intent_v2, allow, schema_def)
-    if not built:
-        return None, "無法自 intent 組出 SQL（請檢查 metrics 與 compare 設定）", debug
-
-    sql, params, meta = built
-    debug = {
-        "sql_only": True,
-        "sql_pushdown": True,
-        "sql": sql,
-        "sql_params": list(params),
-    }
-    df = execute_sql_on_duckdb_file(path, sql, params if params else None)
-    if df is None:
-        debug["sql_execute_ok"] = False
-        return None, "DuckDB 執行 SQL 失敗", debug
-
-    debug["sql_execute_ok"] = True
-    if df.empty:
-        return None, "篩選或聚合後無資料列", debug
-
-    chart = chart_from_sql_dataframe(df, meta, sql_pushdown=True, engine_version=engine_version)
-    return chart, None, debug
-
-
-def try_run_sql_compute_engine(
-    path: Path,
-    intent: dict[str, Any],
-    schema_def: dict[str, Any],
-    *,
-    engine_version: int = 2,
-) -> tuple[bool, dict[str, Any] | None, str | None, dict[str, Any]]:
-    """相容舊簽名：改委派 run_sql_compute_engine。"""
-    chart, err, dbg = run_sql_compute_engine(path, intent, schema_def, engine_version=engine_version)
-    ok = chart is not None and err is None
-    return ok, chart, err, dbg

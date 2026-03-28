@@ -1,6 +1,6 @@
 """Chat Compute Tool API：POST /chat/completions-compute-tool。LLM 意圖萃取 → Backend 計算 → 文字生成
 
-Tool Calling 路徑：LLM 輸出結構化 intent（**v2** 與 **v3.2（含 dims）** 可經 DuckDB 計算；舊 v3 草案無 dims 僅驗證、不執行）。
+Tool Calling 路徑：LLM 輸出結構化 intent（**v4.0**）→ DuckDB SQL 計算。
 schema 摘要等仍可能依端點載入列資料（全表或抽樣）供 LLM 與除錯用。
 """
 import json
@@ -8,7 +8,7 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import litellm
 from fastapi import APIRouter, Depends, HTTPException
@@ -29,22 +29,6 @@ from app.core.database import get_db
 from app.models.bi_project import BiProject
 from app.core.security import get_current_user
 from app.models.user import User
-from app.schemas.intent_v2 import (
-    IntentV2,
-    USER_FACING_INTENT_NO_JSON_MESSAGE,
-    USER_FACING_INTENT_VALIDATION_MESSAGE,
-)
-from app.schemas.intent_v3 import (
-    IntentV3Draft,
-    USER_FACING_INTENT_V3_LEGACY_NO_ENGINE,
-    USER_FACING_INTENT_V3_VALIDATION_MESSAGE,
-    is_intent_v3,
-)
-from app.schemas.intent_v32 import (
-    IntentV32,
-    USER_FACING_INTENT_V32_VALIDATION_MESSAGE,
-    is_intent_v32_payload,
-)
 from app.schemas.intent_v4 import (
     IntentV4,
     USER_FACING_INTENT_V4_VALIDATION_MESSAGE,
@@ -112,13 +96,18 @@ _SQL_ONLY_NO_PROJECT = (
 )
 
 
-def _compute_with_intent_v2(
+_NO_INTENT_JSON_MSG = (
+    "暫時無法從回覆中取得有效的分析結構。"
+    "請用較具體的方式描述，例如：**時間範圍**、**想看的數字**（如銷售額、筆數），或稍後再試一次。"
+)
+
+def _compute_with_intent(
     intent: dict[str, Any],
     schema_def: dict[str, Any],
     *,
     duckdb_project_id: str | None = None,
 ) -> tuple[dict[str, Any] | None, list[str], dict[str, Any] | None]:
-    """Intent v2／v3.2 計算經 run_compute_engine（DuckDB SQL）。無 project_id 時無法執行。"""
+    """Intent v4.0 計算經 run_compute_engine（DuckDB SQL）。無 project_id 時無法執行。"""
     if not (duckdb_project_id or "").strip():
         return None, [_SQL_ONLY_NO_PROJECT], None
     name = duckdb_project_id.strip()
@@ -157,10 +146,6 @@ def _user_message_for_compute_errors(
         if (expose or detail) and (sql_debug or "").strip():
             return f"{msg}\n\n【SQL】{(sql_debug or '').strip()}"
         return msg
-    if USER_FACING_INTENT_VALIDATION_MESSAGE in msg or "Intent v2 驗證失敗" in msg:
-        return USER_FACING_INTENT_VALIDATION_MESSAGE
-    if "value_columns 為空" in msg:
-        return _append_technical_lines("無法解析數值欄位：請在 intent 的 metrics 提供 aggregate 指標。")
     if "_resolve_columns" in msg or "rows 為空" in msg:
         return _append_technical_lines("無法解析欄位對應，請確認問題描述與資料 schema。")
     if detail and msg:
@@ -499,47 +484,42 @@ def _extract_json_from_llm(raw: str) -> dict | None:
 
 def _validate_intent_payload(
     intent: dict[str, Any],
-) -> tuple[Literal["v4", "v2", "v32", "v3legacy"], ValidationError | None]:
-    """
-    v4：含 version 4.x 時以 IntentV4 驗證。
-    v3.2：含 dims 時以 IntentV32 嚴格驗證；其餘 3.x 以 IntentV3Draft；v2：IntentV2。
-    """
-    if is_intent_v4_payload(intent):
-        try:
-            IntentV4.model_validate(intent)
-            return "v4", None
-        except ValidationError as e:
-            return "v4", e
-    if is_intent_v3(intent):
-        if is_intent_v32_payload(intent):
-            try:
-                IntentV32.model_validate(intent)
-                return "v32", None
-            except ValidationError as e:
-                return "v32", e
-        try:
-            IntentV3Draft.model_validate(intent)
-            return "v3legacy", None
-        except ValidationError as e:
-            return "v3legacy", e
+) -> tuple[str, ValidationError | None]:
+    """v4.0 唯一支援版本。非 v4.0 直接回傳 validation 失敗。"""
+    if not is_intent_v4_payload(intent):
+        return "not_v4", None  # 特殊標記：非 v4 格式
     try:
-        IntentV2.model_validate(intent)
-        return "v2", None
+        IntentV4.model_validate(intent)
+        return "v4", None
     except ValidationError as e:
-        return "v2", e
+        return "v4", e
 
 
-def _user_message_for_intent_validation_failure(kind: Literal["v4", "v2", "v32", "v3legacy"]) -> str:
-    if kind == "v4":
-        return USER_FACING_INTENT_V4_VALIDATION_MESSAGE
-    if kind == "v32":
-        return USER_FACING_INTENT_V32_VALIDATION_MESSAGE
-    if kind == "v3legacy":
-        return USER_FACING_INTENT_V3_VALIDATION_MESSAGE
-    return USER_FACING_INTENT_VALIDATION_MESSAGE
+def _user_message_for_intent_validation_failure(kind: str) -> str:
+    if kind == "not_v4":
+        return (
+            "僅支援 Intent v4.0（需含 \"version\": \"4.0\"）。"
+            "請確認意圖生成使用最新 prompt。"
+        )
+    return USER_FACING_INTENT_V4_VALIDATION_MESSAGE
 
 
-def _internal_message_for_intent_validation_failure(kind: Literal["v4", "v2", "v32", "v3legacy"]) -> str:
+def _extract_first_validation_detail(verr: ValidationError) -> str | None:
+    """從 Pydantic ValidationError 提取第一條最有意義的錯誤訊息（中文優先）。"""
+    try:
+        errs = verr.errors()
+        for e in errs:
+            msg = str(e.get("msg") or "")
+            # 過濾掉 Pydantic 內建的通用訊息，只回傳我們自訂的中文訊息
+            if msg and any(kw in msg for kw in ("formula", "group_override", "metric", "欄位", "不合法", "佔位符", "alias")):
+                loc = " → ".join(str(x) for x in (e.get("loc") or []))
+                return f"【詳細原因】{loc}：{msg}" if loc else f"【詳細原因】{msg}"
+    except Exception:
+        pass
+    return None
+
+
+def _internal_message_for_intent_validation_failure(kind: str) -> str:
     """開發者用：包含技術細節，放入 debug 欄位，不直接顯示給終端用戶。"""
     if kind == "v4":
         return _USER_FACING_INTENT_V4_VALIDATION_MESSAGE_INTERNAL
@@ -796,17 +776,20 @@ async def extract_intent_only(
             intent=None,
             usage=usage1,
             model=model,
-            error_message=USER_FACING_INTENT_NO_JSON_MESSAGE,
+            error_message=_NO_INTENT_JSON_MSG,
             system_prompt=intent_prompt,
         )
     kind, verr = _validate_intent_payload(intent)
     if verr is not None:
         logger.info("Intent 驗證失敗（extract-intent）kind=%s: %s", kind, verr.errors())
+        base_msg = _user_message_for_intent_validation_failure(kind)
+        detail = _extract_first_validation_detail(verr)
+        error_message = f"{base_msg}\n\n{detail}" if detail else base_msg
         return ExtractIntentResponse(
             intent=None,
             usage=usage1,
             model=model,
-            error_message=_user_message_for_intent_validation_failure(kind),
+            error_message=error_message,
             system_prompt=intent_prompt,
             intent_validation_errors=_pydantic_errors_json_safe(verr),
         )
@@ -870,7 +853,7 @@ async def chat_completions_compute_tool(
     intent = _extract_json_from_llm(intent_raw)
     if not intent or not isinstance(intent, dict):
         return ChatResponseComputeTool(
-            content=USER_FACING_INTENT_NO_JSON_MESSAGE,
+            content=_NO_INTENT_JSON_MSG,
             model=model,
             usage=usage1,
             chart_data=None,
@@ -882,8 +865,10 @@ async def chat_completions_compute_tool(
         debug["intent_validation_errors"] = _pydantic_errors_json_safe(verr)
         debug["intent_invalid_draft"] = intent
         debug["intent_validation_message_internal"] = _internal_message_for_intent_validation_failure(kind)
+        base_msg = _user_message_for_intent_validation_failure(kind)
+        detail = _extract_first_validation_detail(verr)
         return ChatResponseComputeTool(
-            content=_user_message_for_intent_validation_failure(kind),
+            content=f"{base_msg}\n\n{detail}" if detail else base_msg,
             model=model,
             usage=usage1,
             chart_data=None,
@@ -892,16 +877,8 @@ async def chat_completions_compute_tool(
 
     debug["intent"] = intent
     debug["intent_version"] = kind
-    if kind == "v3legacy":
-        return ChatResponseComputeTool(
-            content=USER_FACING_INTENT_V3_LEGACY_NO_ENGINE,
-            model=model,
-            usage=usage1,
-            chart_data=None,
-            debug=debug,
-        )
 
-    chart_result, error_list, ce_debug = _compute_with_intent_v2(
+    chart_result, error_list, ce_debug = _compute_with_intent(
         intent, schema_def, duckdb_project_id=pid
     )
     if ce_debug:
@@ -1036,16 +1013,8 @@ async def compute_from_intent(
         )
 
     debug["intent_version"] = kind
-    if kind == "v3legacy":
-        return ChatResponseComputeTool(
-            content=USER_FACING_INTENT_V3_LEGACY_NO_ENGINE,
-            model=model,
-            usage=None,
-            chart_data=None,
-            debug=debug,
-        )
 
-    chart_result, error_list, ce_debug = _compute_with_intent_v2(
+    chart_result, error_list, ce_debug = _compute_with_intent(
         intent, schema_def, duckdb_project_id=pid
     )
     if ce_debug:
@@ -1172,17 +1141,19 @@ async def _stream_compute_tool(
         yield _sse_event({
             "stage": "done",
             "error_stage": "intent",
-            "content": USER_FACING_INTENT_NO_JSON_MESSAGE,
+            "content": _NO_INTENT_JSON_MSG,
             "chart_data": None,
         })
         return
     kind, verr = _validate_intent_payload(intent)
     if verr is not None:
         logger.info("Intent 驗證失敗（compute-tool-stream）kind=%s: %s", kind, verr.errors())
+        base_msg = _user_message_for_intent_validation_failure(kind)
+        detail = _extract_first_validation_detail(verr)
         yield _sse_event({
             "stage": "done",
             "error_stage": "intent",
-            "content": _user_message_for_intent_validation_failure(kind),
+            "content": f"{base_msg}\n\n{detail}" if detail else base_msg,
             "chart_data": None,
             "intent_validation_errors": _pydantic_errors_json_safe(verr),
             "intent_validation_message_internal": _internal_message_for_intent_validation_failure(kind),
@@ -1190,20 +1161,9 @@ async def _stream_compute_tool(
         })
         return
 
-    if kind == "v3legacy":
-        yield _sse_event({
-            "stage": "done",
-            "error_stage": "compute",
-            "content": USER_FACING_INTENT_V3_LEGACY_NO_ENGINE,
-            "chart_data": None,
-            "intent_version": "v3legacy",
-            "intent": intent,
-        })
-        return
-
     yield _sse_event({"stage": "compute"})
 
-    chart_result, error_list, ce_debug = _compute_with_intent_v2(
+    chart_result, error_list, ce_debug = _compute_with_intent(
         intent, schema_def, duckdb_project_id=pid
     )
 
@@ -1350,12 +1310,7 @@ async def intent_to_compute(
             detail=_user_message_for_intent_validation_failure(kind),
         )
 
-    if kind == "v3legacy":
-        return IntentToComputeResponse(
-            chart_result=None, error_detail=USER_FACING_INTENT_V3_LEGACY_NO_ENGINE
-        )
-
-    chart_result, error_list, _ce_debug = _compute_with_intent_v2(
+    chart_result, error_list, _ce_debug = _compute_with_intent(
         intent, schema_def, duckdb_project_id=pid
     )
     error_detail = "; ".join(error_list) if error_list and not chart_result else None
@@ -1442,12 +1397,7 @@ async def intent_to_compute_by_project(
             detail=_user_message_for_intent_validation_failure(kind),
         )
 
-    if kind == "v3legacy":
-        return IntentToComputeResponse(
-            chart_result=None, error_detail=USER_FACING_INTENT_V3_LEGACY_NO_ENGINE
-        )
-
-    chart_result, error_list, _ce_debug = _compute_with_intent_v2(
+    chart_result, error_list, _ce_debug = _compute_with_intent(
         intent, schema_def, duckdb_project_id=pid
     )
     error_detail = "; ".join(error_list) if error_list and not chart_result else None

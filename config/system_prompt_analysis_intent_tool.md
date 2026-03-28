@@ -39,6 +39,7 @@ Failure to follow ANY rule is considered incorrect.
 
 ### 4-1. `metrics.formula`
 - **原子指標（Atomic）**：僅能是**單一**聚合包**單一**欄位：`SUM(col_x)`、`AVG(col_x)`、`COUNT(col_x)`、`MIN(col_x)`、`MAX(col_x)`。
+- **不重複計數**：`COUNT(DISTINCT col_x)`（唯一值計數，如「不重複品牌數」）。
 - **衍生指標（Derived）**：`formula` **僅能**以已宣告的 **`m1`、`m2`…** 做四則與括號運算；**絕對禁止**在衍生指標的 `formula` 內再寫 SUM/COUNT 等聚合函數或裸 `col_*`。
 - **⚠️ 常見錯誤**：`formula: "(SUM(col_11) - SUM(col_12)) / SUM(col_11)"` → **錯誤**！必須拆成：
   - `m1: SUM(col_11)`, `m2: SUM(col_12)`, `m3: (m1 - m2) / m1`

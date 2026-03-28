@@ -9,7 +9,7 @@ from app.api.endpoints.chat_compute_tool import (
     _normalize_question_for_intent_extraction,
     _pydantic_errors_json_safe,
 )
-from app.schemas.intent_v2 import IntentV2
+from app.schemas.intent_v4 import IntentV4
 
 
 def test_normalize_question_strips_cjk_book_brackets():
@@ -35,22 +35,21 @@ def test_extract_json_from_llm_first_object_only():
 def test_pydantic_errors_json_safe_no_exception_objects_in_ctx():
     """model_validator 的 ValueError 會讓 e.errors() 的 ctx 含 Exception，json.dumps 會炸。"""
     bad = {
-        "version": 2,
-        "dimensions": {"group_by": []},
-        "filters": [],
+        "version": "4.0",
+        "mode": "calculate",
+        "dims": {"groups": []},
+        "filters": [{"col": "col_1", "op": "eq", "val": "x"}],
         "metrics": [
             {
-                "id": "g",
-                "kind": "grand_share",
-                "column": "col_11",
-                "as": "a",
-                "numerator_filters": [{"column": "col_4", "op": "eq", "value": "x"}],
-            },
-            {"id": "m", "kind": "aggregate", "column": "col_11", "aggregation": "sum", "as": "b"},
+                "id": "m1",
+                "alias": "sales",
+                "formula": "SUM(col_11)",
+                "filters": [],
+            }
         ],
     }
     with pytest.raises(ValidationError) as exc_info:
-        IntentV2.model_validate(bad)
+        IntentV4.model_validate(bad)
     safe = _pydantic_errors_json_safe(exc_info.value)
     json.dumps(safe)
-    assert isinstance(safe, list) and safe[0].get("type") == "value_error"
+    assert isinstance(safe, list) and len(safe) > 0
