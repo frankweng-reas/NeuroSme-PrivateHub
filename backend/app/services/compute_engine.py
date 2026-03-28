@@ -9,7 +9,8 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
-from app.services.compute_engine_sql import run_sql_compute_engine
+from app.schemas.intent_v3 import USER_FACING_INTENT_V3_LEGACY_NO_ENGINE, is_intent_v3
+from app.services.compute_engine_sql import run_sql_compute_engine, run_sql_compute_engine_v32, run_sql_compute_engine_v4
 from app.services.duckdb_store import resolve_duckdb_path
 
 SQL_ENGINE_VERSION = 2
@@ -131,6 +132,36 @@ def run_compute_engine(
     """
     if not schema_def or not isinstance(schema_def, dict):
         return None, "schema_def 必須為有效物件（供後續版本對欄位語意校驗）", {"sql_only": True, "sql_pushdown": False}
+
+    # v4.0 優先分流
+    from app.schemas.intent_v4 import is_intent_v4_payload
+    if is_intent_v4_payload(intent):
+        path_v4 = resolve_duckdb_path((duckdb_name or "").strip())
+        if path_v4 is None:
+            return (
+                None,
+                f"找不到 DuckDB 檔案（名稱={duckdb_name!r}），請確認 DUCKDB_DATA_DIR 或絕對路徑",
+                {"sql_only": True, "sql_pushdown": False},
+            )
+        return run_sql_compute_engine_v4(path_v4, intent, schema_def, engine_version=40)
+
+    if is_intent_v3(intent):
+        from app.schemas.intent_v32 import is_intent_v32_payload
+
+        if not is_intent_v32_payload(intent):
+            return (
+                None,
+                USER_FACING_INTENT_V3_LEGACY_NO_ENGINE,
+                {"intent_version": "v3legacy", "sql_only": True, "sql_pushdown": False},
+            )
+        path_v32 = resolve_duckdb_path((duckdb_name or "").strip())
+        if path_v32 is None:
+            return (
+                None,
+                f"找不到 DuckDB 檔案（名稱={duckdb_name!r}），請確認 DUCKDB_DATA_DIR 或絕對路徑",
+                {"sql_only": True, "sql_pushdown": False},
+            )
+        return run_sql_compute_engine_v32(path_v32, intent, schema_def, engine_version=32)
 
     path = resolve_duckdb_path((duckdb_name or "").strip())
     if path is None:

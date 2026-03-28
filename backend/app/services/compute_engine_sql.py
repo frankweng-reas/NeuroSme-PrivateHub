@@ -1,7 +1,7 @@
 """
 DuckDB SQL 執行與查詢結果 → chart 結構。
 
-**組 SQL 僅** `compute_engine_sql_v2.try_build_sql_v2`（Intent v2）。本檔提供共用工具：
+**組 SQL**：`compute_engine_sql_v2.try_build_sql_v2`（Intent v2）、`compute_engine_sql_v32.try_build_sql_v32`（Intent v3.2）。本檔另提供共用工具：
 欄位白名單、識別字引用、公式內 col_* 替換、dataset 標籤、兩期 CTE 別名映射、SQL 片段等。
 """
 from __future__ import annotations
@@ -290,13 +290,36 @@ def chart_from_sql_dataframe(
     engine_version: int = 2,
 ) -> dict[str, Any]:
     group_cols: list[str] = meta.get("group_cols") or []
+    group_dim_types: list[str] = meta.get("group_dim_types") or []
     aliases: list[str] = meta["agg_aliases"]
     labels_list: list[str]
+
+    def _format_dim_val(val: str, dim_type: str) -> str:
+        """依維度類型格式化標籤值：MONTH → '3月'，QUARTER → 'Q1'，其餘原樣。"""
+        if dim_type == "MONTH":
+            try:
+                return f"{int(float(val))}月"
+            except (ValueError, TypeError):
+                return val
+        if dim_type == "QUARTER":
+            try:
+                return f"Q{int(float(val))}"
+            except (ValueError, TypeError):
+                return val
+        return val
+
     if group_cols:
+        def _row_label(row: Any) -> str:
+            parts: list[str] = []
+            for i, v in enumerate(row):
+                dim_type = group_dim_types[i] if i < len(group_dim_types) else "col"
+                parts.append(_format_dim_val(str(v), dim_type))
+            return " | ".join(parts)
+
         labels_list = (
             df[group_cols]
             .astype(str)
-            .apply(lambda row: " | ".join(row.tolist()), axis=1)
+            .apply(_row_label, axis=1)
             .tolist()
         )
     else:
@@ -353,6 +376,156 @@ def chart_from_sql_dataframe(
     }
 
 
+def chart_from_list_sql_dataframe(
+    df: pd.DataFrame,
+    meta: dict[str, Any],
+    *,
+    sql_pushdown: bool = True,
+    engine_version: int = 32,
+) -> dict[str, Any]:
+    """v3.2 mode=list：每欄一數列，labels 取第一欄字串化。"""
+    cols = meta.get("select_cols") or meta.get("agg_aliases") or []
+    if not cols:
+        return {
+            "labels": [],
+            "datasets": [],
+            "computeEngine": {"version": engine_version, "sqlPushdown": sql_pushdown},
+        }
+
+    def resolve(c: str) -> str:
+        if c in df.columns:
+            return str(c)
+        for x in df.columns:
+            if str(x).lower() == str(c).lower():
+                return str(x)
+        return str(c)
+
+    rcols = [resolve(c) for c in cols]
+    first = rcols[0]
+    if first in df.columns and len(df):
+        labels_list = df[first].astype(str).tolist()
+    else:
+        labels_list = [str(i) for i in range(len(df))]
+    datasets: list[dict[str, Any]] = []
+    for i, c in enumerate(rcols):
+        lbl = str(cols[i])
+        if c not in df.columns:
+            data: list[Any] = []
+        else:
+            data = df[c].tolist()
+        datasets.append({"label": lbl, "data": data, "valueLabel": lbl})
+    return {
+        "labels": labels_list,
+        "datasets": datasets,
+        "computeEngine": {"version": engine_version, "sqlPushdown": sql_pushdown},
+    }
+
+
+def run_sql_compute_engine_v32(
+    path: Path,
+    intent: dict[str, Any],
+    schema_def: dict[str, Any],
+    *,
+    engine_version: int = 32,
+) -> tuple[dict[str, Any] | None, str | None, dict[str, Any]]:
+    """Intent v3.2（含 dims）→ SQL → 圖表。"""
+    from pydantic import ValidationError
+
+    from app.schemas.intent_v32 import IntentV32, USER_FACING_INTENT_V32_VALIDATION_MESSAGE
+    from app.services.compute_engine_sql_v32 import try_build_sql_v32
+
+    debug: dict[str, Any] = {"sql_only": True, "sql_pushdown": False, "intent_version": "v3.2"}
+    try:
+        v32 = IntentV32.model_validate(intent)
+    except ValidationError as e:
+        logger.info("IntentV32 驗證失敗: %s", e.errors())
+        return None, USER_FACING_INTENT_V32_VALIDATION_MESSAGE, debug
+
+    built = try_build_sql_v32(v32, schema_def)
+    if not built:
+        return None, "無法自 v3.2 intent 組出 SQL（請檢查 dims、metrics、formula）", {**debug}
+
+    sql, params, meta = built
+    debug = {
+        "sql_only": True,
+        "sql_pushdown": True,
+        "sql": sql,
+        "sql_params": list(params),
+        "intent_version": "v3.2",
+        **meta,
+    }
+    df = execute_sql_on_duckdb_file(path, sql, params if params else None)
+    if df is None:
+        debug["sql_execute_ok"] = False
+        return None, "DuckDB 執行 SQL 失敗", debug
+
+    debug["sql_execute_ok"] = True
+    if df.empty:
+        return None, "篩選或聚合後無資料列", debug
+
+    if meta.get("is_list"):
+        chart = chart_from_list_sql_dataframe(
+            df, meta, sql_pushdown=True, engine_version=engine_version
+        )
+    else:
+        chart = chart_from_sql_dataframe(df, meta, sql_pushdown=True, engine_version=engine_version)
+    return chart, None, debug
+
+
+def run_sql_compute_engine_v4(
+    path: Path,
+    intent: dict[str, Any],
+    schema_def: dict[str, Any],
+    *,
+    engine_version: int = 40,
+) -> tuple[dict[str, Any] | None, str | None, dict[str, Any]]:
+    """Intent v4.0 → SQL → 圖表。"""
+    from pydantic import ValidationError
+
+    from app.schemas.intent_v4 import IntentV4, USER_FACING_INTENT_V4_VALIDATION_MESSAGE
+    from app.services.compute_engine_sql_v4 import try_build_sql_v4
+
+    debug: dict[str, Any] = {"sql_only": True, "sql_pushdown": False, "intent_version": "v4.0"}
+    try:
+        v4 = IntentV4.model_validate(intent)
+    except ValidationError as e:
+        logger.info("IntentV4 驗證失敗: %s", e.errors())
+        return None, USER_FACING_INTENT_V4_VALIDATION_MESSAGE, debug
+
+    try:
+        built = try_build_sql_v4(v4, schema_def)
+    except ValueError as e:
+        logger.info("v4 SQL 組建失敗: %s", e)
+        return None, str(e), {**debug}
+    if not built:
+        return None, "無法自 v4.0 intent 組出 SQL（請檢查 dims、metrics、formula）", {**debug}
+    sql, params, meta = built
+    debug = {
+        "sql_only": True,
+        "sql_pushdown": True,
+        "sql": sql,
+        "sql_params": list(params),
+        "intent_version": "v4.0",
+        **meta,
+    }
+    df = execute_sql_on_duckdb_file(path, sql, params if params else None)
+    if df is None:
+        debug["sql_execute_ok"] = False
+        return None, "DuckDB 執行 SQL 失敗", debug
+
+    debug["sql_execute_ok"] = True
+    if df.empty:
+        return None, "篩選或聚合後無資料列", debug
+
+    if meta.get("is_list"):
+        chart = chart_from_list_sql_dataframe(
+            df, meta, sql_pushdown=True, engine_version=engine_version
+        )
+    else:
+        chart = chart_from_sql_dataframe(df, meta, sql_pushdown=True, engine_version=engine_version)
+    return chart, None, debug
+
+
 def run_sql_compute_engine(
     path: Path,
     intent: dict[str, Any],
@@ -361,7 +534,7 @@ def run_sql_compute_engine(
     engine_version: int = 2,
 ) -> tuple[dict[str, Any] | None, str | None, dict[str, Any]]:
     """
-    intent → SQL → DuckDB；唯一計算路徑（僅 Intent v2）。
+    intent → SQL → DuckDB（Intent v2）。
     回傳 (chart_result, error_detail, debug)。
     """
     from pydantic import ValidationError
