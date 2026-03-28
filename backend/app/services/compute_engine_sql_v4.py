@@ -653,6 +653,14 @@ def _build_calculate_sql(
         else:
             group_dim_types.append("col")
 
+    # 偵測哪些衍生指標是比率公式（num/den），供下游格式化百分比用
+    percent_aliases: list[str] = []
+    for mid in derived_ids:
+        m_d = id_to_metric[mid]
+        num_d, den_d = _divide_num_den(m_d.formula)
+        if num_d is not None and den_d is not None:
+            percent_aliases.append(m_d.alias)
+
     meta = {
         "mode": "calculate",
         "group_cols": dim_names,
@@ -661,5 +669,9 @@ def _build_calculate_sql(
         "agg_aliases": out_aliases,
         "dataset_labels": labels,
         "is_list": False,
+        # 哪些 alias 是衍生指標（formula 引用其他 mN），供 LLM 摘要篩選用
+        "derived_aliases": [id_to_alias[mid] for mid in derived_ids],
+        # 哪些衍生指標是比率公式（0~1 小數），應顯示為百分比
+        "chart_percent_aliases": percent_aliases,
     }
     return out_sql, [], meta

@@ -95,11 +95,23 @@ _SQL_ONLY_NO_PROJECT = (
     " 或 POST /chat/compute-engine（duckdb_name）；不接受僅 in-memory rows。"
 )
 
-
 _NO_INTENT_JSON_MSG = (
     "暫時無法從回覆中取得有效的分析結構。"
     "請用較具體的方式描述，例如：**時間範圍**、**想看的數字**（如銷售額、筆數），或稍後再試一次。"
 )
+
+
+def _debug_payload(debug: dict[str, Any]) -> dict[str, Any] | None:
+    """EXPOSE_COMPUTE_ERROR_DETAIL=True 時才回傳 debug；否則傳 None（不暴露 SQL/內部欄位）。"""
+    return debug if settings.EXPOSE_COMPUTE_ERROR_DETAIL else None
+
+
+def _clean_chart_result(chart_result: dict[str, Any] | None) -> dict[str, Any] | None:
+    """移除 chart_result 內的內部 metadata（computeEngine）。"""
+    if not chart_result or not isinstance(chart_result, dict):
+        return chart_result
+    return {k: v for k, v in chart_result.items() if k != "computeEngine"}
+
 
 def _compute_with_intent(
     intent: dict[str, Any],
@@ -857,7 +869,7 @@ async def chat_completions_compute_tool(
             model=model,
             usage=usage1,
             chart_data=None,
-            debug=debug,
+            debug=_debug_payload(debug),
         )
     kind, verr = _validate_intent_payload(intent)
     if verr is not None:
@@ -872,7 +884,7 @@ async def chat_completions_compute_tool(
             model=model,
             usage=usage1,
             chart_data=None,
-            debug=debug,
+            debug=_debug_payload(debug),
         )
 
     debug["intent"] = intent
@@ -894,7 +906,7 @@ async def chat_completions_compute_tool(
             model=model,
             usage=usage1,
             chart_data=None,
-            debug=debug,
+            debug=_debug_payload(debug),
         )
 
     if not chart_result.get("yAxisLabel") and chart_result.get("valueLabel"):
@@ -909,7 +921,7 @@ async def chat_completions_compute_tool(
             model=model,
             usage=usage1,
             chart_data=None,
-            debug=debug,
+            debug=_debug_payload(debug),
         )
 
     text_prompt = _load_prompt("text")
@@ -933,7 +945,7 @@ async def chat_completions_compute_tool(
             model=model,
             usage=usage1,
             chart_data=None,
-            debug=debug,
+            debug=_debug_payload(debug),
         )
 
     debug["text_usage"] = usage2
@@ -953,8 +965,8 @@ async def chat_completions_compute_tool(
         content=final_content,
         model=model,
         usage=total_usage,
-        chart_data=chart_result,
-        debug=debug,
+        chart_data=_clean_chart_result(chart_result),
+        debug=_debug_payload(debug),
     )
 
 
@@ -1029,7 +1041,7 @@ async def compute_from_intent(
             model=model,
             usage=None,
             chart_data=None,
-            debug=debug,
+            debug=_debug_payload(debug),
         )
 
     if not chart_result.get("yAxisLabel") and chart_result.get("valueLabel"):
@@ -1043,7 +1055,7 @@ async def compute_from_intent(
             model=model,
             usage=None,
             chart_data=None,
-            debug=debug,
+            debug=_debug_payload(debug),
         )
 
     text_prompt = _load_prompt("text")
@@ -1065,8 +1077,8 @@ async def compute_from_intent(
             content=f"文字生成失敗：{e}",
             model=model,
             usage=None,
-            chart_data=chart_result,
-            debug=debug,
+            chart_data=_clean_chart_result(chart_result),
+            debug=_debug_payload(debug),
         )
 
     debug["text_usage"] = usage2
@@ -1079,8 +1091,8 @@ async def compute_from_intent(
         content=final_content,
         model=model,
         usage=usage2,
-        chart_data=chart_result,
-        debug=debug,
+        chart_data=_clean_chart_result(chart_result),
+        debug=_debug_payload(debug),
     )
 
 
@@ -1155,9 +1167,9 @@ async def _stream_compute_tool(
             "error_stage": "intent",
             "content": f"{base_msg}\n\n{detail}" if detail else base_msg,
             "chart_data": None,
-            "intent_validation_errors": _pydantic_errors_json_safe(verr),
-            "intent_validation_message_internal": _internal_message_for_intent_validation_failure(kind),
-            "intent_invalid_draft": intent,
+            **({"intent_validation_errors": _pydantic_errors_json_safe(verr),
+                "intent_validation_message_internal": _internal_message_for_intent_validation_failure(kind),
+                "intent_invalid_draft": intent} if settings.EXPOSE_COMPUTE_ERROR_DETAIL else {}),
         })
         return
 
@@ -1180,7 +1192,7 @@ async def _stream_compute_tool(
             "chart_data": None,
             "compute_errors_raw": list(error_list),
         }
-        if ce_debug:
+        if ce_debug and settings.EXPOSE_COMPUTE_ERROR_DETAIL:
             payload["compute_debug"] = ce_debug
         yield _sse_event(payload)
         return
@@ -1219,7 +1231,7 @@ async def _stream_compute_tool(
             "stage": "done",
             "error_stage": "text",
             "content": f"分析文字生成失敗：{e}",
-            "chart_data": chart_result,
+            "chart_data": _clean_chart_result(chart_result),
         })
         return
 
@@ -1239,7 +1251,7 @@ async def _stream_compute_tool(
     yield _sse_event({
         "stage": "done",
         "content": final_content,
-        "chart_data": chart_result,
+        "chart_data": _clean_chart_result(chart_result),
         "model": model,
         "usage": total_usage,
     })
@@ -1314,7 +1326,7 @@ async def intent_to_compute(
         intent, schema_def, duckdb_project_id=pid
     )
     error_detail = "; ".join(error_list) if error_list and not chart_result else None
-    return IntentToComputeResponse(chart_result=chart_result, error_detail=error_detail)
+    return IntentToComputeResponse(chart_result=_clean_chart_result(chart_result), error_detail=error_detail)
 
 
 def _load_rows_from_duckdb_only(pid: str, db: Session, user_id: int) -> tuple[list[dict[str, Any]], Any]:
@@ -1401,7 +1413,7 @@ async def intent_to_compute_by_project(
         intent, schema_def, duckdb_project_id=pid
     )
     error_detail = "; ".join(error_list) if error_list and not chart_result else None
-    return IntentToComputeResponse(chart_result=chart_result, error_detail=error_detail)
+    return IntentToComputeResponse(chart_result=_clean_chart_result(chart_result), error_detail=error_detail)
 
 
 @router.post("/intent-to-compute-raw", response_model=IntentToComputeResponse)
@@ -1445,9 +1457,10 @@ async def compute_engine_endpoint(
     _, schema_def = _resolve_schema_def(db, req_schema_id=schema_id, proj_schema_id=None)
     chart_result, error_detail, debug = run_compute_engine(req.duckdb_name, intent, schema_def)
     gen_sql = debug.get("sql") if isinstance(debug.get("sql"), str) else None
+    expose = settings.EXPOSE_COMPUTE_ERROR_DETAIL
     return ComputeEngineResponse(
-        chart_result=chart_result,
+        chart_result=_clean_chart_result(chart_result),
         error_detail=error_detail,
-        debug=debug,
-        generated_sql=gen_sql,
+        debug=debug if expose else None,
+        generated_sql=gen_sql if expose else None,
     )

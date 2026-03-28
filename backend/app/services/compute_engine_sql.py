@@ -42,7 +42,12 @@ def _sql_chart_series_is_ratio_like(dataset_label: str, agg_alias: str) -> bool:
     if any(t.lower() in h for t in _RATIO_LIKE_TOKENS):
         return True
     a = (agg_alias or "").strip().lower()
-    return "yoy" in a or "growth" in a or a.endswith("_growth")
+    return (
+        "yoy" in a or "growth" in a or a.endswith("_growth")
+        or a == "ratio" or "_ratio" in a
+        or a.endswith("_pct") or a.endswith("_percent") or a.endswith("_rate")
+        or "proportion" in a
+    )
 
 
 def _sql_chart_ratio_to_percent_display(v: float) -> float:
