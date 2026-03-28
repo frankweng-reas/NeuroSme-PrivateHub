@@ -146,10 +146,11 @@ function toChartData(cd: unknown): ChartData | undefined {
     valueSuffix: c.valueSuffix as string | undefined,
     title: c.title as string | undefined,
     yAxisLabel: (c.yAxisLabel ?? c.y_axis_label ?? c.valueLabel) as string | undefined,
+    // 只有後端明確設定時才傳入，讓 ChartModal 的 getDefaultChartType 自行判斷
+    ...(c.chartType ? { chartType: c.chartType as 'pie' | 'bar' | 'line' } : {}),
   }
   if (Array.isArray(c.datasets) && c.datasets.length > 0) {
     return {
-      chartType: ((c.chartType as string) ?? 'line') as 'pie' | 'bar' | 'line',
       labels: c.labels as string[],
       datasets: c.datasets as { label: string; data: number[] }[],
       ...meta,
@@ -157,7 +158,6 @@ function toChartData(cd: unknown): ChartData | undefined {
   }
   if (Array.isArray(c.data)) {
     return {
-      chartType: ((c.chartType as string) ?? 'bar') as 'pie' | 'bar' | 'line',
       labels: c.labels as string[],
       data: c.data as number[],
       ...meta,

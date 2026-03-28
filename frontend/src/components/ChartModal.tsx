@@ -53,11 +53,16 @@ interface ChartModalProps {
 
 type ChartType = 'bar' | 'pie' | 'line'
 
-/** 判斷 labels 是否為時間序列（如 2026-01、2025-Q2） */
+/** 判斷 labels 是否為時間序列（如 2026-01、2025-Q2、3月、Q1） */
 function isTimeSeriesLabels(labels: string[]): boolean {
   if (!labels.length) return false
   const sample = labels[0]
-  return /^\d{4}[-/]?\d{1,2}/.test(sample) || /^\d{4}[-/]?Q\d/.test(sample)
+  return (
+    /^\d{4}[-/]?\d{1,2}/.test(sample) ||  // 2025-01, 2025/03, 20250301
+    /^\d{4}[-/]?Q\d/.test(sample) ||       // 2025-Q1, 2025Q2
+    /^\d{1,2}月$/.test(sample) ||          // 3月, 12月（v4 MONTH 分組）
+    /^Q\d$/.test(sample)                   // Q1, Q2（v4 QUARTER 分組）
+  )
 }
 
 /** labels 是否像「指標名」（如 來客數、客單價、營收）→ 不適合 pie */
@@ -74,9 +79,12 @@ function getSuitableChartTypes(data: ChartData): { pie: boolean; bar: boolean; l
   const hasPieData = !!(data.data && data.data.length > 0)
   const isTime = isTimeSeriesLabels(labels)
 
+  // pie：單一指標（無論是 data[] 或 datasets[1] 格式）、非時間序列、2 個以上類別、labels 不像指標名稱
+  const isSingleMetric =
+    (!hasDatasets && hasPieData) ||
+    (hasDatasets && (data.datasets?.length ?? 0) === 1)
   const pie =
-    hasPieData &&
-    !hasDatasets &&
+    isSingleMetric &&
     !isTime &&
     count >= 2 &&
     !looksLikeMetricLabels(labels)
@@ -131,7 +139,8 @@ function transformToBarLineData(data: ChartData): Record<string, string | number
 /** 將 ChartData 轉成 Recharts Pie 格式 */
 function transformToPieData(data: ChartData): { name: string; value: number }[] {
   const { labels } = data
-  const values = data.data ?? []
+  // data.data（舊格式）或 datasets[0].data（v4 格式）
+  const values = data.data ?? data.datasets?.[0]?.data ?? []
   return labels.map((name, i) => ({ name, value: values[i] ?? 0 }))
 }
 
