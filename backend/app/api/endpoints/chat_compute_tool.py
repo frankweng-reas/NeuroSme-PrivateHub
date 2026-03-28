@@ -470,12 +470,11 @@ def _load_intent_prompt(schema_def: dict[str, Any] | None) -> str:
     schema_block = _build_schema_block(schema_def)
     indicator_block = _build_indicator_block(schema_def)
     hierarchy_block = _build_hierarchy_block(schema_def)
-    system_date = datetime.now().strftime("%Y-%m-%d")
     return raw.replace("{{SCHEMA_NAME}}", schema_name).replace(
         "{{SCHEMA_DEFINITION}}", schema_block
     ).replace("{{INDICATOR_DEFINITION}}", indicator_block).replace(
         "{{DIMENSION_HIERARCHY}}", hierarchy_block
-    ).replace("{{SYSTEM_DATE}}", system_date)
+    )
 
 
 def _extract_json_from_llm(raw: str) -> dict | None:

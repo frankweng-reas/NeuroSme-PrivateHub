@@ -24,7 +24,8 @@ def _to_numeric(val: Any) -> float:
 
 
 def _parse_timestamp(val: Any) -> str:
-    """解析為「日期＋時間」格式：YYYY-MM-DD HH:MM:SS"""
+    """解析日期欄位：有實際時間（非 00:00:00）→ YYYY-MM-DD HH:MM:SS（DuckDB TIMESTAMP）；
+    純日期 → YYYY-MM-DD（DuckDB DATE）。"""
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return ""
     s = str(val).strip()
@@ -32,7 +33,11 @@ def _parse_timestamp(val: Any) -> str:
         return ""
     try:
         dt = pd.to_datetime(s)
-        return dt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(dt, "strftime") else s
+        if not hasattr(dt, "strftime"):
+            return s
+        if dt.hour != 0 or dt.minute != 0 or dt.second != 0:
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        return dt.strftime("%Y-%m-%d")
     except Exception:
         return s
 

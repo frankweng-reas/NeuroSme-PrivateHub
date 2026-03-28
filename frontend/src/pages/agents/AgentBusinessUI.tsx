@@ -474,6 +474,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
   const [showClearConfirm, setShowClearConfirm] = useState(false)
   const [showHelpModal, setShowHelpModal] = useState(false)
   const [importCsvLoading, setImportCsvLoading] = useState(false)
+  const [importDrawerOpen, setImportDrawerOpen] = useState(false)
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(
     () => loadStored(agent.id)?.selectedTemplateId ?? null
   )
@@ -490,6 +491,16 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
       .then(setSchemas)
       .catch(() => setSchemas([]))
   }, [])
+
+  // 切換專案時，用已儲存的 schema_id 預填 blocks
+  useEffect(() => {
+    setBlocks([{
+      id: '0',
+      selectedSchemaId: selectedProject?.schema_id?.trim() ?? '',
+      selectedFiles: [],
+    }])
+    nextBlockIdRef.current = 0
+  }, [selectedProject?.project_id])
 
   const getSchemaValidationContext = useCallback(
     async (schemaId: string): Promise<{ allowedHeaders: Set<string>; columnFieldNames: string[] }> => {
@@ -578,13 +589,6 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     fetchDuckdbStatus()
   }, [fetchDuckdbStatus])
 
-  const addBlock = () => {
-    nextBlockIdRef.current += 1
-    setBlocks((prev) => [
-      ...prev,
-      { id: String(nextBlockIdRef.current), selectedSchemaId: '', selectedFiles: [] },
-    ])
-  }
   const updateBlockSchema = (id: string, value: string) => {
     setBlocks((prev) =>
       prev.map((b) =>
@@ -1278,74 +1282,8 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
           )}
         </div>
 
-        {/* 右側：CSV 匯入（bi_projects import-csv + DuckDB；不使用 bi_sources）+ 對話 + AI 設定 */}
+        {/* 對話 + AI 設定 */}
         <Group orientation="horizontal" className="flex min-h-0 min-w-0 flex-1 gap-1">
-          <Panel
-            defaultSize={20}
-            minSize="80px"
-            className="flex flex-col rounded-2xl border border-gray-200/80 bg-white shadow-md ring-1 ring-gray-200/50"
-          >
-            <div className="flex shrink-0 items-center gap-2 border-b border-gray-200 px-4 py-2">
-              <Database className="h-5 w-5 shrink-0 text-gray-600" aria-hidden />
-              <span className="text-base text-gray-700">
-                {selectedProject
-                  ? duckdbRowCount !== null
-                    ? duckdbRowCount > 0
-                      ? `${duckdbRowCount.toLocaleString()} 筆`
-                      : '尚無資料'
-                    : '…'
-                  : '請選擇專案'}
-              </span>
-            </div>
-            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4 text-lg">
-                  {blocks.map((block) => (
-                    <BlockCard
-                      key={block.id}
-                      block={block}
-                      schemas={schemas}
-                      canDelete={blocks.length > 1}
-                      onSchemaChange={updateBlockSchema}
-                      onFilesChange={updateBlockFiles}
-                      onRemoveFile={removeFileFromBlock}
-                      onClearFiles={clearBlockFiles}
-                      onDelete={removeBlock}
-                      onValidationError={(msg) => setCsvAdapterToast(msg)}
-                      fileInputId={`file-input-${block.id}`}
-                      getSchemaValidationContext={getSchemaValidationContext}
-                    />
-                  ))}
-                  <button
-                    type="button"
-                    onClick={addBlock}
-                    className="flex shrink-0 items-center justify-center gap-2 rounded-lg border-2 border-dashed border-gray-300 py-4 text-lg text-gray-600 transition-colors hover:border-gray-400 hover:bg-gray-50"
-                    aria-label="新增區塊"
-                  >
-                    <Plus className="h-6 w-6" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleImportCsv}
-                    disabled={
-                      importCsvLoading ||
-                      !selectedProject ||
-                      blocks.every(
-                        (b) => !b.selectedSchemaId.trim() || b.selectedFiles.length === 0
-                      )
-                    }
-                    className="flex shrink-0 items-center justify-center rounded-lg bg-blue-600 py-4 text-lg text-white transition-colors hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {importCsvLoading ? (
-                      <>
-                        <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                        匯入中…
-                      </>
-                    ) : (
-                      '匯入資料'
-                    )}
-                  </button>
-            </div>
-          </Panel>
-          <ResizeHandle />
         <Panel
           defaultSize={50}
           minSize="600px"
@@ -1359,15 +1297,34 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
             onCopySuccess={() => setToastMessage('已複製到剪貼簿')}
             onCopyError={() => setToastMessage('複製失敗')}
             headerActions={
-              <button
-                type="button"
-                onClick={() => messages.length > 0 && setShowClearConfirm(true)}
-                disabled={isLoading || messages.length === 0}
-                className="rounded-lg border border-gray-300 bg-white p-2 text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
-                aria-label="清除對話"
-              >
-                <RefreshCw className="h-5 w-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setImportDrawerOpen(true)}
+                  className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-50"
+                  aria-label="資料管理"
+                >
+                  <Database className="h-4 w-4 shrink-0" />
+                  <span>
+                    {selectedProject
+                      ? duckdbRowCount !== null
+                        ? duckdbRowCount > 0
+                          ? `${duckdbRowCount.toLocaleString()} 筆`
+                          : '尚無資料'
+                        : '…'
+                      : '資料管理'}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => messages.length > 0 && setShowClearConfirm(true)}
+                  disabled={isLoading || messages.length === 0}
+                  className="rounded-lg border border-gray-300 bg-white p-2 text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+                  aria-label="清除對話"
+                >
+                  <RefreshCw className="h-5 w-5" />
+                </button>
+              </div>
             }
           />
         </Panel>
@@ -1427,6 +1384,81 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
         </Panel>
         </Group>
       </div>
+
+      {/* 資料匯入抽屜 */}
+      {importDrawerOpen && (
+        <div className="fixed inset-0 z-40 flex">
+          {/* 遮罩 */}
+          <div
+            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            onClick={() => setImportDrawerOpen(false)}
+          />
+          {/* 抽屜本體 */}
+          <div className="relative z-50 flex h-full w-80 flex-col bg-white shadow-2xl">
+            {/* 抽屜 Header */}
+            <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Database className="h-5 w-5 text-gray-600" />
+                <span className="text-base font-semibold text-gray-800">資料管理</span>
+                {selectedProject && duckdbRowCount != null && duckdbRowCount > 0 && (
+                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">
+                    {duckdbRowCount.toLocaleString()} 筆
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setImportDrawerOpen(false)}
+                className="rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100"
+                aria-label="關閉"
+              >
+                ✕
+              </button>
+            </div>
+            {/* 抽屜內容 */}
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4 text-lg">
+              {blocks.map((block) => (
+                <BlockCard
+                  key={block.id}
+                  block={block}
+                  schemas={schemas}
+                  canDelete={blocks.length > 1}
+                  onSchemaChange={updateBlockSchema}
+                  onFilesChange={updateBlockFiles}
+                  onRemoveFile={removeFileFromBlock}
+                  onClearFiles={clearBlockFiles}
+                  onDelete={removeBlock}
+                  onValidationError={(msg) => setCsvAdapterToast(msg)}
+                  fileInputId={`file-input-drawer-${block.id}`}
+                  getSchemaValidationContext={getSchemaValidationContext}
+                />
+              ))}
+              <button
+                type="button"
+                onClick={async () => {
+                  await handleImportCsv()
+                  setImportDrawerOpen(false)
+                }}
+                disabled={
+                  importCsvLoading ||
+                  !selectedProject ||
+                  blocks.every((b) => !b.selectedSchemaId.trim() || b.selectedFiles.length === 0)
+                }
+                className="flex shrink-0 items-center justify-center rounded-lg bg-blue-600 py-4 text-lg text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {importCsvLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                    匯入中…
+                  </>
+                ) : (
+                  '匯入資料'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

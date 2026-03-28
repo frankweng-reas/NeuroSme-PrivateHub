@@ -628,8 +628,9 @@ def _build_calculate_sql(
         if pp.limit is not None:
             extras.append(f"LIMIT {int(pp.limit)}")
 
-    # 若尚未指定 ORDER BY，且 dims.groups 含時間函數（MONTH/YEAR/QUARTER），
-    # 自動補 ASC 排序，確保趨勢圖時序正確。
+    # 若尚未指定 ORDER BY，自動補預設排序：
+    #   有時間函數維度（MONTH/YEAR/QUARTER）→ 時間 ASC（趨勢圖時序正確）
+    #   其餘情況 → 第一個 metric alias DESC（由大到小，圖表穩定）
     if not any(e.startswith("ORDER BY") for e in extras):
         time_fn_dims = [
             i for i, g in enumerate(group_raw)
@@ -638,10 +639,28 @@ def _build_calculate_sql(
         if time_fn_dims:
             auto_ob = ", ".join(f"{_sql_ident(row_alias)}.dim_{i} ASC" for i in time_fn_dims)
             extras.append(f"ORDER BY {auto_ob}")
+        elif out_aliases:
+            first_alias = _sql_ident(out_aliases[0])
+            extras.append(f"ORDER BY {_sql_ident(row_alias)}.{first_alias} DESC")
     tail = (" " + " ".join(extras)) if extras else ""
     out_sql = "WITH " + ", ".join(ctes) + " " + sel + tail
 
-    labels = [_dataset_label_for_formula_alias(a, schema_def) for a in out_aliases]
+    # alias → display label：優先用 MetricV4.label（LLM 生成的中文名），
+    # 找不到再 fallback 到 schema reverse lookup / alias 本身
+    alias_to_display: dict[str, str] = {}
+    for mid in all_atomic_ordered:
+        m = id_to_metric.get(mid)
+        if m and m.label:
+            alias_to_display[m.alias] = m.label
+    for did in (topo_d or []):
+        m = id_to_metric.get(did)
+        if m and m.label:
+            alias_to_display[m.alias] = m.label
+
+    labels = [
+        alias_to_display.get(a) or _dataset_label_for_formula_alias(a, schema_def)
+        for a in out_aliases
+    ]
 
     # 偵測哪些 dim 是時間函數，供下游格式化標籤用
     # group_dim_types[i] = "MONTH" | "YEAR" | "QUARTER" | "col"

@@ -167,7 +167,6 @@ function transformToPieData(data: ChartData): { name: string; value: number }[] 
 export default function ChartModal({ open, data, onClose }: ChartModalProps) {
   const [viewType, setViewType] = useState<'bar' | 'pie' | 'line'>(() => getDefaultChartType(data))
   const [isFullscreen, setIsFullscreen] = useState(false)
-  const availableTypes = getAvailableTypes(data)
   const colors = CHART_COLORS
 
   const isFromPieData = !data.datasets?.length && !!data.data?.length
@@ -186,6 +185,11 @@ export default function ChartModal({ open, data, onClose }: ChartModalProps) {
 
   // 目前可見的 datasets
   const effectiveDatasets = allDatasets.filter((d) => activeDatasets.has(d.label))
+
+  // 可用圖表類型：若 activeDatasets 篩選後只剩 1 個 dataset，以有效資料判斷 pie 可用性
+  const availableTypes = getAvailableTypes(
+    effectiveDatasets.length === 1 ? { ...data, datasets: effectiveDatasets } : data
+  )
 
   useEffect(() => {
     if (open) {

@@ -78,7 +78,8 @@
 | 欄位 | 必要性 | 說明 |
 |------|--------|------|
 | `id` | 必填 | 指標鍵（如 `m1`）；衍生算式以 `\bm\d+\b` 引用 |
-| `alias` | 必填 | SQL 安全別名：`^[a-zA-Z_][a-zA-Z0-9_]*$` |
+| `alias` | 必填 | SQL 安全別名：`^[a-zA-Z_][a-zA-Z0-9_]*$`，用於 SQL 與內部引用 |
+| `label` | 必填 | 繁體中文顯示名稱（2–6 字），用於圖表與摘要；不影響 SQL |
 | `formula` | 必填 | 見 §3 原子 vs 衍生（**schema 層驗證**） |
 | `filters` | 選填（預設 `[]`） | 原子 metric 自持過濾；衍生 metric 必須為 `[]` |
 | `group_override` | 選填（預設 `null`） | 見 §3.3 分組覆寫 |
@@ -375,5 +376,6 @@ CROSS JOIN cte_scalar_0 w0
 |------|------|
 | 2026-03-28 | v4.0 初版：移除 `dims.time_filter`、廢除 calculate 模式頂層 `filters`、以 `group_override` 取代 `window`，支援 normal / scalar / subset 三種 JOIN 策略。 |
 | 2026-03-28 | 補充：`mode` 判斷規則（「列出」不等於 list）；`dims.groups` 時間粒度對照表（每日 = 直接日期欄位）；`formula` 衍生指標禁止含原始聚合函數（schema 層驗證）；`post_process.where.col` 必須為 metric alias；引擎自動補時間排序；月份/季度 label 格式化。 |
+| 2026-03-28 | 新增 `MetricV4.label`：繁體中文顯示名稱，與 SQL alias 分離，用於圖表 dataset 標籤與 LLM 摘要顯示。LLM prompt 更新為必填。 |
 
 文件結束。

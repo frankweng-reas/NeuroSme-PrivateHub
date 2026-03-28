@@ -207,18 +207,18 @@ export default function AgentChat({
             {messages.length === 0 ? (
               <p className="text-[18px] text-gray-400">{emptyPlaceholder}</p>
             ) : (
-              <ul className="flex flex-col space-y-3">
+              <ul className="flex flex-col space-y-4">
                 {messages.map((m, i) => (
                   <li
                     key={i}
-                    className={`flex flex-col rounded-lg px-3 py-2 shadow-sm ${
+                    className={`flex flex-col rounded-xl px-4 py-3 shadow-sm ${
                       m.role === 'user'
-                        ? 'ml-auto w-fit max-w-[85%] bg-blue-100 text-blue-900 ring-1 ring-blue-200/40'
-                        : 'mr-8 bg-white text-gray-900 ring-1 ring-gray-200/50'
+                        ? 'ml-auto w-fit max-w-[85%] bg-gray-800 text-white ring-1 ring-gray-700/50'
+                        : 'mr-8 border border-gray-100 bg-white text-gray-900 ring-1 ring-gray-200/50'
                     }`}
                   >
                     {m.role === 'user' ? (
-                      <p className="whitespace-pre-wrap text-[18px]">{m.content}</p>
+                      <p className="whitespace-pre-wrap text-[18px] leading-relaxed">{m.content}</p>
                     ) : (
                       <div>
                         <ReactMarkdown
@@ -325,8 +325,7 @@ export default function AgentChat({
           <button
             type="submit"
             disabled={isLoading || !input.trim()}
-            className="rounded-2xl px-4 py-2 text-[18px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-            style={{ backgroundColor: '#4b5563' }}
+            className="rounded-2xl bg-gray-800 px-5 py-2 text-[18px] font-medium text-white transition-colors hover:bg-gray-900 disabled:opacity-40"
           >
             送出
           </button>

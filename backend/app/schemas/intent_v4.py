@@ -123,6 +123,8 @@ class MetricV4(BaseModel):
 
     id: str = Field(min_length=1)
     alias: str = Field(min_length=1, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    # label：給使用者看的顯示名稱（中文），不影響 SQL；省略時 fallback 到 alias
+    label: str | None = None
     formula: str = Field(min_length=1)
     filters: list[FilterClauseV4] = Field(default_factory=list)
     # group_override 語義：
