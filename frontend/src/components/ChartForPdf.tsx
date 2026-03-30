@@ -15,7 +15,7 @@ import {
   DefaultLegendContent,
   Label,
 } from 'recharts'
-import { getDefaultChartType } from './ChartModal'
+import { chartDataForPieView, computeDefaultActiveDatasets, getDefaultChartType } from './ChartModal'
 import type { ChartData } from './ChartModal'
 
 const CHART_COLORS = ['#4b5563', '#3b82f6', '#10b981', '#f59e0b', '#ef4444']
@@ -45,7 +45,7 @@ function transformToBarLineData(data: ChartData): Record<string, string | number
 
 function transformToPieData(data: ChartData): { name: string; value: number }[] {
   const { labels } = data
-  const values = data.data ?? []
+  const values = data.data ?? data.datasets?.[0]?.data ?? []
   return labels.map((name, i) => ({ name, value: values[i] ?? 0 }))
 }
 
@@ -59,18 +59,26 @@ export default function ChartForPdf({ data }: ChartForPdfProps) {
   const isFromPieData = !data.datasets?.length && !!data.data?.length
   const singleDataLabel = data.yAxisLabel || '數值'
   const singleDataSuffix = data.valueSuffix ?? ''
-  const effectiveDatasets =
+  const allDatasets =
     data.datasets && data.datasets.length > 0
       ? data.datasets
       : data.data
         ? [{ label: singleDataLabel, data: data.data, valueSuffix: singleDataSuffix }]
         : []
-  const barLineData = transformToBarLineData(data)
-  const pieData = transformToPieData(data)
+  const activeSet = computeDefaultActiveDatasets(allDatasets)
+  const effectiveDatasets = allDatasets.filter((d) => activeSet.has(d.label))
+  const chartDataForPlots: ChartData =
+    data.datasets && data.datasets.length > 0 ? { ...data, datasets: effectiveDatasets } : data
+  const allColorMap = Object.fromEntries(allDatasets.map((d, i) => [d.label, colors[i % colors.length]]))
+  const barLineData = transformToBarLineData(chartDataForPlots)
+  const pieSource = chartDataForPieView(data)
+  const pieData = transformToPieData(pieSource)
+  const valueSuffixForPie =
+    (pieSource.datasets?.[0] as { valueSuffix?: string } | undefined)?.valueSuffix ?? data.valueSuffix ?? ''
   const legendPayload =
     viewType === 'pie' || (viewType === 'bar' && isFromPieData)
       ? data.labels.map((l, i) => ({ value: l, color: colors[i % colors.length] }))
-      : effectiveDatasets.map((ds, i) => ({ value: ds.label, color: colors[i % colors.length] }))
+      : effectiveDatasets.map((ds) => ({ value: ds.label, color: allColorMap[ds.label] ?? colors[0] }))
   const isSingleSeries = effectiveDatasets.length === 1
   const barDataKeys = effectiveDatasets.map((d) => d.label)
   const labelToSuffix: Record<string, string> = {}
@@ -134,8 +142,8 @@ export default function ChartForPdf({ data }: ChartForPdfProps) {
               ))}
             </Bar>
           ) : (
-            barDataKeys.map((key, i) => (
-              <Bar key={key} dataKey={key} fill={colors[i % colors.length]} radius={[4, 4, 0, 0]} isAnimationActive={false} />
+            barDataKeys.map((key) => (
+              <Bar key={key} dataKey={key} fill={allColorMap[key] ?? colors[0]} radius={[4, 4, 0, 0]} isAnimationActive={false} />
             ))
           )}
         </BarChart>
@@ -179,7 +187,7 @@ export default function ChartForPdf({ data }: ChartForPdfProps) {
               const total = pieData.reduce((a, d) => a + d.value, 0) || 1
               const val = typeof value === 'number' ? value : props?.payload?.value ?? 0
               const pct = ((val / total) * 100).toFixed(1)
-              const valStr = valueSuffix ? `${val}${valueSuffix}` : String(val)
+              const valStr = valueSuffixForPie ? `${val}${valueSuffixForPie}` : String(val)
               const valueLabel = yAxisLabel ? `${yAxisLabel}：` : ''
               return [`${valueLabel}${valStr} (${pct}%)`, String(name ?? '')]
             }}
@@ -232,17 +240,20 @@ export default function ChartForPdf({ data }: ChartForPdfProps) {
           content={(props) => <DefaultLegendContent {...props} payload={legendPayload} align="center" verticalAlign="bottom" labelStyle={{ fontSize: FONT_SIZE }} />}
           wrapperStyle={{ paddingTop: 8, fontSize: FONT_SIZE }}
         />
-        {barDataKeys.map((key, i) => (
-          <Line
-            key={key}
-            type="monotone"
-            dataKey={key}
-            stroke={colors[i % colors.length]}
-            strokeWidth={2}
-            dot={{ fill: colors[i % colors.length], strokeWidth: 1, r: 3 }}
-            isAnimationActive={false}
-          />
-        ))}
+        {barDataKeys.map((key) => {
+          const c = allColorMap[key] ?? colors[0]
+          return (
+            <Line
+              key={key}
+              type="monotone"
+              dataKey={key}
+              stroke={c}
+              strokeWidth={2}
+              dot={{ fill: c, strokeWidth: 1, r: 3 }}
+              isAnimationActive={false}
+            />
+          )
+        })}
       </LineChart>
     </div>
   )

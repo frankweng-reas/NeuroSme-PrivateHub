@@ -53,6 +53,13 @@ interface ChartModalProps {
 
 type ChartType = 'bar' | 'pie' | 'line'
 
+/**
+ * 佔比／結構份額意圖（預設圓餅圖與單序列收窄）。
+ * 不含裸「%／％」與「比例」：避免成長率（%）、變化比例等誤判為整體佔比。
+ * 「佔比（%）」仍由「佔比」命中。
+ */
+const PROPORTION_INTENT_RE = /占比|佔比|份額|占有率|佔有率|proport|share of|percentage/i
+
 /** 判斷 labels 是否為時間序列（如 2026-01、2025-Q2、3月、Q1） */
 function isTimeSeriesLabels(labels: string[]): boolean {
   if (!labels.length) return false
@@ -71,23 +78,56 @@ function looksLikeMetricLabels(labels: string[]): boolean {
   return labels.some((l) => metricSuffix.test(String(l).trim()))
 }
 
+/**
+ * 標題／軸／後綴／序列名是否表達「佔比、比例」→ 預設用圓餅圖，且可略過「指標名」類 labels 的限制。
+ */
+function suggestsProportionIntent(data: ChartData): boolean {
+  const parts: string[] = []
+  if (data.title) parts.push(data.title)
+  if (data.yAxisLabel) parts.push(data.yAxisLabel)
+  if (data.valueSuffix) parts.push(data.valueSuffix)
+  data.datasets?.forEach((d) => parts.push(d.label))
+  const text = parts.join(' ')
+  return PROPORTION_INTENT_RE.test(text)
+}
+
+/**
+ * 多條序列時，若恰好只有一條的 label 表達佔比，圓餅圖僅使用該序列（避免誤用第一條銷售額）。
+ * 單序列或非 datasets 格式回傳 null，由呼叫端沿用原 data。
+ */
+function narrowToSingleProportionDataset(data: ChartData): ChartData | null {
+  const ds = data.datasets
+  if (!ds || ds.length <= 1) return null
+  const hits = ds.filter((d) => PROPORTION_INTENT_RE.test(String(d.label)))
+  if (hits.length !== 1) return null
+  return { ...data, datasets: hits }
+}
+
+/** 繪製圓餅圖時使用的 ChartData（多序列＋唯一佔比序列時會收窄） */
+export function chartDataForPieView(data: ChartData): ChartData {
+  return narrowToSingleProportionDataset(data) ?? data
+}
+
 /** 判斷此資料分別適合哪些圖表類型（三 flag） */
 function getSuitableChartTypes(data: ChartData): { pie: boolean; bar: boolean; line: boolean } {
   const labels = data.labels ?? []
   const count = labels.length
-  const hasDatasets = !!(data.datasets && data.datasets.length > 0)
   const hasPieData = !!(data.data && data.data.length > 0)
   const isTime = isTimeSeriesLabels(labels)
+  const proportion = suggestsProportionIntent(data)
+  const pieContext = chartDataForPieView(data)
+  const hasDatasetsCtx = !!(pieContext.datasets && pieContext.datasets.length > 0)
 
   // pie：單一指標（無論是 data[] 或 datasets[1] 格式）、非時間序列、2 個以上類別、labels 不像指標名稱
   const isSingleMetric =
-    (!hasDatasets && hasPieData) ||
-    (hasDatasets && (data.datasets?.length ?? 0) === 1)
+    (!hasDatasetsCtx && hasPieData) ||
+    (hasDatasetsCtx && (pieContext.datasets?.length ?? 0) === 1)
+  const labelBlocksPie = looksLikeMetricLabels(labels) && !proportion
   const pie =
     isSingleMetric &&
     !isTime &&
     count >= 2 &&
-    !looksLikeMetricLabels(labels)
+    !labelBlocksPie
 
   const line = isTime && count >= 3
 
@@ -102,10 +142,13 @@ function getAvailableTypes(data: ChartData): ChartType[] {
   return (['pie', 'bar', 'line'] as const).filter((t) => flags[t])
 }
 
-/** 取得預設顯示類型：若有 chartType 且可用則採用，否則依 suitable 優先順序（line > pie > bar） */
+/** 取得預設顯示類型：佔比／比例優先圓餅圖；若有 chartType 且可用則採用，否則 line > pie > bar */
 export function getDefaultChartType(data: ChartData): ChartType {
   const available = getAvailableTypes(data)
   const suggested = data.chartType
+  if (suggestsProportionIntent(data) && available.includes('pie') && suggested !== 'line') {
+    return 'pie'
+  }
   const fallback =
     available.includes('line') ? 'line'
     : available.includes('pie') ? 'pie'
@@ -146,7 +189,7 @@ function isRatioDataset(label: string): boolean {
  * 預設只顯示比率型（避免量級不同的資料塞在同一圖）；
  * 全為同類型時顯示全部。
  */
-function computeDefaultActiveDatasets(datasets: { label: string }[]): Set<string> {
+export function computeDefaultActiveDatasets(datasets: { label: string }[]): Set<string> {
   if (datasets.length <= 1) return new Set(datasets.map((d) => d.label))
   const ratioLabels = datasets.filter((d) => isRatioDataset(d.label)).map((d) => d.label)
   const nonRatioLabels = datasets.filter((d) => !isRatioDataset(d.label)).map((d) => d.label)
@@ -221,7 +264,10 @@ export default function ChartModal({ open, data, onClose }: ChartModalProps) {
   }, [open, handleClose, isFullscreen])
 
   const barLineData = transformToBarLineData(data)
-  const pieData = transformToPieData(data)
+  const pieSource = chartDataForPieView(data)
+  const pieData = transformToPieData(pieSource)
+  const valueSuffixForPie =
+    (pieSource.datasets?.[0] as { valueSuffix?: string } | undefined)?.valueSuffix ?? data.valueSuffix ?? ''
 
   const allColorMap = Object.fromEntries(allDatasets.map((d, i) => [d.label, colors[i % colors.length]]))
 
@@ -337,7 +383,7 @@ export default function ChartModal({ open, data, onClose }: ChartModalProps) {
               const total = pieData.reduce((a, d) => a + d.value, 0) || 1
               const val = typeof value === 'number' ? value : props?.payload?.value ?? 0
               const pct = ((val / total) * 100).toFixed(1)
-              const valStr = valueSuffix ? `${val}${valueSuffix}` : String(val)
+              const valStr = valueSuffixForPie ? `${val}${valueSuffixForPie}` : String(val)
               const valueLabel = yAxisLabel ? `${yAxisLabel}：` : ''
               return [`${valueLabel}${valStr} (${pct}%)`, String(name ?? '')]
             }}
