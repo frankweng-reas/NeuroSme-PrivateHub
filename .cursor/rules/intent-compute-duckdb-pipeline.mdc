@@ -1,0 +1,28 @@
+---
+description: Intent v4 JSON → compute_engine → DuckDB SQL → chart_result → LLM 文字；非 v4 拒絕
+globs: backend/app/services/compute_engine*.py,backend/app/services/duckdb_store.py,backend/app/api/endpoints/chat_compute_tool.py,backend/app/schemas/intent_v4.py,docs/intent_v4_protocol.md,config/system_prompt_analysis_text_tool.md
+alwaysApply: false
+---
+
+# Intent → 計算 → DuckDB → 輸出（NeuroSme）
+
+## 端到端流程
+
+1. **結構化意圖**：LLM / 請求帶入 **Intent v4.0** JSON（須含 `"version": "4.0"`）；shape 與欄位見 `docs/intent_v4_protocol.md`。
+2. **Schema**：由 `bi_schemas` 載入的 `schema_def`（`load_schema_from_db` / `_resolve_schema_def`）；缺少則無法計算。
+3. **計算入口**：多數專案流程走 `chat_compute_tool` 的 `_compute_with_intent` → **`run_compute_engine(duckdb_name, intent, schema_def)`**，其中 `duckdb_name` 通常等於 **project_id** 字串。
+4. **引擎核心**：`compute_engine.run_compute_engine` 驗證 v4 → `resolve_duckdb_path` → **`run_sql_compute_engine_v4`**（`compute_engine_sql.py`）：`IntentV4` 驗證 → **`try_build_sql_v4`**（`compute_engine_sql_v4.py`）→ **`execute_sql_on_duckdb_file`**（`duckdb_store.py`）→ DataFrame → `chart_from_sql_dataframe` / list 變體 → **`chart_result`**。
+5. **文字階段**（例如 `compute-from-intent`）：先有 `chart_result`，再 `_chart_result_to_detail_lines` 組區塊，用 **`_load_prompt("text")`**（預設可對應 `config/system_prompt_analysis_text_tool.md`）呼叫 LLM 產 **Markdown 分析文字**；數字須與計算結果一致。
+
+## 行為約束
+
+- **非 v4 intent**：`run_compute_engine` 直接錯誤，不做舊版 fallback。
+- **無效 v4**：Pydantic 驗證失敗時對外訊息以 `USER_FACING_INTENT_V4_VALIDATION_MESSAGE` 等為準。
+- **除錯**：`debug` / 產生 SQL 是否回傳依 **`settings.EXPOSE_COMPUTE_ERROR_DETAIL`**。
+
+## 主要 API 線索（同檔多條路由）
+
+- `POST .../compute-engine`：`duckdb_name` + `schema_id` + intent → `run_compute_engine`。
+- `compute-from-intent` / streaming：`project_id` 對應 DuckDB → `_compute_with_intent` → 成功後再走文字 LLM。
+
+修改管線時優先讀：`chat_compute_tool.py`（流程與 LLM）、`compute_engine.py`、`compute_engine_sql.py`、`compute_engine_sql_v4.py`、`duckdb_store.py`、`schemas/intent_v4.py`。
