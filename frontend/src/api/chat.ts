@@ -63,47 +63,6 @@ export interface ChatResponseCompute {
   debug?: Record<string, unknown>
 }
 
-/** Tool Calling 路徑：意圖萃取 → Backend 計算 → 文字生成 */
-export async function chatCompletionsComputeTool(req: ChatRequest): Promise<ChatResponseCompute> {
-  return apiFetch<ChatResponseCompute>('/chat/completions-compute-tool', {
-    method: 'POST',
-    body: JSON.stringify(req),
-  })
-}
-
-/** dev-test-compute-tool 兩步驟：僅意圖萃取 */
-export interface ExtractIntentResponse {
-  intent: Record<string, unknown> | null
-  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null
-  model: string
-  error_message?: string | null
-  system_prompt?: string  // 組合好的 system prompt（含 schema/indicator 注入）
-}
-
-export async function extractIntentOnly(req: ChatRequest): Promise<ExtractIntentResponse> {
-  return apiFetch<ExtractIntentResponse>('/chat/extract-intent-only', {
-    method: 'POST',
-    body: JSON.stringify(req),
-  })
-}
-
-/** dev-test-compute-tool 兩步驟：依 intent 執行計算 + 文字生成 */
-export interface ComputeFromIntentRequest {
-  agent_id?: string
-  project_id: string
-  schema_id?: string // dev-test-compute-tool：覆寫專案 schema
-  content: string
-  intent: Record<string, unknown>
-  model?: string
-}
-
-export async function computeFromIntent(req: ComputeFromIntentRequest): Promise<ChatResponseCompute> {
-  return apiFetch<ChatResponseCompute>('/chat/compute-from-intent', {
-    method: 'POST',
-    body: JSON.stringify(req),
-  })
-}
-
 /** SSE 串流階段 */
 export type ComputeStage = 'intent' | 'compute' | 'text'
 
@@ -182,43 +141,6 @@ export async function chatCompletionsComputeToolStream(
   return result
 }
 
-/** dev-test-intent-to-data：僅需 project_id，從 DuckDB 載入資料 */
-export interface IntentToComputeByProjectRequest {
-  project_id: string
-  intent: Record<string, unknown>
-  /** 可覆寫專案 schema；省略則使用專案於匯入後寫入的 schema_id */
-  schema_id?: string
-}
-
-export interface IntentToComputeResponse {
-  chart_result: Record<string, unknown> | null
-  error_detail?: string | null
-}
-
-export async function intentToComputeByProject(
-  req: IntentToComputeByProjectRequest
-): Promise<IntentToComputeResponse> {
-  return apiFetch<IntentToComputeResponse>('/chat/intent-to-compute-by-project', {
-    method: 'POST',
-    body: JSON.stringify(req),
-  })
-}
-
-/** 傳入 intent + rows，無需 project（手動貼資料測試用） */
-export interface IntentToComputeRawRequest {
-  intent: Record<string, unknown>
-  rows: Record<string, unknown>[]
-  /** bi_schemas.id */
-  schema_id: string
-}
-
-export async function intentToComputeRaw(req: IntentToComputeRawRequest): Promise<IntentToComputeResponse> {
-  return apiFetch<IntentToComputeResponse>('/chat/intent-to-compute-raw', {
-    method: 'POST',
-    body: JSON.stringify(req),
-  })
-}
-
 /** Test compute_engine：DuckDB 名稱 + intent（不含 rows，由後端讀檔） */
 export interface ComputeEngineRequest {
   duckdb_name: string
@@ -237,6 +159,34 @@ export interface ComputeEngineResponse {
 
 export async function computeEngine(req: ComputeEngineRequest): Promise<ComputeEngineResponse> {
   return apiFetch<ComputeEngineResponse>('/chat/compute-engine', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  })
+}
+
+/** Pipeline Inspector（開發用）：一次跑完 intent / SQL / result，回傳所有中間值 */
+export interface PipelineInspectRequest {
+  question: string
+  project_id: string
+  schema_id?: string
+  model?: string
+  user_prompt?: string
+}
+
+export interface PipelineInspectResponse {
+  injected_prompt: string
+  intent_raw: string
+  intent: Record<string, unknown> | null
+  intent_usage: Record<string, number> | null
+  sql: string | null
+  sql_params: unknown[] | null
+  chart_result: Record<string, unknown> | null
+  error: string | null
+  stage_failed: string | null
+}
+
+export async function pipelineInspect(req: PipelineInspectRequest): Promise<PipelineInspectResponse> {
+  return apiFetch<PipelineInspectResponse>('/chat/pipeline-inspect', {
     method: 'POST',
     body: JSON.stringify(req),
   })

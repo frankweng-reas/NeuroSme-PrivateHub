@@ -1,7 +1,7 @@
-"""Chat Compute Tool API：POST /chat/completions-compute-tool。LLM 意圖萃取 → Backend 計算 → 文字生成
+"""Chat Compute Tool API：POST /chat/completions-compute-tool-stream。LLM 意圖萃取 → Backend 計算 → 文字生成
 
-Tool Calling 路徑：LLM 輸出結構化 intent（**v4.0**）→ DuckDB SQL 計算。
-schema 摘要等仍可能依端點載入列資料（全表或抽樣）供 LLM 與除錯用。
+主要路徑（産品用）：LLM 輸出結構化 intent（**v4.0**）→ DuckDB SQL 計算 → Markdown 分析文字（串流）。
+直接計算路徑：POST /chat/compute-engine（duckdb_name + schema_id + intent）。
 """
 import json
 import logging
@@ -13,7 +13,7 @@ from typing import Any
 import litellm
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 from uuid import UUID
 
@@ -36,7 +36,6 @@ from app.schemas.intent_v4 import (
     auto_repair_intent,
     is_intent_v4_payload,
 )
-from app.services.analysis_compute import get_schema_summary
 from app.services.compute_engine import run_compute_engine
 from app.services.duckdb_store import execute_sql_on_duckdb_file, get_project_duckdb_path
 from app.services.schema_loader import load_schema_from_db
@@ -169,225 +168,6 @@ def _user_message_for_compute_errors(
     if msg and expose:
         return _append_technical_lines("後端計算失敗，請稍後再試或調整問題描述。")
     return "後端計算失敗，請稍後再試或調整問題描述。"
-
-
-def _build_indicator_default_value_columns(schema_def: dict[str, Any] | None) -> dict[str, list[str]]:
-    """從 schema 動態產生 indicator -> value_columns 對應（無硬編碼欄位名）。"""
-    if not schema_def:
-        return {}
-    columns = schema_def.get("columns") or {}
-    indicators = schema_def.get("indicators") or {}
-    value_cols = [
-        c for c, m in columns.items()
-        if isinstance(m, dict) and (m.get("attr") or "").strip().lower() in ("val", "val_num", "val_denom")
-    ]
-    out: dict[str, list[str]] = {}
-    for code, meta in indicators.items():
-        if not isinstance(meta, dict):
-            continue
-        comp = meta.get("value_components") or []
-        if comp:
-            out[code] = [str(c) for c in comp if c]
-    # 每個數值欄 col_n：對應自身、compare 前期／YoY 別名（須能從 indicator 反查 value_columns）
-    for col in value_cols:
-        out[col] = [col]
-        out[f"previous_{col}"] = [col]
-        out[f"{col}_yoy_growth"] = [col]
-        out[f"{col}_ratio"] = [col]
-        if "_" in col:
-            base = col.split("_")[0]
-            if base and f"{base}_ratio" not in out:
-                out[f"{base}_ratio"] = [col]
-    return out
-
-
-def _parse_compare_periods_from_intent(intent: dict[str, Any]) -> dict[str, Any] | None:
-    """解析 compare_periods。格式 { current: {column, value}, compare: {column, value} }。"""
-    cp = intent.get("compare_periods")
-    if not isinstance(cp, dict):
-        return None
-    cur = cp.get("current")
-    cmp_spec = cp.get("compare")
-    if not isinstance(cur, dict) or not isinstance(cmp_spec, dict):
-        return None
-    col = (cur.get("column") or "").strip()
-    cur_val = cur.get("value")
-    cmp_val = cmp_spec.get("value")
-    if not col or cur_val is None or cmp_val is None:
-        return None
-    return {"current": {"column": col, "value": cur_val}, "compare": {"column": col, "value": cmp_val}}
-
-
-def _get_top_n_from_intent(intent: dict[str, Any]) -> int | None:
-    """top_n 可為 number 或 { count, based_on }。回傳 count 或 None。"""
-    v = intent.get("top_n")
-    if isinstance(v, int) and v > 0:
-        return v
-    if isinstance(v, dict) and v.get("count") is not None:
-        try:
-            n = int(v.get("count"))
-            return n if n > 0 else None
-        except (ValueError, TypeError):
-            pass
-    if v is not None:
-        try:
-            n = int(v)
-            return n if n > 0 else None
-        except (ValueError, TypeError):
-            pass
-    return None
-
-
-def _get_sort_order_from_intent(intent: dict[str, Any]) -> str | list[dict[str, str]]:
-    """sort_order 可為 "desc"|"asc" 或 [{ column, order }, ...]。直接傳給 compute_aggregate 正規化。"""
-    v = intent.get("sort_order")
-    if isinstance(v, list) and v:
-        out: list[dict[str, str]] = []
-        for item in v:
-            if isinstance(item, dict):
-                col = (item.get("column") or "_first_").strip() or "_first_"
-                ord_val = (item.get("order") or "desc").strip().lower()
-                ord_val = "desc" if ord_val == "desc" else "asc"
-                out.append({"column": col, "order": ord_val})
-        return out if out else "desc"
-    if v is None or v == "":
-        return "desc"
-    s = str(v).strip().lower() or "desc"
-    return s
-
-
-def _normalize_group_by(gb_raw: Any) -> list[str]:
-    """group_by_column 一律正規化為 array。intent 新格式為 ["department"]。"""
-    if isinstance(gb_raw, list):
-        return [str(x).strip() for x in gb_raw if x]
-    if gb_raw and str(gb_raw).strip():
-        return [str(gb_raw).strip()]
-    return []
-
-
-def _parse_indicator_from_intent(intent: dict[str, Any]) -> list[str] | None:
-    """解析 indicator：一律為 array 格式。僅接受 list，回傳 [str, ...] 或 None。"""
-    v = intent.get("indicator")
-    if isinstance(v, list):
-        out = [str(x).strip().lower() for x in v if x]
-        return out if out else None
-    return None
-
-
-def _indicator_default_value_columns(
-    indic: list[str] | None,
-    schema_def: dict[str, Any] | None = None,
-) -> list[dict[str, str]] | None:
-    """依 indicator array 與 schema 回傳所需欄位聯集。"""
-    if not indic:
-        return None
-    mapping = _build_indicator_default_value_columns(schema_def)
-    cols: list[str] = []
-    seen: set[str] = set()
-    for ind in indic:
-        ind_clean = str(ind).strip().lower()
-        comp_list: list[str] = []
-        for mk, mcols in mapping.items():
-            if str(mk).lower() == ind_clean:
-                comp_list = mcols
-                break
-        for c in comp_list:
-            if c not in seen:
-                seen.add(c)
-                cols.append(c)
-    return [{"column": c, "aggregation": "sum"} for c in cols] if cols else None
-
-
-def _parse_value_columns_from_intent(
-    intent: dict[str, Any],
-    indicator: list[str] | None,
-    schema_def: dict[str, Any] | None = None,
-) -> list[dict[str, str]]:
-    """
-    從 intent 解析 value_columns，一律回傳 [{ column, aggregation }, ...]。
-    支援兩種格式：
-      1. ["col1", "col2"]：欄位名陣列，使用頂層 aggregation 或 sum
-      2. [{ column, aggregation }, ...]：每欄位可指定 aggregation
-    若無 value_columns，依 indicator 與 schema 對應表補齊；對應不到則回傳 []（不使用 schema 第一個 val 或 sales_amount 等 fallback）。
-    """
-    vc = intent.get("value_columns")
-    default_agg = (intent.get("aggregation") or "sum")
-    if isinstance(default_agg, str):
-        default_agg = default_agg.strip().lower()
-    if default_agg not in ("sum", "avg", "count"):
-        default_agg = "sum"
-
-    if isinstance(vc, list) and vc:
-        out: list[dict[str, str]] = []
-        for item in vc:
-            if isinstance(item, dict) and item.get("column"):
-                col = str(item.get("column", "")).strip()
-                agg = (item.get("aggregation") or default_agg).strip().lower()
-                if agg not in ("sum", "avg", "count"):
-                    agg = default_agg
-                if col:
-                    out.append({"column": col, "aggregation": agg})
-        if out:
-            return out
-        # 若 list 內皆非 dict，嘗試當作欄位名陣列
-        for item in vc:
-            col = str(item).strip() if item is not None else ""
-            if col:
-                out.append({"column": col, "aggregation": default_agg})
-        if out:
-            return out
-    default = _indicator_default_value_columns(indicator, schema_def)
-    if default:
-        return default
-    return []
-
-def _parse_filters_from_intent(intent: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """從 intent 解析 filters。支援 filters 陣列；無則由 filter_column/filter_value 轉換。
-    容錯：column 可為 col，value 可為 val（LLM 有時會用簡寫）。"""
-    filters = intent.get("filters")
-    if isinstance(filters, list):
-        out = []
-        for f in filters:
-            if isinstance(f, dict):
-                col = f.get("column") or f.get("col")
-                val = f.get("value") if "value" in f else f.get("val")
-                op = f.get("op")
-                if col is not None and str(col).strip():
-                    op_str = (str(op).strip().lower().replace(" ", "") or "==") if op is not None else "=="
-                    out.append({"column": str(col).strip(), "op": op_str or "==", "value": val})
-        if out:
-            return out
-    fc, fv = intent.get("filter_column"), intent.get("filter_value")
-    if fc and isinstance(fc, str) and fv is not None:
-        return [{"column": fc.strip(), "op": "==", "value": fv}]
-    return None
-
-
-def _parse_display_fields_from_intent(intent: dict[str, Any]) -> list[str] | None:
-    """display_fields：字串陣列，供 compute_aggregate 過濾輸出欄位。"""
-    df = intent.get("display_fields")
-    if isinstance(df, list):
-        out = [str(d).strip() for d in df if d]
-        return out if out else None
-    return None
-
-
-def _parse_having_filters_from_intent(intent: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """從 intent 解析 having_filters（彙總後篩選，如營收>100萬、ROI<1.5）。"""
-    hf = intent.get("having_filters")
-    if isinstance(hf, list):
-        out = []
-        for f in hf:
-            if isinstance(f, dict):
-                col = f.get("column")
-                val = f.get("value")
-                op = f.get("op")
-                if col is not None:
-                    op_str = (str(op).strip().lower().replace(" ", "") or "==") if op is not None else "=="
-                    out.append({"column": str(col).strip(), "op": op_str or "==", "value": val})
-        if out:
-            return out
-    return None
 
 
 _PROMPT_FILES = {
@@ -580,46 +360,11 @@ def _chart_result_to_detail_lines(chart_result: dict[str, Any]) -> list[str]:
     return detail_lines
 
 
-class ChatResponseComputeTool(BaseModel):
-    content: str
-    model: str = ""
-    usage: dict[str, int] | None = None
-    chart_data: dict[str, Any] | None = None
-    debug: dict[str, Any] | None = None
-
-
-class IntentToComputeRequest(BaseModel):
-    """dev-test-intent-to-data 專用：直接傳入 Intent v2 JSON（Python 聚合路徑）"""
-    agent_id: str
-    project_id: str
-    intent: dict[str, Any]
-    schema_id: str = ""  # 可覆寫專案 schema；皆空則 400
-
-
-class IntentToComputeRawRequest(BaseModel):
-    """dev-test-intent-to-data 專用：傳入 intent + rows，無需 agent/project"""
-    intent: dict[str, Any]
-    rows: list[dict[str, Any]]
-    schema_id: str  # bi_schemas.id，必填
-
-
-class IntentToComputeByProjectRequest(BaseModel):
-    """dev-test-intent-to-data 專用：僅需 project_id，從 DuckDB 載入資料"""
-    project_id: str
-    intent: dict[str, Any]
-    schema_id: str = ""  # 可覆寫專案 schema；與專案皆空則 400
-
-
 class ComputeEngineRequest(BaseModel):
     """compute_engine：DuckDB 名稱 + intent；schema_id 可於請求或 intent 根層級帶入。"""
     duckdb_name: str
     intent: dict[str, Any]
     schema_id: str = ""
-
-
-class IntentToComputeResponse(BaseModel):
-    chart_result: dict[str, Any] | None
-    error_detail: str | None = None  # chart_result 為 null 時的詳細原因
 
 
 class ComputeEngineResponse(BaseModel):
@@ -628,29 +373,6 @@ class ComputeEngineResponse(BaseModel):
     error_detail: str | None = None
     debug: dict[str, Any] | None = None
     generated_sql: str | None = None
-
-
-class ExtractIntentResponse(BaseModel):
-    """僅意圖萃取：dev-test-compute-tool 兩步驟流程用"""
-    intent: dict[str, Any] | None = None
-    usage: dict[str, int] | None = None
-    model: str = ""
-    error_message: str | None = None  # 意圖無效時的訊息
-    system_prompt: str = ""  # 組合好的 system prompt（含 schema/indicator 注入）
-    intent_validation_errors: list[Any] | None = Field(
-        default=None,
-        description="Intent v2 未過驗證時的 Pydantic errors（JSON 可解析但契約不符）",
-    )
-
-
-class ComputeFromIntentRequest(BaseModel):
-    """依已取得的 intent 執行計算 + 文字生成"""
-    agent_id: str = ""
-    project_id: str = ""
-    schema_id: str = ""  # dev-test-compute-tool：覆寫專案 schema
-    content: str  # 使用者問題（用於文字生成）
-    intent: dict[str, Any]
-    model: str = "gpt-4o-mini"
 
 
 async def _call_llm(
@@ -727,361 +449,6 @@ async def _call_llm(
     return content, usage
 
 
-@router.post("/extract-intent-only", response_model=ExtractIntentResponse)
-async def extract_intent_only(
-    req: ChatRequest,
-    db: Session = Depends(get_db),
-    current: User = Depends(get_current_user),
-):
-    """dev-test-compute-tool 兩步驟：僅做意圖萃取，回傳 intent + usage。"""
-    if not (req.agent_id or "").strip():
-        raise HTTPException(status_code=400, detail="agent_id is required")
-    pid = (req.project_id or "").strip()
-    if not pid:
-        raise HTTPException(status_code=400, detail="project_id is required")
-
-    try:
-        _check_agent_access(db, current, req.agent_id.strip())
-    except HTTPException:
-        raise
-
-    try:
-        uuid_pid = UUID(pid)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="project_id 格式錯誤")
-
-    user_id = getattr(current, "id", 0) or 0
-    rows, proj = _load_rows_from_duckdb_only(pid, db, int(user_id))
-    _, schema_def = _resolve_schema_def(
-        db, req_schema_id=req.schema_id, proj_schema_id=getattr(proj, "schema_id", None)
-    )
-    model = (req.model or "").strip() or "gpt-4o-mini"
-
-    intent_prompt = _load_intent_prompt(schema_def)
-    if not intent_prompt:
-        raise HTTPException(status_code=500, detail="Intent prompt 檔案不存在")
-
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    q_for_intent = _normalize_question_for_intent_extraction(req.content)
-    user_content_intent = f"""當前時間：{now_str}
-
-問題: {q_for_intent}"""
-    try:
-        intent_raw, usage1 = await _call_llm(model, intent_prompt, user_content_intent)
-    except Exception as e:
-        logger.exception("意圖萃取 LLM 呼叫失敗")
-        raise HTTPException(status_code=500, detail=f"意圖萃取失敗：{e}")
-
-    intent = _extract_json_from_llm(intent_raw)
-    if not intent or not isinstance(intent, dict):
-        return ExtractIntentResponse(
-            intent=None,
-            usage=usage1,
-            model=model,
-            error_message=_NO_INTENT_JSON_MSG,
-            system_prompt=intent_prompt,
-        )
-    intent = auto_repair_intent(intent)
-    kind, verr = _validate_intent_payload(intent)
-    if verr is not None:
-        logger.info("Intent 驗證失敗（extract-intent）kind=%s: %s", kind, verr.errors())
-        base_msg = _user_message_for_intent_validation_failure(kind)
-        detail = _extract_first_validation_detail(verr)
-        error_message = f"{base_msg}\n\n{detail}" if detail else base_msg
-        return ExtractIntentResponse(
-            intent=None,
-            usage=usage1,
-            model=model,
-            error_message=error_message,
-            system_prompt=intent_prompt,
-            intent_validation_errors=_pydantic_errors_json_safe(verr),
-        )
-
-    return ExtractIntentResponse(intent=intent, usage=usage1, model=model, system_prompt=intent_prompt)
-
-
-@router.post("/completions-compute-tool", response_model=ChatResponseComputeTool)
-async def chat_completions_compute_tool(
-    req: ChatRequest,
-    db: Session = Depends(get_db),
-    current: User = Depends(get_current_user),
-):
-    """Tool Calling 路徑：LLM 意圖萃取 → Backend 計算 → 文字生成。需 project_id 且為 bi_project。"""
-    if not (req.agent_id or "").strip():
-        raise HTTPException(status_code=400, detail="agent_id is required")
-    pid = (req.project_id or "").strip()
-    if not pid:
-        raise HTTPException(status_code=400, detail="project_id is required（compute flow 僅支援 BI 專案）")
-
-    try:
-        _check_agent_access(db, current, req.agent_id.strip())
-    except HTTPException:
-        raise
-
-    try:
-        uuid_pid = UUID(pid)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="project_id 格式錯誤")
-
-    user_id = getattr(current, "id", 0) or 0
-    rows, proj = _load_rows_from_duckdb_only(pid, db, int(user_id))
-    logger.info("Tool flow 載入 %d 列，欄位: %s", len(rows), list(rows[0].keys()) if rows else [])
-
-    _, schema_def = _resolve_schema_def(
-        db, req_schema_id=req.schema_id, proj_schema_id=getattr(proj, "schema_id", None)
-    )
-    schema_summary = get_schema_summary(rows, schema_def)
-    model = (req.model or "").strip() or "gpt-4o-mini"
-    debug: dict[str, Any] = {"schema_summary": schema_summary, "row_count": len(rows)}
-    chart_result: dict[str, Any] | None = None
-    usage1: dict | None = None
-
-    intent_prompt = _load_intent_prompt(schema_def)
-    if not intent_prompt:
-        raise HTTPException(status_code=500, detail="Intent prompt 檔案不存在 (system_prompt_analysis_intent_tool.md)")
-
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    q_for_intent = _normalize_question_for_intent_extraction(req.content)
-    user_content_intent = f"""當前時間：{now_str}
-
-問題: {q_for_intent}"""
-    try:
-        intent_raw, usage1 = await _call_llm(model, intent_prompt, user_content_intent)
-    except Exception as e:
-        logger.exception("意圖萃取 LLM 呼叫失敗")
-        raise HTTPException(status_code=500, detail=f"意圖萃取失敗：{e}")
-
-    debug["intent_raw"] = intent_raw
-    debug["intent_usage"] = usage1
-    intent = _extract_json_from_llm(intent_raw)
-    if not intent or not isinstance(intent, dict):
-        return ChatResponseComputeTool(
-            content=_NO_INTENT_JSON_MSG,
-            model=model,
-            usage=usage1,
-            chart_data=None,
-            debug=_debug_payload(debug),
-        )
-    intent = auto_repair_intent(intent)
-    kind, verr = _validate_intent_payload(intent)
-    if verr is not None:
-        logger.info("Intent 驗證失敗（completions-compute-tool）kind=%s: %s", kind, verr.errors())
-        debug["intent_validation_errors"] = _pydantic_errors_json_safe(verr)
-        debug["intent_invalid_draft"] = intent
-        debug["intent_validation_message_internal"] = _internal_message_for_intent_validation_failure(kind)
-        base_msg = _user_message_for_intent_validation_failure(kind)
-        detail = _extract_first_validation_detail(verr)
-        return ChatResponseComputeTool(
-            content=f"{base_msg}\n\n{detail}" if detail else base_msg,
-            model=model,
-            usage=usage1,
-            chart_data=None,
-            debug=_debug_payload(debug),
-        )
-
-    debug["intent"] = intent
-    debug["intent_version"] = kind
-
-    chart_result, error_list, ce_debug = _compute_with_intent(
-        intent, schema_def, duckdb_project_id=pid
-    )
-    if ce_debug:
-        debug.update(ce_debug)
-
-    if not chart_result:
-        debug["compute_errors_raw"] = list(error_list)
-        content = _user_message_for_compute_errors(
-            error_list, sql_debug=debug.get("sql") if isinstance(debug.get("sql"), str) else None
-        )
-        return ChatResponseComputeTool(
-            content=content,
-            model=model,
-            usage=usage1,
-            chart_data=None,
-            debug=_debug_payload(debug),
-        )
-
-    if not chart_result.get("yAxisLabel") and chart_result.get("valueLabel"):
-        chart_result["yAxisLabel"] = chart_result["valueLabel"]
-    debug["chart_result"] = chart_result
-    debug["flow"] = "tool"
-
-    detail_lines = _chart_result_to_detail_lines(chart_result)
-    if not detail_lines:
-        return ChatResponseComputeTool(
-            content="無法格式化計算結果。請調整問題或檢查 schema。",
-            model=model,
-            usage=usage1,
-            chart_data=None,
-            debug=_debug_payload(debug),
-        )
-
-    text_prompt = _load_prompt("text")
-    if not text_prompt:
-        text_prompt = "根據計算結果撰寫分析文字，使用 Markdown 格式。圖表由後端負責，只輸出文字。"
-
-    detail_block = "計算結果：\n" + "\n".join(detail_lines)
-    ai_block = f"AI 設定與補充指示：\n{req.user_prompt.strip()}\n\n" if (req.user_prompt or "").strip() else ""
-    user_content_text = f"""{ai_block}使用者問題：{req.content}
-
-{detail_block}
-
-請撰寫分析文字，金額與數字必須與上述完全一致。"""
-
-    try:
-        text_content, usage2 = await _call_llm(model, text_prompt, user_content_text)
-    except Exception as e:
-        logger.exception("文字生成 LLM 呼叫失敗")
-        return ChatResponseComputeTool(
-            content=f"文字生成失敗：{e}",
-            model=model,
-            usage=usage1,
-            chart_data=None,
-            debug=_debug_payload(debug),
-        )
-
-    debug["text_usage"] = usage2
-
-    final_content = text_content.strip()
-    # chart 由後端負責，固定使用 chart_result，不以 LLM 輸出覆蓋
-
-    total_usage = usage1 or {}
-    if usage2:
-        for k, v in usage2.items():
-            total_usage[k] = total_usage.get(k, 0) + v
-
-    return ChatResponseComputeTool(
-        content=final_content,
-        model=model,
-        usage=total_usage,
-        chart_data=_clean_chart_result(chart_result),
-        debug=_debug_payload(debug),
-    )
-
-
-@router.post("/compute-from-intent", response_model=ChatResponseComputeTool)
-async def compute_from_intent(
-    req: ComputeFromIntentRequest,
-    db: Session = Depends(get_db),
-    current: User = Depends(get_current_user),
-):
-    """dev-test-compute-tool 兩步驟：依已取得的 intent 執行計算 + 文字生成。"""
-    if (req.agent_id or "").strip():
-        try:
-            _check_agent_access(db, current, req.agent_id.strip())
-        except HTTPException:
-            raise
-    pid = (req.project_id or "").strip()
-    if not pid:
-        raise HTTPException(status_code=400, detail="project_id is required")
-
-    try:
-        uuid_pid = UUID(pid)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="project_id 格式錯誤")
-
-    user_id = getattr(current, "id", 0) or 0
-    rows, proj = _load_rows_from_duckdb_only(pid, db, int(user_id))
-    duckdb_path = get_project_duckdb_path(pid)
-    duckdb_path_str = str(duckdb_path.resolve()) if duckdb_path else None
-    logger.info(
-        "compute_from_intent: project_id=%s duckdb=%s rows=%d",
-        pid,
-        duckdb_path_str,
-        len(rows),
-    )
-    _, schema_def = _resolve_schema_def(
-        db, req_schema_id=req.schema_id, proj_schema_id=getattr(proj, "schema_id", None)
-    )
-    model = (req.model or "").strip() or "gpt-4o-mini"
-    intent = req.intent or {}
-    if not isinstance(intent, dict):
-        raise HTTPException(status_code=400, detail="intent 必須為 JSON 物件")
-
-    debug: dict[str, Any] = {
-        "intent": intent,
-        "flow": "compute-from-intent",
-        "project_id": pid,
-        "duckdb_path": duckdb_path_str,
-        "row_count": len(rows),
-    }
-    kind, verr = _validate_intent_payload(intent)
-    if verr is not None:
-        logger.info("Intent 驗證失敗（compute-from-intent）kind=%s: %s", kind, verr.errors())
-        raise HTTPException(
-            status_code=400,
-            detail=_user_message_for_intent_validation_failure(kind),
-        )
-
-    debug["intent_version"] = kind
-
-    chart_result, error_list, ce_debug = _compute_with_intent(
-        intent, schema_def, duckdb_project_id=pid
-    )
-    if ce_debug:
-        debug.update(ce_debug)
-
-    if not chart_result:
-        debug["compute_errors_raw"] = list(error_list)
-        sql_s = debug.get("sql") if isinstance(debug.get("sql"), str) else None
-        content = _user_message_for_compute_errors(error_list, detail=True, sql_debug=sql_s)
-        return ChatResponseComputeTool(
-            content=content,
-            model=model,
-            usage=None,
-            chart_data=None,
-            debug=_debug_payload(debug),
-        )
-
-    if not chart_result.get("yAxisLabel") and chart_result.get("valueLabel"):
-        chart_result["yAxisLabel"] = chart_result["valueLabel"]
-    debug["chart_result"] = chart_result
-
-    detail_lines = _chart_result_to_detail_lines(chart_result)
-    if not detail_lines:
-        return ChatResponseComputeTool(
-            content="無法格式化計算結果。請調整問題或檢查 schema。",
-            model=model,
-            usage=None,
-            chart_data=None,
-            debug=_debug_payload(debug),
-        )
-
-    text_prompt = _load_prompt("text")
-    if not text_prompt:
-        text_prompt = "根據計算結果撰寫分析文字，使用 Markdown 格式。圖表由後端負責，只輸出文字。"
-
-    detail_block = "計算結果：\n" + "\n".join(detail_lines)
-    user_content_text = f"""使用者問題：{req.content}
-
-{detail_block}
-
-請撰寫分析文字，金額與數字必須與上述完全一致。"""
-
-    try:
-        text_content, usage2 = await _call_llm(model, text_prompt, user_content_text)
-    except Exception as e:
-        logger.exception("文字生成 LLM 呼叫失敗")
-        return ChatResponseComputeTool(
-            content=f"文字生成失敗：{e}",
-            model=model,
-            usage=None,
-            chart_data=_clean_chart_result(chart_result),
-            debug=_debug_payload(debug),
-        )
-
-    debug["text_usage"] = usage2
-    final_content = text_content.strip()
-
-    return ChatResponseComputeTool(
-        content=final_content,
-        model=model,
-        usage=usage2,
-        chart_data=_clean_chart_result(chart_result),
-        debug=_debug_payload(debug),
-    )
-
-
 def _sse_event(data: dict[str, Any]) -> str:
     """產生 SSE 格式字串：data: {json}\\n\\n"""
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -1103,7 +470,7 @@ async def _stream_compute_tool(
         return
 
     try:
-        rows, proj = _load_rows_from_duckdb_only(pid, db, user_id)
+        proj = _ensure_bi_project_duckdb_has_data(pid, db, user_id)
     except HTTPException as e:
         yield _sse_event({"stage": "done", "error_stage": "setup", "content": e.detail, "chart_data": None})
         return
@@ -1270,74 +637,6 @@ async def chat_completions_compute_tool_stream(
     )
 
 
-@router.post("/intent-to-compute", response_model=IntentToComputeResponse)
-async def intent_to_compute(
-    req: IntentToComputeRequest,
-    db: Session = Depends(get_db),
-    current: User = Depends(get_current_user),
-):
-    """dev-test-intent-to-data 專用：接受 Intent v2 JSON，以專案 DuckDB 經 SQL 計算。"""
-    if not (req.agent_id or "").strip():
-        raise HTTPException(status_code=400, detail="agent_id is required")
-    pid = (req.project_id or "").strip()
-    if not pid:
-        raise HTTPException(status_code=400, detail="project_id is required")
-    intent = req.intent or {}
-    if not isinstance(intent, dict):
-        raise HTTPException(status_code=400, detail="intent 必須為 JSON 物件")
-
-    try:
-        _check_agent_access(db, current, req.agent_id.strip())
-    except HTTPException:
-        raise
-
-    user_id = int(getattr(current, "id", 0) or 0)
-    proj = _ensure_bi_project_duckdb_has_data(pid, db, user_id)
-
-    _, schema_def = _resolve_schema_def(
-        db, req_schema_id=req.schema_id, proj_schema_id=getattr(proj, "schema_id", None)
-    )
-
-    kind, verr = _validate_intent_payload(intent)
-    if verr is not None:
-        logger.info("Intent 驗證失敗（intent-to-compute）kind=%s: %s", kind, verr.errors())
-        raise HTTPException(
-            status_code=400,
-            detail=_user_message_for_intent_validation_failure(kind),
-        )
-
-    chart_result, error_list, _ce_debug = _compute_with_intent(
-        intent, schema_def, duckdb_project_id=pid
-    )
-    error_detail = "; ".join(error_list) if error_list and not chart_result else None
-    return IntentToComputeResponse(chart_result=_clean_chart_result(chart_result), error_detail=error_detail)
-
-
-def _load_rows_from_duckdb_only(pid: str, db: Session, user_id: int) -> tuple[list[dict[str, Any]], Any]:
-    """從專案載入 rows：僅從 DuckDB 讀取。回傳 (rows, proj)。無 DuckDB 時 raise HTTPException。"""
-    try:
-        uuid_pid = UUID(pid)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="project_id 格式錯誤")
-    proj = db.query(BiProject).filter(BiProject.project_id == uuid_pid).first()
-    if proj is None or str(getattr(proj, "user_id", "")) != str(user_id):
-        raise HTTPException(status_code=404, detail="專案不存在或無權限")
-    duckdb_path = get_project_duckdb_path(pid)
-    if not duckdb_path:
-        raise HTTPException(
-            status_code=400,
-            detail=f"DuckDB 檔案不存在（project_id={pid}），請確認專案已匯入資料",
-        )
-    df = execute_sql_on_duckdb_file(duckdb_path, "SELECT * FROM data")
-    if df is None or df.empty:
-        raise HTTPException(
-            status_code=400,
-            detail=f"DuckDB 檔案存在但無資料（project_id={pid}），請重新匯入",
-        )
-    rows = df.to_dict("records")
-    logger.info("從 DuckDB 載入 %d 列", len(rows))
-    return rows, proj
-
 
 def _ensure_bi_project_duckdb_has_data(pid: str, db: Session, user_id: int) -> BiProject:
     """驗證專案權限、DuckDB 存在且 data 表有資料；不做 SELECT * 全表載入。"""
@@ -1363,59 +662,6 @@ def _ensure_bi_project_duckdb_has_data(pid: str, db: Session, user_id: int) -> B
     logger.info("已驗證專案 DuckDB 有資料 project_id=%s", pid)
     return proj
 
-
-@router.post("/intent-to-compute-by-project", response_model=IntentToComputeResponse)
-async def intent_to_compute_by_project(
-    req: IntentToComputeByProjectRequest,
-    db: Session = Depends(get_db),
-    current: User = Depends(get_current_user),
-):
-    """dev-test-intent-to-data 專用：僅需 project_id，以 DuckDB SQL 計算。無需 agent_id。"""
-    pid = (req.project_id or "").strip()
-    if not pid:
-        raise HTTPException(status_code=400, detail="project_id is required")
-    intent = req.intent or {}
-    if not isinstance(intent, dict):
-        raise HTTPException(status_code=400, detail="intent 必須為 JSON 物件")
-
-    user_id = int(getattr(current, "id", 0) or 0)
-    proj = _ensure_bi_project_duckdb_has_data(pid, db, user_id)
-
-    _, schema_def = _resolve_schema_def(
-        db, req_schema_id=req.schema_id, proj_schema_id=getattr(proj, "schema_id", None)
-    )
-
-    kind, verr = _validate_intent_payload(intent)
-    if verr is not None:
-        logger.info("Intent 驗證失敗（intent-to-compute-by-project）kind=%s: %s", kind, verr.errors())
-        raise HTTPException(
-            status_code=400,
-            detail=_user_message_for_intent_validation_failure(kind),
-        )
-
-    chart_result, error_list, _ce_debug = _compute_with_intent(
-        intent, schema_def, duckdb_project_id=pid
-    )
-    error_detail = "; ".join(error_list) if error_list and not chart_result else None
-    return IntentToComputeResponse(chart_result=_clean_chart_result(chart_result), error_detail=error_detail)
-
-
-@router.post("/intent-to-compute-raw", response_model=IntentToComputeResponse)
-async def intent_to_compute_raw(
-    req: IntentToComputeRawRequest,
-    db: Session = Depends(get_db),
-    current: User = Depends(get_current_user),
-):
-    """已廢止：計算統一走 DuckDB SQL，不接受僅 in-memory rows。"""
-    _ = (req, db, current)
-    raise HTTPException(
-        status_code=400,
-        detail=(
-            "intent-to-compute-raw 已不支援：計算統一為 DuckDB SQL。"
-            " 請改用 POST /chat/intent-to-compute-by-project（帶 project_id）"
-            " 或 POST /chat/compute-engine（duckdb_name）。"
-        ),
-    )
 
 
 @router.post("/compute-engine", response_model=ComputeEngineResponse)
@@ -1447,4 +693,146 @@ async def compute_engine_endpoint(
         error_detail=error_detail,
         debug=debug if expose else None,
         generated_sql=gen_sql if expose else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pipeline Inspector（開發用）：一次回傳 prompt / intent / SQL / result
+# ---------------------------------------------------------------------------
+
+class PipelineInspectRequest(BaseModel):
+    question: str
+    project_id: str
+    schema_id: str | None = None
+    model: str | None = None
+    user_prompt: str | None = None
+
+
+class PipelineInspectResponse(BaseModel):
+    injected_prompt: str
+    intent_raw: str
+    intent: dict | None
+    intent_usage: dict | None
+    sql: str | None
+    sql_params: list | None
+    chart_result: dict | None
+    error: str | None
+    stage_failed: str | None
+
+
+@router.post("/pipeline-inspect", response_model=PipelineInspectResponse)
+async def pipeline_inspect(
+    req: PipelineInspectRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """開發用：逐步跑完 v4 pipeline，回傳 injected_prompt / intent / SQL / chart_result 供檢查。"""
+    pid = (req.project_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="project_id 必填")
+
+    user_id = int(getattr(current, "id", 0) or 0)
+
+    # --- 確認專案有資料 ---
+    try:
+        proj = _ensure_bi_project_duckdb_has_data(pid, db, user_id)
+    except HTTPException as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
+
+    # --- 載入 schema ---
+    try:
+        _, schema_def = _resolve_schema_def(
+            db, req_schema_id=req.schema_id, proj_schema_id=getattr(proj, "schema_id", None)
+        )
+    except HTTPException as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
+
+    model = (req.model or "").strip() or "gpt-4o-mini"
+
+    # --- 建 injected prompt ---
+    injected_prompt = _load_intent_prompt(schema_def) or ""
+    if not injected_prompt:
+        raise HTTPException(status_code=500, detail="Intent prompt 檔案不存在")
+
+    # --- LLM 意圖萃取 ---
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    q_for_intent = _normalize_question_for_intent_extraction(req.question)
+    user_content_intent = f"當前時間：{now_str}\n\n問題: {q_for_intent}"
+
+    try:
+        intent_raw, usage1 = await _call_llm(model, injected_prompt, user_content_intent)
+    except Exception as e:
+        return PipelineInspectResponse(
+            injected_prompt=injected_prompt,
+            intent_raw="",
+            intent=None,
+            intent_usage=None,
+            sql=None,
+            sql_params=None,
+            chart_result=None,
+            error=f"意圖萃取 LLM 失敗：{e}",
+            stage_failed="intent_llm",
+        )
+
+    intent = _extract_json_from_llm(intent_raw)
+    if not intent or not isinstance(intent, dict):
+        return PipelineInspectResponse(
+            injected_prompt=injected_prompt,
+            intent_raw=intent_raw,
+            intent=None,
+            intent_usage=dict(usage1) if usage1 else None,
+            sql=None,
+            sql_params=None,
+            chart_result=None,
+            error="LLM 未回傳有效 JSON intent",
+            stage_failed="intent_parse",
+        )
+
+    intent = auto_repair_intent(intent)
+    kind, verr = _validate_intent_payload(intent)
+    if verr is not None:
+        base_msg = _user_message_for_intent_validation_failure(kind)
+        detail_msg = _extract_first_validation_detail(verr)
+        return PipelineInspectResponse(
+            injected_prompt=injected_prompt,
+            intent_raw=intent_raw,
+            intent=intent,
+            intent_usage=dict(usage1) if usage1 else None,
+            sql=None,
+            sql_params=None,
+            chart_result=None,
+            error=f"{base_msg}\n{detail_msg}" if detail_msg else base_msg,
+            stage_failed="intent_validate",
+        )
+
+    # --- 計算 ---
+    chart_result, error_list, ce_debug = _compute_with_intent(intent, schema_def, duckdb_project_id=pid)
+    sql_out = ce_debug.get("sql") if isinstance((ce_debug or {}).get("sql"), str) else None
+    sql_params = ce_debug.get("sql_params") if ce_debug else None
+    if not isinstance(sql_params, list):
+        sql_params = None
+
+    if not chart_result:
+        return PipelineInspectResponse(
+            injected_prompt=injected_prompt,
+            intent_raw=intent_raw,
+            intent=intent,
+            intent_usage=dict(usage1) if usage1 else None,
+            sql=sql_out,
+            sql_params=sql_params,
+            chart_result=None,
+            error="; ".join(error_list) if error_list else "計算失敗",
+            stage_failed="compute",
+        )
+
+    return PipelineInspectResponse(
+        injected_prompt=injected_prompt,
+        intent_raw=intent_raw,
+        intent=intent,
+        intent_usage=dict(usage1) if usage1 else None,
+        sql=sql_out,
+        sql_params=sql_params,
+        chart_result=_clean_chart_result(chart_result),
+        error=None,
+        stage_failed=None,
     )

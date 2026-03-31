@@ -134,6 +134,31 @@ def list_bi_projects(
     ]
 
 
+@router.get("/all", response_model=list[BiProjectResponse])
+def list_all_bi_projects(
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """開發用：列出目前使用者所有 BI 專案（不限 agent），供 Pipeline Inspector 下拉選單使用。"""
+    projects = (
+        db.query(BiProject)
+        .filter(BiProject.user_id == str(current.id))
+        .order_by(BiProject.created_at.desc())
+        .all()
+    )
+    return [
+        BiProjectResponse(
+            project_id=p.project_id,
+            project_name=p.project_name,
+            project_desc=p.project_desc,
+            created_at=p.created_at,
+            conversation_data=p.conversation_data,
+            schema_id=getattr(p, "schema_id", None),
+        )
+        for p in projects
+    ]
+
+
 @router.patch("/{project_id}", response_model=BiProjectResponse)
 def update_bi_project(
     project_id: str,

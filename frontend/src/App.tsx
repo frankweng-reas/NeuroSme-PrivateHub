@@ -21,9 +21,8 @@ import ChangePasswordExpiredPage from './pages/ChangePasswordExpiredPage'
 import ForgotPasswordPage from './pages/ForgotPasswordPage'
 import ResetPasswordPage from './pages/ResetPasswordPage'
 import TestLLMChat from './pages/TestLLMChat'
-import TestComputeFlowTool from './pages/TestComputeFlowTool'
-import TestIntentToData from './pages/TestIntentToData'
 import TestComputeEngine from './pages/TestComputeEngine'
+import DevPipelineInspector from './pages/DevPipelineInspector'
 
 function App() {
   return (
@@ -87,26 +86,18 @@ function App() {
                 }
               />
               <Route
-                path="dev-test-compute-tool"
-                element={
-                  <ProtectedRoute>
-                    <TestComputeFlowTool />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="dev-test-intent-to-data"
-                element={
-                  <ProtectedRoute>
-                    <TestIntentToData />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
                 path="dev-test-compute-engine"
                 element={
                   <ProtectedRoute>
                     <TestComputeEngine />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="dev-pipeline-inspector"
+                element={
+                  <ProtectedRoute>
+                    <DevPipelineInspector />
                   </ProtectedRoute>
                 }
               />

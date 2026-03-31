@@ -35,6 +35,11 @@ export async function listBiProjects(agentId: string): Promise<BiProjectItem[]> 
   )
 }
 
+/** 開發用：列出目前 user 所有 BI 專案，不限 agent（供 Pipeline Inspector） */
+export async function listAllBiProjects(): Promise<BiProjectItem[]> {
+  return apiFetch<BiProjectItem[]>('/bi-projects/all')
+}
+
 export async function updateBiProject(
   agentId: string,
   projectId: string,

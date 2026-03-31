@@ -21,7 +21,8 @@ export default function Layout() {
     location.pathname.startsWith('/admin') ||
     location.pathname === '/dev-test-chat' ||
     location.pathname === '/dev-test-compute-tool' ||
-    location.pathname === '/dev-test-compute-engine'
+    location.pathname === '/dev-test-compute-engine' ||
+    location.pathname === '/dev-pipeline-inspector'
   const [user, setUser] = useState<User | null>(null)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const userMenuRef = useRef<HTMLDivElement>(null)
