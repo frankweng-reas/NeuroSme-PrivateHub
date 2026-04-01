@@ -1,7 +1,9 @@
 """BiProjects API：建立、列表、更新、刪除商務分析專案"""
+import copy
 import csv
 import io
 import json
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -10,23 +12,23 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.agent_catalog import AgentCatalog
 from app.models.bi_project import BiProject
+from app.models.bi_schema import BiSchema
 from app.models.user import User
-from app.models.user_schema_mapping import UserSchemaMapping
 from app.schemas.bi_project import BiProjectCreate, BiProjectResponse, BiProjectUpdate
 from app.services.bi_sources_utils import get_merged_csv_for_project
 from app.services.csv_transform import transform_csv_to_schema
 from app.services.duckdb_store import delete_project_duckdb, get_project_duckdb_path, get_project_duckdb_row_count, sync_project_csv_to_duckdb, sync_transformed_rows_to_duckdb
-from app.services.permission import get_agent_ids_for_user
+from app.services.permission import get_agent_ids_for_user, resolve_agent_catalog
 from app.services.schema_loader import (
     bi_schema_columns_to_fields,
     build_csv_mapping_from_schema,
-    load_bi_sales_schema,
     load_schema_from_db,
 )
 
-SCHEMA_ID = "bi_sales_table"
+logger = logging.getLogger(__name__)
+
+_ENUM_VALUES_MAX = 10  # 超過此數量的 distinct 值視為高基數，不追蹤
 
 
 class ImportCsvFileItem(BaseModel):
@@ -35,9 +37,8 @@ class ImportCsvFileItem(BaseModel):
 
 
 class ImportCsvBlockItem(BaseModel):
-    """schema_id：bi_schemas 表主鍵 id（如 汽車業-01），勿傳顯示名稱 name。template_name：舊版 mapping 範本"""
+    """schema_id：bi_schemas 表主鍵 id（如 汽車業-01），勿傳顯示名稱 name。"""
     schema_id: str | None = None
-    template_name: str | None = None
     files: list[ImportCsvFileItem]
 
 
@@ -56,17 +57,17 @@ def _parse_agent_id(agent_id: str, fallback_tenant_id: str) -> tuple[str, str]:
 
 
 def _check_agent_access(db: Session, user: User, agent_id: str) -> tuple[str, str]:
-    """驗證使用者有權限存取該 agent"""
+    """驗證使用者有權限存取該 agent，回傳 (tenant_id, 業務 agent_id)"""
     tenant_id, aid = _parse_agent_id(agent_id, user.tenant_id)
     if tenant_id != user.tenant_id:
         raise HTTPException(status_code=403, detail="無權限存取此助理")
-    catalog = db.query(AgentCatalog).filter(AgentCatalog.agent_id == aid).first()
+    catalog = resolve_agent_catalog(db, aid)
     if not catalog:
         raise HTTPException(status_code=404, detail="Agent not found")
     allowed = get_agent_ids_for_user(db, user.id)
     if catalog.agent_id not in allowed:
         raise HTTPException(status_code=403, detail="無權限存取此助理")
-    return tenant_id, aid
+    return tenant_id, catalog.agent_id
 
 
 @router.post("/", response_model=BiProjectResponse)
@@ -281,9 +282,89 @@ def sync_duckdb(
     return {"ok": ok, "message": msg, "row_count": row_count, "path": str(path) if path else None}
 
 
-def _reverse_mapping(m: dict[str, str]) -> dict[str, str]:
-    """schema_field -> csv_header 轉為 csv_header -> schema_field（供 transform_csv_to_schema 使用）"""
-    return {v: k for k, v in m.items() if k and v}
+def _detect_and_patch_enum_values(
+    all_rows: list[dict[str, Any]],
+    schema_def: dict[str, Any],
+    schema_id: str,
+    db: Session,
+) -> None:
+    """
+    掃描 all_rows 中每個 dim 欄位的 distinct 值，並以 union 策略合併回 bi_schemas.schema_json。
+
+    合併規則：
+    - key 不存在 / null：首次分析
+        - distinct ≤ N → 儲存為已知 enum list
+        - distinct > N → 儲存為 [] (高基數標記)
+    - [] 空陣列：已確認高基數，不再動
+    - [...] 非空：與新 distinct 做 union
+        - union ≤ N → 更新為 sorted union
+        - union > N → 降為 [] (高基數標記)
+    """
+    if not all_rows or not schema_def:
+        return
+
+    columns: dict[str, Any] = schema_def.get("columns") or {}
+    dim_fields = [
+        field for field, meta in columns.items()
+        if isinstance(meta, dict) and (meta.get("attr") or "dim").strip().lower() == "dim"
+    ]
+    if not dim_fields:
+        return
+
+    # 收集新資料中的 distinct 值（每個 dim 欄位）
+    new_distinct: dict[str, set[str]] = {f: set() for f in dim_fields}
+    for row in all_rows:
+        for field in dim_fields:
+            v = row.get(field)
+            if v is not None and str(v).strip():
+                new_distinct[field].add(str(v).strip())
+
+    # 讀取現有 schema_json
+    bi_schema_row = db.query(BiSchema).filter(BiSchema.id == schema_id).first()
+    if not bi_schema_row or not bi_schema_row.schema_json:
+        return
+
+    schema_json: dict[str, Any] = copy.deepcopy(dict(bi_schema_row.schema_json))
+    cols_json: dict[str, Any] = schema_json.get("columns") or {}
+    changed = False
+
+    for field in dim_fields:
+        if field not in cols_json or not isinstance(cols_json[field], dict):
+            continue
+
+        current = cols_json[field].get("enum_values")  # None | [] | [...]
+        new_vals = new_distinct[field]
+
+        if current == []:
+            # 已確認高基數，不再動
+            continue
+
+        if current is None:
+            # 首次分析
+            result: list[str] = sorted(new_vals) if len(new_vals) <= _ENUM_VALUES_MAX else []
+        else:
+            # union 合併
+            merged = set(current) | new_vals
+            result = sorted(merged) if len(merged) <= _ENUM_VALUES_MAX else []
+
+        # 只在有實際變化時才標記 changed
+        existing = cols_json[field].get("enum_values")
+        if result != existing:
+            cols_json[field]["enum_values"] = result
+            changed = True
+
+    if not changed:
+        return
+
+    schema_json["columns"] = cols_json
+    bi_schema_row.schema_json = schema_json
+    db.add(bi_schema_row)
+    try:
+        db.commit()
+        logger.info("bi_schemas[%s] enum_values 已更新", schema_id)
+    except Exception:
+        db.rollback()
+        logger.exception("更新 bi_schemas[%s] enum_values 失敗", schema_id)
 
 
 @router.post("/{project_id}/import-csv", status_code=status.HTTP_200_OK)
@@ -312,6 +393,7 @@ def import_csv_to_duckdb(
 
     all_rows: list[dict[str, Any]] = []
     schema_ids_used: list[str] = []
+    schema_defs_by_id: dict[str, dict[str, Any]] = {}
     for block in body.blocks:
         if not block.files:
             continue
@@ -330,6 +412,7 @@ def import_csv_to_duckdb(
                     detail="Schema 設定異常：bi_schemas 列缺少主鍵 id",
                 )
             schema_ids_used.append(canonical_sid)
+            schema_defs_by_id[canonical_sid] = schema_def
             columns = schema_def.get("columns")
             schema_fields = bi_schema_columns_to_fields(columns)
             if not schema_fields:
@@ -353,39 +436,10 @@ def import_csv_to_duckdb(
                 except ValueError as e:
                     raise HTTPException(status_code=400, detail=str(e)) from e
                 all_rows.extend(rows)
-        elif block.template_name and block.template_name.strip():
-            # 舊版：依 UserSchemaMapping
-            schema = load_bi_sales_schema()
-            if not schema:
-                raise HTTPException(status_code=500, detail="Schema 載入失敗")
-            row = (
-                db.query(UserSchemaMapping)
-                .filter(
-                    UserSchemaMapping.user_id == current.id,
-                    UserSchemaMapping.schema_id == SCHEMA_ID,
-                    UserSchemaMapping.template_name == block.template_name.strip(),
-                )
-                .first()
-            )
-            if not row:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Mapping 範本「{block.template_name}」不存在",
-                )
-            mapping_schema_to_csv = json.loads(row.mapping)
-            mapping_csv_to_schema = _reverse_mapping(mapping_schema_to_csv)
-            for f in block.files:
-                if not f.content or not f.content.strip():
-                    continue
-                try:
-                    rows = transform_csv_to_schema(f.content, mapping_csv_to_schema, schema)
-                except ValueError as e:
-                    raise HTTPException(status_code=400, detail=str(e)) from e
-                all_rows.extend(rows)
         else:
             raise HTTPException(
                 status_code=400,
-                detail="每個區塊需指定 schema_id 或 template_name",
+                detail="每個區塊需指定 schema_id",
             )
 
     if not all_rows:
@@ -407,6 +461,12 @@ def import_csv_to_duckdb(
             db.commit()
             db.refresh(proj)
             out["schema_id"] = chosen
+        # 偵測 enum_values 並寫回 bi_schemas（失敗不影響主流程）
+        for sid, sdef in schema_defs_by_id.items():
+            try:
+                _detect_and_patch_enum_values(all_rows, sdef, sid, db)
+            except Exception:
+                logger.exception("_detect_and_patch_enum_values 失敗（schema_id=%s），略過", sid)
     return out
 
 

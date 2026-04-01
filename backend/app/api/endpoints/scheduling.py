@@ -11,8 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.api.endpoints.chat import _get_llm_params
 from app.api.endpoints.source_files import _check_agent_access
-from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.source_file import SourceFile
@@ -20,16 +20,6 @@ from app.models.user import User
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-
-def _get_llm_params(model: str) -> tuple[str, str | None, str | None]:
-    """依 model 回傳 (litellm_model, api_key, api_base)"""
-    if model.startswith("gemini/"):
-        return model, settings.GEMINI_API_KEY or None, None
-    if model.startswith("twcc/"):
-        litellm_model = f"openai/{model[5:]}"
-        return litellm_model, settings.TWCC_API_KEY or None, settings.TWCC_API_BASE or None
-    return model, settings.OPENAI_API_KEY or None, None
 
 
 def _load_scheduling_extract_prompt() -> str:
@@ -71,13 +61,20 @@ def _extract_json_from_llm_response(text: str) -> dict[str, Any] | None:
     return None
 
 
-async def _call_llm_extract(content: str, model: str, data: str = "") -> dict[str, Any]:
+async def _call_llm_extract(
+    content: str,
+    model: str,
+    data: str = "",
+    *,
+    db: Session | None = None,
+    tenant_id: str | None = None,
+) -> dict[str, Any]:
     """呼叫 LLM 萃取排班參數"""
-    litellm_model, api_key, api_base = _get_llm_params(model)
+    litellm_model, api_key, api_base = _get_llm_params(model, db=db, tenant_id=tenant_id)
     if not api_key:
         raise HTTPException(
             status_code=503,
-            detail="LLM API Key 未設定，請在 .env 中設定 OPENAI_API_KEY 或 GEMINI_API_KEY",
+            detail="LLM API Key 未設定，請在管理介面（租戶 LLM 設定）設定對應的 key",
         )
 
     system_prompt = _load_scheduling_extract_prompt()
@@ -164,7 +161,7 @@ async def scheduling_solve(
         for fn, c in rows:
             if c and c.strip():
                 data += f"--- {fn} ---\n{c.strip()}\n\n"
-        params = await _call_llm_extract(req.content.strip(), req.model, data)
+        params = await _call_llm_extract(req.content.strip(), req.model, data, db=db, tenant_id=tenant_id)
     else:
         raise HTTPException(
             status_code=400,

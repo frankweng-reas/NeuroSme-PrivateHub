@@ -36,6 +36,7 @@ interface SchemaColumn {
   attr: 'dim' | 'dim_time' | 'val'
   sampleData: string
   aliases: string
+  enumValues: string
 }
 
 interface DimHierarchyGroup {
@@ -85,27 +86,38 @@ function inferAttr(dt: SchemaColumn['dataType']): SchemaColumn['attr'] {
 }
 
 function parseCols(sj: Record<string, unknown>): SchemaColumn[] {
-  const cols = (sj?.columns as Record<string, { type?: string; attr?: string; aliases?: string[]; sample?: string; sample_data?: string }>) ?? {}
+  const cols = (sj?.columns as Record<string, { type?: string; attr?: string; aliases?: string[]; sample?: string; sample_data?: string; enum_values?: string[] }>) ?? {}
   return Object.entries(cols).map(([name, m]) => {
     const rawSample = m?.sample ?? m?.sample_data
     const sampleData = typeof rawSample === 'string' ? rawSample : ''
+    const enumValues = Array.isArray(m?.enum_values) ? m.enum_values.join(', ') : ''
     return {
       columnName: name,
       dataType: (m?.type as SchemaColumn['dataType']) ?? 'str',
       attr: (m?.attr as SchemaColumn['attr']) ?? 'dim',
       sampleData,
       aliases: Array.isArray(m?.aliases) ? m.aliases.join(', ') : '',
+      enumValues,
     }
   })
 }
 
-function buildCols(cols: SchemaColumn[]): Record<string, { type: string; attr: string; aliases: string[]; sample?: string }> {
-  const out: Record<string, { type: string; attr: string; aliases: string[]; sample?: string }> = {}
+function buildCols(cols: SchemaColumn[]): Record<string, { type: string; attr: string; aliases: string[]; sample?: string; enum_values?: string[] }> {
+  const out: Record<string, { type: string; attr: string; aliases: string[]; sample?: string; enum_values?: string[] }> = {}
   cols.forEach((c, i) => {
     const name = c.columnName.trim() || `col_${i}`
-    const base = { type: c.dataType, attr: c.attr, aliases: c.aliases.split(',').map(a => a.trim()).filter(Boolean) }
+    const base: { type: string; attr: string; aliases: string[]; sample?: string; enum_values?: string[] } = {
+      type: c.dataType,
+      attr: c.attr,
+      aliases: c.aliases.split(',').map(a => a.trim()).filter(Boolean),
+    }
     const s = c.sampleData.trim()
-    out[name] = s ? { ...base, sample: s } : base
+    if (s) base.sample = s
+    if (c.attr === 'dim') {
+      const ev = c.enumValues.split(',').map(v => v.trim()).filter(Boolean)
+      if (ev.length > 0) base.enum_values = ev
+    }
+    out[name] = base
   })
   return out
 }
@@ -229,7 +241,7 @@ export default function SchemaManagerOverlayV2({ agentId, agentName, onClose, on
         setCols(headers.map((h, i) => {
           const sample = (first[i] ?? '').trim()
           const dt = inferDataType(sample, h.trim())
-          return { columnName: `col_${i + 1}`, dataType: dt, attr: inferAttr(dt), sampleData: sample, aliases: h.trim() }
+          return { columnName: `col_${i + 1}`, dataType: dt, attr: inferAttr(dt), sampleData: sample, aliases: h.trim(), enumValues: '' }
         }))
       }
     } catch { toast('無法讀取 CSV', 'error') }
@@ -437,7 +449,7 @@ export default function SchemaManagerOverlayV2({ agentId, agentName, onClose, on
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <p className="text-sm text-gray-500">型態與屬性可直接下拉選擇</p>
-        <button type="button" onClick={() => setCols(p => [...p, { columnName: '', dataType: 'str', attr: 'dim', sampleData: '', aliases: '' }])}
+        <button type="button" onClick={() => setCols(p => [...p, { columnName: '', dataType: 'str', attr: 'dim', sampleData: '', aliases: '', enumValues: '' }])}
           className="flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-base text-gray-700 transition-colors hover:bg-gray-50">
           <Plus className="h-4 w-4" />新增欄位
         </button>
@@ -450,7 +462,7 @@ export default function SchemaManagerOverlayV2({ agentId, agentName, onClose, on
             <table className="min-w-full text-base">
               <thead className="sticky top-0 z-10 bg-slate-100">
                 <tr>
-                  {['欄位名稱', '範例資料', '型態', '屬性', '別名（逗號分隔）', ''].map((h, i) =>
+                  {['欄位名稱', '範例資料', '型態', '屬性', '別名（逗號分隔）', '可選值（逗號分隔）', ''].map((h, i) =>
                     <th key={i} className="border-b border-slate-200 px-3 py-2.5 text-left text-sm font-semibold uppercase tracking-wide text-slate-600">{h}</th>
                   )}
                 </tr>
@@ -486,6 +498,14 @@ export default function SchemaManagerOverlayV2({ agentId, agentName, onClose, on
                       <input type="text" value={col.aliases} placeholder="如：營收, 銷售額"
                         onChange={e => setCols(p => p.map((c, j) => j !== i ? c : { ...c, aliases: e.target.value }))}
                         className="w-full min-w-[8rem] rounded-lg border border-gray-200 px-2 py-1.5 text-base text-gray-800 focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-400" />
+                    </td>
+                    <td className="px-3 py-2">
+                      {col.attr === 'dim'
+                        ? <input type="text" value={col.enumValues} placeholder="如：VIP, 標準, 潛力"
+                            onChange={e => setCols(p => p.map((c, j) => j !== i ? c : { ...c, enumValues: e.target.value }))}
+                            className="w-full min-w-[8rem] rounded-lg border border-gray-200 px-2 py-1.5 text-base text-gray-800 focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-400" />
+                        : <span className="text-gray-300 text-sm">—</span>
+                      }
                     </td>
                     <td className="px-2 py-2">
                       <button type="button" onClick={() => setCols(p => p.filter((_, j) => j !== i))}

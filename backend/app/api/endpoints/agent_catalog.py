@@ -28,7 +28,7 @@ def list_agent_catalog(
     _require_super_admin(current)
     return db.query(AgentCatalog).order_by(
         AgentCatalog.sort_id.asc().nulls_last(),
-        AgentCatalog.id.asc(),
+        AgentCatalog.agent_id.asc(),
     ).all()
 
 
@@ -40,15 +40,14 @@ def create_agent_catalog(
 ):
     """新增 agent（僅 super_admin）"""
     _require_super_admin(current)
-    existing = db.query(AgentCatalog).filter(AgentCatalog.id == body.id).first()
+    existing = db.query(AgentCatalog).filter(AgentCatalog.agent_id == body.agent_id).first()
     if existing:
         raise HTTPException(status_code=400, detail="Agent ID 已存在")
     catalog = AgentCatalog(
-        id=body.id,
+        agent_id=body.agent_id,
         sort_id=body.sort_id,
         group_id=body.group_id,
         group_name=body.group_name,
-        agent_id=body.agent_id,
         agent_name=body.agent_name,
         icon_name=body.icon_name,
     )
@@ -65,15 +64,14 @@ def update_agent_catalog(
     db: Session = Depends(get_db),
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):
-    """更新 agent（僅 super_admin）"""
+    """更新 agent 的 metadata（僅 super_admin）；agent_id 為主鍵，不可更改"""
     _require_super_admin(current)
-    catalog = db.query(AgentCatalog).filter(AgentCatalog.id == agent_id).first()
+    catalog = db.query(AgentCatalog).filter(AgentCatalog.agent_id == agent_id).first()
     if not catalog:
         raise HTTPException(status_code=404, detail="Agent not found")
     catalog.sort_id = body.sort_id
     catalog.group_id = body.group_id
     catalog.group_name = body.group_name
-    catalog.agent_id = body.agent_id
     catalog.agent_name = body.agent_name
     catalog.icon_name = body.icon_name
     db.commit()
@@ -89,7 +87,7 @@ def delete_agent_catalog(
 ):
     """刪除 agent（僅 super_admin）"""
     _require_super_admin(current)
-    catalog = db.query(AgentCatalog).filter(AgentCatalog.id == agent_id).first()
+    catalog = db.query(AgentCatalog).filter(AgentCatalog.agent_id == agent_id).first()
     if not catalog:
         raise HTTPException(status_code=404, detail="Agent not found")
     try:

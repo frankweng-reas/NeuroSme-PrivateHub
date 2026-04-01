@@ -11,6 +11,7 @@ import { pipelineInspect, type PipelineInspectResponse } from '@/api/chat'
 import { listAllBiProjects, type BiProjectItem } from '@/api/biProjects'
 import { listBiSchemas, type BiSchemaItem } from '@/api/biSchemas'
 import { ApiError } from '@/api/client'
+import LLMModelSelect from '@/components/LLMModelSelect'
 
 // ──────────────────────────────────────────────
 // LocalStorage keys
@@ -22,22 +23,6 @@ const LS = {
   model: 'neurosme:dev-pipeline:model',
   result: 'neurosme:dev-pipeline:result',
 }
-
-const MODEL_OPTIONS = [
-  { group: 'OpenAI', options: [
-    { value: 'gpt-4o-mini',  label: 'GPT-4o mini' },
-    { value: 'gpt-4o',       label: 'GPT-4o' },
-    { value: 'o3-mini',      label: 'o3-mini' },
-  ]},
-  { group: 'Gemini', options: [
-    { value: 'gemini/gemini-2.0-flash',      label: 'Gemini 2.0 Flash' },
-    { value: 'gemini/gemini-2.5-pro-preview-03-25', label: 'Gemini 2.5 Pro' },
-  ]},
-  { group: 'Claude', options: [
-    { value: 'claude-3-5-haiku-20241022',  label: 'Claude 3.5 Haiku' },
-    { value: 'claude-3-7-sonnet-20250219', label: 'Claude 3.7 Sonnet' },
-  ]},
-]
 
 function ls(key: string, fallback = '') {
   try { return localStorage.getItem(key) ?? fallback } catch { return fallback }
@@ -215,7 +200,7 @@ export default function DevPipelineInspector() {
     }
   }
 
-  const promptText = result?.injected_prompt ?? ''
+  const promptText = result?.user_content ?? ''
   const intentText = result ? JSON.stringify(result.intent, null, 2) : ''
   const sqlRaw = result?.sql ?? ''
   const sqlText = sqlRaw
@@ -283,21 +268,21 @@ export default function DevPipelineInspector() {
             </select>
           </div>
 
-          <div className="flex flex-col gap-1" style={{ width: '180px' }}>
-            <label className="text-xs font-medium text-slate-500">Model</label>
-            <select
+          <div className="min-w-0" style={{ width: '180px' }}>
+            <LLMModelSelect
+              label="模型"
+              labelPosition="stacked"
+              compact
               value={model}
-              onChange={e => { setModel(e.target.value); lsSet(LS.model, e.target.value) }}
-              className={inputClass}
-            >
-              {MODEL_OPTIONS.map(g => (
-                <optgroup key={g.group} label={g.group}>
-                  {g.options.map(o => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
+              onChange={(v) => {
+                setModel(v)
+                lsSet(LS.model, v)
+              }}
+              disabled={loading}
+              labelClassName="text-xs font-medium text-slate-500"
+              selectClassName={inputClass}
+              className="w-full"
+            />
           </div>
 
           <button
@@ -354,12 +339,12 @@ export default function DevPipelineInspector() {
             {/* Prompt（左）*/}
             <div className="flex min-h-0 min-w-0 flex-col overflow-hidden" style={{ width: `${split1.pct}%` }}>
               <SectionHeader
-                title="Injected Prompt"
+                title="User Prompt"
                 badge={promptText ? `${promptText.length} chars` : undefined}
                 hint={promptCopy.hint}
                 onCopy={promptText ? () => void promptCopy.copy(promptText) : undefined}
               />
-              <CodePane text={promptText} placeholder="執行後顯示注入 schema 後的完整 System Prompt" />
+              <CodePane text={promptText} placeholder="執行後顯示注入 schema 的 User Message" />
             </div>
 
             {/* 拖曳分隔條 */}

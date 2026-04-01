@@ -10,7 +10,7 @@ from app.models.agent_catalog import AgentCatalog
 from app.models.tenant_agent import TenantAgent
 from app.models.user import User
 from app.schemas.agent import AgentResponse
-from app.services.permission import get_agent_ids_for_user
+from app.services.permission import get_agent_ids_for_user, resolve_agent_catalog
 
 router = APIRouter()
 
@@ -23,10 +23,25 @@ def _parse_agent_id(agent_id: str, fallback_tenant_id: str) -> tuple[str, str]:
     return fallback_tenant_id, agent_id
 
 
-def _get_tenant_purchased_agent_ids(db: Session, tenant_id: str) -> set[str]:
-    """回傳該 tenant 已購買的 agent_id 集合"""
+def _get_tenant_purchased_semantic_agent_ids(db: Session, tenant_id: str) -> set[str]:
+    """回傳該 tenant 已購買的 **業務 agent_id**（tenant_agents.agent_id = agent_catalog.agent_id）"""
     rows = db.query(TenantAgent.agent_id).filter(TenantAgent.tenant_id == tenant_id).all()
     return {r.agent_id for r in rows}
+
+
+def _catalog_rows_for_semantic_agent_ids(db: Session, semantic_ids: set[str]) -> list[AgentCatalog]:
+    """依業務 agent_id 查 catalog；ids 為空時不回傳全表。"""
+    if not semantic_ids:
+        return []
+    return (
+        db.query(AgentCatalog)
+        .filter(AgentCatalog.agent_id.in_(semantic_ids))
+        .order_by(
+            AgentCatalog.sort_id.asc().nulls_last(),
+            AgentCatalog.agent_id.asc(),
+        )
+        .all()
+    )
 
 
 @router.get("/", response_model=list[AgentResponse])
@@ -41,20 +56,12 @@ def list_agents(
     if is_purchased and str(is_purchased).lower() == "true" and user.role in ("admin", "super_admin"):
         # admin 權限設定：依指定的 tenant_id（或自己的 tenant）查詢已購買 agents
         lookup_tenant_id = target_tenant_id if target_tenant_id else user.tenant_id
-        purchased_ids = _get_tenant_purchased_agent_ids(db, lookup_tenant_id)
-        catalogs = db.query(AgentCatalog).filter(
-            AgentCatalog.agent_id.in_(purchased_ids)
-        ).order_by(
-            AgentCatalog.sort_id.asc().nulls_last(),
-            AgentCatalog.id.asc(),
-        ).all()
+        purchased = _get_tenant_purchased_semantic_agent_ids(db, lookup_tenant_id)
+        catalogs = _catalog_rows_for_semantic_agent_ids(db, purchased)
         return [AgentResponse.from_catalog(c, lookup_tenant_id) for c in catalogs]
-    # 一般：回傳 user 有權限的 agents（user_agents ∩ tenant_agents）
+    # 一般：業務 agent_id 的交集（user_agents ∩ tenant_agents）
     allowed_ids = get_agent_ids_for_user(db, user.id)
-    catalogs = db.query(AgentCatalog).filter(AgentCatalog.agent_id.in_(allowed_ids)).order_by(
-            AgentCatalog.sort_id.asc().nulls_last(),
-            AgentCatalog.id.asc(),
-        ).all()
+    catalogs = _catalog_rows_for_semantic_agent_ids(db, allowed_ids)
     return [AgentResponse.from_catalog(c, user.tenant_id) for c in catalogs]
 
 
@@ -68,7 +75,7 @@ def get_agent(
     tenant_id, aid = _parse_agent_id(agent_id, current.tenant_id)
     if tenant_id != current.tenant_id:
         raise HTTPException(status_code=403, detail="無權限存取此助理")
-    catalog = db.query(AgentCatalog).filter(AgentCatalog.agent_id == aid).first()
+    catalog = resolve_agent_catalog(db, aid)
     if not catalog:
         raise HTTPException(status_code=404, detail="Agent not found")
     allowed_ids = get_agent_ids_for_user(db, current.id)

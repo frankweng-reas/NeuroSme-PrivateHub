@@ -16,9 +16,11 @@ from uuid import UUID
 from app.api.endpoints.source_files import _check_agent_access
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.encryption import decrypt_api_key
 from app.core.security import get_current_user
 from app.models.bi_project import BiProject
 from app.models.bi_source import BiSource
+from app.models.llm_provider_config import LLMProviderConfig
 from app.models.qtn_catalog import QtnCatalog
 from app.models.qtn_project import QtnProject
 from app.models.qtn_source import QtnSource
@@ -36,18 +38,45 @@ _TWCC_MODEL_MAP: dict[str, str] = {
 }
 
 
-def _get_llm_params(model: str) -> tuple[str, str | None, str | None]:
+def _get_llm_params(model: str, db=None, tenant_id: str | None = None) -> tuple[str, str | None, str | None]:
     """
     依 model 回傳 (litellm_model, api_key, api_base)。
+    api_key 僅從該租戶 DB 的 llm_provider_configs 取得；未設定則回傳 None。
     api_base 僅台智雲需要，其他為 None。
     """
+    def _db_key(provider: str) -> tuple[str | None, str | None]:
+        """從 DB 取得指定 provider 的 (api_key, api_base_url)；找不到或解密失敗回傳 (None, None)"""
+        if db is None or not tenant_id:
+            return None, None
+        cfg = (
+            db.query(LLMProviderConfig)
+            .filter(
+                LLMProviderConfig.tenant_id == tenant_id,
+                LLMProviderConfig.provider == provider,
+                LLMProviderConfig.is_active.is_(True),
+            )
+            .order_by(LLMProviderConfig.id)
+            .first()
+        )
+        if not cfg:
+            return None, None
+        key: str | None = None
+        if cfg.api_key_encrypted:
+            try:
+                key = decrypt_api_key(cfg.api_key_encrypted)
+            except ValueError:
+                logger.warning("LLMProviderConfig id=%s provider=%s 解密失敗", cfg.id, provider)
+        return key, cfg.api_base_url
+
     if model.startswith("gemini/"):
-        return model, settings.GEMINI_API_KEY or None, None
+        db_key, _ = _db_key("gemini")
+        return model, db_key or None, None
     if model.startswith("twcc/"):
-        # 台智雲：使用專用 conversation API，此處僅回傳 key/base 供 _call_twcc_conversation 使用
-        litellm_model = f"openai/{model[5:]}"  # 保留格式，實際由 _call_twcc_conversation 處理
-        return litellm_model, settings.TWCC_API_KEY or None, settings.TWCC_API_BASE or None
-    return model, settings.OPENAI_API_KEY or None, None
+        db_key, db_base = _db_key("twcc")
+        litellm_model = f"openai/{model[5:]}"
+        return litellm_model, db_key or None, db_base or None
+    db_key, _ = _db_key("openai")
+    return model, db_key or None, None
 
 
 class ChatMessage(BaseModel):
@@ -154,7 +183,7 @@ async def _call_twcc_conversation(
         "messages": messages,
         "parameters": {
             "max_new_tokens": 2000,
-            "temperature": 0,
+            "temperature": 0.01,
             "top_k": 40,
             "top_p": 0.9,
             "frequency_penalty": 1.2,
@@ -166,9 +195,14 @@ async def _call_twcc_conversation(
     }
     timeout = aiohttp.ClientTimeout(total=60)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, json=payload, headers=headers) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if not resp.ok:
+                    err_body = await resp.text()
+                    raise HTTPException(
+                        status_code=resp.status,
+                        detail=f"TWCC API 錯誤 {resp.status}：{err_body}",
+                    )
+                data = await resp.json()
 
     # 台智雲回應格式：generated_text, prompt_tokens, generated_tokens, total_tokens, finish_reason
     content = data.get("generated_text", "") or ""
@@ -426,17 +460,17 @@ async def chat_completions(
             logger.info("chat_completions: 已載入參考資料 %d 字元", data_len)
 
         model = (req.model or "").strip() or "gpt-4o-mini"
-        litellm_model, api_key, api_base = _get_llm_params(model)
+        litellm_model, api_key, api_base = _get_llm_params(model, db=db, tenant_id=tenant_id)
 
         if not api_key:
             raise HTTPException(
                 status_code=503,
-                detail=f"{_get_provider_name(model)} API Key 未設定，請在 .env 中設定對應的 key",
+                detail=f"{_get_provider_name(model)} API Key 未設定，請在管理介面（租戶 LLM 設定）設定對應的 key",
             )
         if model.startswith("twcc/") and not api_base:
             raise HTTPException(
                 status_code=503,
-                detail="台智雲 TWCC_API_BASE 未設定，請在 .env 中設定",
+                detail="台智雲 TWCC_API_BASE 未設定，請在管理介面（租戶 LLM 設定）設定",
             )
 
         messages = _build_messages(req, data=data)
@@ -447,7 +481,7 @@ async def chat_completions(
             if not url:
                 raise HTTPException(
                     status_code=503,
-                    detail="台智雲 TWCC_API_BASE 未設定，請在 .env 設定為 https://api-ams.twcc.ai/api/models/conversation",
+                    detail="台智雲 TWCC_API_BASE 未設定，請在管理介面（租戶 LLM 設定）設定",
                 )
             model_id = _twcc_model_id(model[5:])  # twcc/Llama3.1-FFM-8B-32K -> Llama3.1-FFM-8B-32K
             return await _call_twcc_conversation(url=url, api_key=api_key, model_id=model_id, messages=messages)

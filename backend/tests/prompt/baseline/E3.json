@@ -2,7 +2,6 @@
   "version": "4.0",
   "dims": {
     "groups": [
-      "QUARTER(col_1)",
       "col_3"
     ]
   },

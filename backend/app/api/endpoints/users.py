@@ -11,7 +11,7 @@ from app.core.security import get_current_user
 from app.models.user import User
 from app.models.user_agent import UserAgent
 from app.schemas.user import UserAgentsUpdate, UserCreate, UserResponse, UserRoleUpdate
-from app.services.permission import get_agent_ids_for_user
+from app.services.permission import get_agent_ids_for_user, resolve_agent_catalog
 
 router = APIRouter()
 
@@ -151,14 +151,17 @@ def update_user_agents(
         UserAgent.user_id == user_id,
         UserAgent.tenant_id == user.tenant_id,
     ).delete()
-    # 新增新關聯（agent_id 支援 tenant_id:id 或 僅 id）
+    # 新增新關聯（複合 id 或單一識別皆為業務 agent_id；亦相容舊的 catalog 主鍵 id）
     for raw_id in body.agent_ids:
         tenant_id, aid = _parse_agent_id(raw_id, user.tenant_id)
         if tenant_id != user.tenant_id:
             continue  # 略過非該 tenant 的 agent
+        cat = resolve_agent_catalog(db, aid)
+        if not cat:
+            raise HTTPException(status_code=400, detail=f"無效的 agent：{aid}")
         db.add(UserAgent(
             user_id=user_id,
-            agent_id=aid,
+            agent_id=cat.agent_id,
             tenant_id=user.tenant_id,
         ))
     db.commit()

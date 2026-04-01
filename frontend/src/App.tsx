@@ -12,6 +12,7 @@ import AdminPage from './pages/AdminPage'
 import AdminAgentPermissions from './pages/admin/AdminAgentPermissions'
 import AdminAgentCatalog from './pages/admin/AdminAgentCatalog'
 import AdminCompanies from './pages/admin/AdminCompanies'
+import AdminLLMSettings from './pages/admin/AdminLLMSettings'
 import AdminTenantSettings from './pages/admin/AdminTenantSettings'
 import AdminUsers from './pages/admin/AdminUsers'
 import LoginPage from './pages/LoginPage'
@@ -67,6 +68,7 @@ function App() {
                 <Route path="agent-permissions" element={<AdminAgentPermissions />} />
                 <Route path="companies" element={<AdminCompanies />} />
                 <Route path="tenant-settings" element={<SuperAdminRoute><AdminTenantSettings /></SuperAdminRoute>} />
+                <Route path="llm-settings" element={<AdminLLMSettings />} />
                 <Route path="users" element={<AdminUsers />} />
               </Route>
               <Route

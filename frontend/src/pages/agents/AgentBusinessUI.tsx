@@ -487,6 +487,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
   const [csvAdapterToast, setCsvAdapterToast] = useState<string | null>(null)
   const [duckdbRowCount, setDuckdbRowCount] = useState<number | null>(null)
   const [schemaManagerOpen, setSchemaManagerOpen] = useState(false)
+  const [pendingSchemaChange, setPendingSchemaChange] = useState<{ blockId: string; schemaId: string } | null>(null)
 
   const loadSchemas = useCallback(() => {
     listBiSchemas(agent.agent_id)
@@ -591,7 +592,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     fetchDuckdbStatus()
   }, [fetchDuckdbStatus])
 
-  const updateBlockSchema = (id: string, value: string) => {
+  const applySchemaChange = (id: string, value: string) => {
     setBlocks((prev) =>
       prev.map((b) =>
         b.id === id ? { ...b, selectedSchemaId: value, selectedFiles: [] } : b
@@ -614,6 +615,14 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
           err instanceof ApiError ? err.detail ?? err.message : err instanceof Error ? err.message : '更新專案 Schema 失敗'
         setCsvAdapterToast(String(msg))
       })
+  }
+
+  const updateBlockSchema = (id: string, value: string) => {
+    if (duckdbRowCount != null && duckdbRowCount > 0) {
+      setPendingSchemaChange({ blockId: id, schemaId: value })
+      return
+    }
+    applySchemaChange(id, value)
   }
   const updateBlockFiles = (id: string, files: File[]) => {
     setBlocks((prev) =>
@@ -1063,6 +1072,20 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
           {csvAdapterToast}
         </div>
       )}
+
+      <ConfirmModal
+        open={pendingSchemaChange !== null}
+        title="切換 Schema"
+        message={`此 Project 已有 ${duckdbRowCount?.toLocaleString() ?? 0} 筆資料。切換 Schema 後，請重新匯入符合新 Schema 的 CSV，否則查詢將無法正常運作。`}
+        confirmText="確認切換"
+        cancelText="取消"
+        variant="primary"
+        onConfirm={() => {
+          if (pendingSchemaChange) applySchemaChange(pendingSchemaChange.blockId, pendingSchemaChange.schemaId)
+          setPendingSchemaChange(null)
+        }}
+        onCancel={() => setPendingSchemaChange(null)}
+      />
 
       <ConfirmModal
         open={showClearConfirm}

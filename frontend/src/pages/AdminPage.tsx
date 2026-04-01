@@ -1,13 +1,14 @@
 /** 管理頁面：admin 專用，含 sidebar 導航 */
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
-import { ArrowLeft, Building2, Building, LayoutGrid, ShieldCheck, Users } from 'lucide-react'
+import { ArrowLeft, Building2, Building, KeyRound, LayoutGrid, ShieldCheck, Users } from 'lucide-react'
 import { getMe } from '@/api/users'
 import type { User } from '@/types'
 
 const SIDEBAR_ITEMS = [
   { to: '/admin/agents', label: 'REAS-系統 Agents 設定', icon: LayoutGrid, superAdminOnly: true },
   { to: '/admin/tenant-settings', label: 'REAS-系統 Tenants 設定', icon: Building2, superAdminOnly: true },
+  { to: '/admin/llm-settings', label: 'LLM 設定（租戶）', icon: KeyRound, superAdminOnly: false },
   { to: '/admin/agent-permissions', label: 'Agent 權限設定', icon: ShieldCheck, superAdminOnly: false },
   { to: '/admin/companies', label: '公司資訊', icon: Building, superAdminOnly: false },
   { to: '/admin/users', label: '會員管理', icon: Users, superAdminOnly: false },

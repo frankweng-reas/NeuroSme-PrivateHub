@@ -26,11 +26,9 @@ class Settings(BaseSettings):
     # Chat 參考資料字元上限，超過則回傳 413 要求用戶縮小範圍
     CHAT_DATA_MAX_CHARS: int = 100_000
 
-    # LLM API Keys (LiteLLM 支援 OpenAI / Gemini / 台智雲)
-    OPENAI_API_KEY: str = ""
-    GEMINI_API_KEY: str = ""
-    TWCC_API_KEY: str = ""
-    TWCC_API_BASE: str = ""  # 台智雲 Conversation API 完整 URL，例：https://api-ams.twcc.ai/api/models/conversation
+    # LLM Key 加密用對稱金鑰（Fernet，32-byte URL-safe base64）
+    # 產生方式：python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    LLM_ENCRYPTION_KEY: str = ""
 
     # JWT（與 LocalAuth 共用 secret）
     JWT_SECRET: str = "change-me-in-production"

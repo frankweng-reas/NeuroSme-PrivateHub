@@ -6,10 +6,9 @@ from app.core.database import Base
 class AgentCatalog(Base):
     __tablename__ = "agent_catalog"
 
-    id = Column(String(100), primary_key=True, index=True)
+    agent_id = Column(String(100), primary_key=True, index=True)
     sort_id = Column(String(100), nullable=True, index=True)
     group_id = Column(String(100), nullable=False, index=True)
     group_name = Column(String(255), nullable=False)
-    agent_id = Column(String(100), nullable=False, index=True)
     agent_name = Column(String(255), nullable=False)
     icon_name = Column(String(100), nullable=True)

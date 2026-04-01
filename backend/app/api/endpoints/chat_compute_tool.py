@@ -204,10 +204,14 @@ def _build_schema_block(schema_def: dict[str, Any] | None) -> str:
         a = (meta.get("attr") or "dim").strip().lower()
         aliases = meta.get("aliases") or []
         display = ", ".join(str(x) for x in aliases) if aliases else field
+        enum_vals: list[str] = [str(x) for x in (meta.get("enum_values") or []) if x is not None]
         if a == "dim_time":
             dim_lines.append(f"- {field}: {display}（時間，可用 MONTH/QUARTER/YEAR 分組）")
         elif a in ("dim", "dim_text"):
-            dim_lines.append(f"- {field}: {display}")
+            if enum_vals:
+                dim_lines.append(f"- {field}: {display}（可選值：{', '.join(enum_vals)}）")
+            else:
+                dim_lines.append(f"- {field}: {display}")
         else:  # val, val_num, val_denom ...
             val_lines.append(f"- {field}: {display}")
 
@@ -234,17 +238,26 @@ def _build_hierarchy_block(schema_def: dict[str, Any] | None) -> str:
     return "\n".join(lines) if lines else "- (無層級)"
 
 
-def _load_intent_prompt(schema_def: dict[str, Any] | None) -> str:
-    """載入 intent prompt template 並從 schema_def 注入 schema/階層。"""
-    raw = _load_prompt("intent")
-    if not raw:
-        return ""
-    schema_name = (schema_def or {}).get("name") or "Sales Analytics"
+def _load_intent_prompt() -> str:
+    """載入 intent system prompt template（schema 已移至 user message，無需注入）。"""
+    return _load_prompt("intent") or ""
+
+
+def _build_user_content_intent(
+    schema_def: dict[str, Any] | None,
+    now_str: str,
+    question: str,
+) -> str:
+    """組裝 intent 萃取的 user message：schema 區塊在最前，問題在最後。"""
     schema_block = _build_schema_block(schema_def)
     hierarchy_block = _build_hierarchy_block(schema_def)
-    return raw.replace("{{SCHEMA_NAME}}", schema_name).replace(
-        "{{SCHEMA_DEFINITION}}", schema_block
-    ).replace("{{DIMENSION_HIERARCHY}}", hierarchy_block)
+    return (
+        f"# Data Schema\n{schema_block}\n\n"
+        f"**層級** {hierarchy_block}\n\n"
+        f"**輸出的每個 col_N 必須出現在上方 Data Schema 的 columns 清單中**\n\n"
+        f"當前時間：{now_str}\n\n"
+        f"問題: {question}"
+    )
 
 
 def _extract_json_from_llm(raw: str) -> dict | None:
@@ -379,16 +392,18 @@ async def _call_llm(
     model: str,
     system_prompt: str,
     user_content: str,
+    db=None,
+    tenant_id: str | None = None,
 ) -> tuple[str, dict | None]:
     """呼叫 LLM，回傳 (content, usage)"""
-    litellm_model, api_key, api_base = _get_llm_params(model)
+    litellm_model, api_key, api_base = _get_llm_params(model, db=db, tenant_id=tenant_id)
     if not api_key:
         raise HTTPException(
             status_code=503,
-            detail=f"{_get_provider_name(model)} API Key 未設定",
+            detail=f"{_get_provider_name(model)} API Key 未設定，請在管理介面（租戶 LLM 設定）設定對應的 key",
         )
     if model.startswith("twcc/") and not api_base:
-        raise HTTPException(status_code=503, detail="台智雲 TWCC_API_BASE 未設定")
+        raise HTTPException(status_code=503, detail="台智雲 TWCC_API_BASE 未設定，請在管理介面（租戶 LLM 設定）設定")
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -402,13 +417,24 @@ async def _call_llm(
         payload = {
             "model": model_id,
             "messages": messages,
-            "parameters": {"max_new_tokens": 2000, "temperature": 0},
+            "parameters": {
+                "max_new_tokens": 2000,
+                "temperature": 0.01,
+                "top_k": 40,
+                "top_p": 0.9,
+                "frequency_penalty": 1.2,
+            },
         }
         headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
         timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, json=payload, headers=headers) as resp:
-                resp.raise_for_status()
+                if not resp.ok:
+                    err_body = await resp.text()
+                    raise HTTPException(
+                        status_code=resp.status,
+                        detail=f"TWCC API 錯誤 {resp.status}：{err_body}",
+                    )
                 data = await resp.json()
         content = data.get("generated_text", "") or ""
         usage = {
@@ -458,6 +484,7 @@ async def _stream_compute_tool(
     req: ChatRequest,
     db: Session,
     user_id: int,
+    tenant_id: str,
 ):
     """SSE 串流：每個階段完成時 yield 事件。"""
     yield _sse_event({"stage": "intent"})
@@ -484,18 +511,16 @@ async def _stream_compute_tool(
         yield _sse_event({"stage": "done", "error_stage": "setup", "content": detail, "chart_data": None})
         return
     model = (req.model or "").strip() or "gpt-4o-mini"
-    intent_prompt = _load_intent_prompt(schema_def)
+    intent_prompt = _load_intent_prompt()
     if not intent_prompt:
         yield _sse_event({"stage": "done", "error_stage": "intent", "content": "Intent prompt 檔案不存在", "chart_data": None})
         return
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     q_for_intent = _normalize_question_for_intent_extraction(req.content)
-    user_content_intent = f"""當前時間：{now_str}
-
-問題: {q_for_intent}"""
+    user_content_intent = _build_user_content_intent(schema_def, now_str, q_for_intent)
     try:
-        intent_raw, usage1 = await _call_llm(model, intent_prompt, user_content_intent)
+        intent_raw, usage1 = await _call_llm(model, intent_prompt, user_content_intent, db=db, tenant_id=tenant_id)
     except Exception as e:
         logger.exception("意圖萃取 LLM 呼叫失敗")
         yield _sse_event({"stage": "done", "error_stage": "intent", "content": f"意圖萃取失敗：{e}", "chart_data": None})
@@ -578,7 +603,7 @@ async def _stream_compute_tool(
 請撰寫分析文字，金額與數字必須與上述完全一致。"""
 
     try:
-        text_content, usage2 = await _call_llm(model, text_prompt, user_content_text)
+        text_content, usage2 = await _call_llm(model, text_prompt, user_content_text, db=db, tenant_id=tenant_id)
     except Exception as e:
         logger.exception("文字生成 LLM 呼叫失敗")
         yield _sse_event({
@@ -626,8 +651,9 @@ async def chat_completions_compute_tool_stream(
         raise
 
     user_id = int(getattr(current, "id", 0) or 0)
+    tenant_id = str(getattr(current, "tenant_id", "") or "")
     return StreamingResponse(
-        _stream_compute_tool(req, db, user_id),
+        _stream_compute_tool(req, db, user_id, tenant_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -710,6 +736,7 @@ class PipelineInspectRequest(BaseModel):
 
 class PipelineInspectResponse(BaseModel):
     injected_prompt: str
+    user_content: str
     intent_raw: str
     intent: dict | None
     intent_usage: dict | None
@@ -749,21 +776,23 @@ async def pipeline_inspect(
 
     model = (req.model or "").strip() or "gpt-4o-mini"
 
-    # --- 建 injected prompt ---
-    injected_prompt = _load_intent_prompt(schema_def) or ""
+    # --- 建 system prompt ---
+    injected_prompt = _load_intent_prompt() or ""
     if not injected_prompt:
         raise HTTPException(status_code=500, detail="Intent prompt 檔案不存在")
 
     # --- LLM 意圖萃取 ---
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     q_for_intent = _normalize_question_for_intent_extraction(req.question)
-    user_content_intent = f"當前時間：{now_str}\n\n問題: {q_for_intent}"
+    user_content_intent = _build_user_content_intent(schema_def, now_str, q_for_intent)
 
     try:
-        intent_raw, usage1 = await _call_llm(model, injected_prompt, user_content_intent)
+        tid = str(getattr(current, "tenant_id", "") or "")
+        intent_raw, usage1 = await _call_llm(model, injected_prompt, user_content_intent, db=db, tenant_id=tid)
     except Exception as e:
         return PipelineInspectResponse(
             injected_prompt=injected_prompt,
+            user_content=user_content_intent,
             intent_raw="",
             intent=None,
             intent_usage=None,
@@ -778,6 +807,7 @@ async def pipeline_inspect(
     if not intent or not isinstance(intent, dict):
         return PipelineInspectResponse(
             injected_prompt=injected_prompt,
+            user_content=user_content_intent,
             intent_raw=intent_raw,
             intent=None,
             intent_usage=dict(usage1) if usage1 else None,
@@ -795,6 +825,7 @@ async def pipeline_inspect(
         detail_msg = _extract_first_validation_detail(verr)
         return PipelineInspectResponse(
             injected_prompt=injected_prompt,
+            user_content=user_content_intent,
             intent_raw=intent_raw,
             intent=intent,
             intent_usage=dict(usage1) if usage1 else None,
@@ -815,6 +846,7 @@ async def pipeline_inspect(
     if not chart_result:
         return PipelineInspectResponse(
             injected_prompt=injected_prompt,
+            user_content=user_content_intent,
             intent_raw=intent_raw,
             intent=intent,
             intent_usage=dict(usage1) if usage1 else None,
@@ -827,6 +859,7 @@ async def pipeline_inspect(
 
     return PipelineInspectResponse(
         injected_prompt=injected_prompt,
+        user_content=user_content_intent,
         intent_raw=intent_raw,
         intent=intent,
         intent_usage=dict(usage1) if usage1 else None,

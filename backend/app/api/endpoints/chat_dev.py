@@ -5,6 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 import litellm
+from sqlalchemy.orm import Session
 
 from app.api.endpoints.chat import (
     ChatRequest,
@@ -15,6 +16,7 @@ from app.api.endpoints.chat import (
     _parse_response,
     _twcc_model_id,
 )
+from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
 
@@ -44,6 +46,7 @@ def _build_messages(req: ChatRequest) -> list[dict]:
 @router.post("/completions", response_model=ChatResponse)
 async def chat_completions_dev(
     req: ChatRequest,
+    db: Annotated[Session, Depends(get_db)] = ...,
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):
     logger.info(
@@ -51,17 +54,18 @@ async def chat_completions_dev(
     )
     try:
         model = (req.model or "").strip() or "gpt-4o-mini"
-        litellm_model, api_key, api_base = _get_llm_params(model)
+        tid = str(getattr(current, "tenant_id", "") or "")
+        litellm_model, api_key, api_base = _get_llm_params(model, db=db, tenant_id=tid or None)
 
         if not api_key:
             raise HTTPException(
                 status_code=503,
-                detail=f"{_get_provider_name(model)} API Key 未設定，請在 .env 中設定對應的 key",
+                detail=f"{_get_provider_name(model)} API Key 未設定，請在管理介面（租戶 LLM 設定）設定對應的 key",
             )
         if model.startswith("twcc/") and not api_base:
             raise HTTPException(
                 status_code=503,
-                detail="台智雲 TWCC_API_BASE 未設定，請在 .env 中設定",
+                detail="台智雲 TWCC_API_BASE 未設定，請在管理介面（租戶 LLM 設定）設定",
             )
 
         messages = _build_messages(req)

@@ -175,6 +175,7 @@ export interface PipelineInspectRequest {
 
 export interface PipelineInspectResponse {
   injected_prompt: string
+  user_content: string
   intent_raw: string
   intent: Record<string, unknown> | null
   intent_usage: Record<string, number> | null

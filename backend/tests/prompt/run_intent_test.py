@@ -7,6 +7,8 @@ Intent Prompt 回歸測試腳本
   ./venv/bin/python tests/prompt/run_intent_test.py                   # 比對 baseline
   ./venv/bin/python tests/prompt/run_intent_test.py --ids A1 B1 F1   # 只跑特定題號
   ./venv/bin/python tests/prompt/run_intent_test.py --model gemini/gemini-2.0-flash
+  ./venv/bin/python tests/prompt/run_intent_test.py --model twcc/Llama3.3-FFM-70B-32K
+  ./venv/bin/python tests/prompt/run_intent_test.py --model twcc/Llama3.1-FFM-8B-32K
   ./venv/bin/python tests/prompt/run_intent_test.py --verbose         # 失敗時顯示 LLM 原始輸出
 """
 from __future__ import annotations
@@ -60,27 +62,72 @@ def load_cases() -> dict:
 
 
 def build_intent_prompt(schema_def: dict) -> str:
-    """複用 chat_compute_tool 的 prompt 組裝邏輯。"""
+    """載入 intent system prompt（schema 已移至 user message）。"""
     base = _REPO / "config" / "system_prompt_analysis_intent_tool.md"
-    raw = base.read_text(encoding="utf-8").strip()
+    return base.read_text(encoding="utf-8").strip()
+
+
+def build_user_content(schema_def: dict, now_str: str, question: str) -> str:
+    """組裝 user message：schema 在前，問題在後。"""
     schema_block = _build_schema_block(schema_def)
     hierarchy_block = _build_hierarchy_block(schema_def)
-    schema_name = schema_def.get("name") or "Sales Analytics"
     return (
-        raw
-        .replace("{{SCHEMA_NAME}}", schema_name)
-        .replace("{{SCHEMA_DEFINITION}}", schema_block)
-        .replace("{{DIMENSION_HIERARCHY}}", hierarchy_block)
+        f"# Data Schema\n{schema_block}\n\n"
+        f"**層級** {hierarchy_block}\n\n"
+        f"**輸出的每個 col_N 必須出現在上方 Data Schema 的 columns 清單中**\n\n"
+        f"當前時間：{now_str}\n\n"
+        f"問題: {_normalize_question_for_intent_extraction(question)}"
     )
 
 
 def call_llm(model: str, system_prompt: str, user_content: str) -> str:
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+    if model.startswith("twcc/"):
+        import os
+        import urllib.request
+        import urllib.error
+        from app.api.endpoints.chat import _twcc_model_id
+
+        api_key = os.environ.get("TWCC_API_KEY", "")
+        api_base = os.environ.get("TWCC_API_BASE", "https://api-ams.twcc.ai/api/models/conversation")
+        if not api_key:
+            raise RuntimeError("TWCC_API_KEY 未設定，請在 backend/.env 中加入")
+
+        model_id = _twcc_model_id(model[5:])
+        payload = {
+            "model": model_id,
+            "messages": messages,
+            "parameters": {
+                "max_new_tokens": 2000,
+                "temperature": 0.01,
+                "top_k": 40,
+                "top_p": 0.9,
+                "frequency_penalty": 1.2,
+            },
+        }
+        import json as _json
+        body = _json.dumps(payload).encode()
+        req = urllib.request.Request(
+            api_base,
+            data=body,
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as res:
+                data = _json.loads(res.read().decode())
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode()
+            raise RuntimeError(f"TWCC API 錯誤 {e.code}：{err_body}") from e
+        return data.get("generated_text", "") or ""
+
     resp = litellm.completion(
         model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ],
+        messages=messages,
         temperature=0,
     )
     return resp.choices[0].message.content or ""  # type: ignore[union-attr]
@@ -198,7 +245,7 @@ def run(
         cid = case["id"]
         label = case["label"]
         question = case["question"]
-        user_content = f"當前時間：{now_str}\n\n問題: {_normalize_question_for_intent_extraction(question)}"
+        user_content = build_user_content(schema_def, now_str, question)
 
         sys.stdout.write(f"  {cid} {label} ... ")
         sys.stdout.flush()

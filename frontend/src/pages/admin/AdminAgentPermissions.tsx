@@ -18,7 +18,6 @@ const GROUP_COLORS = [
 export default function AdminAgentPermissions() {
   const [users, setUsers] = useState<User[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
-  const [agentsLoading, setAgentsLoading] = useState(false)
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null)
   const [userAgentIds, setUserAgentIds] = useState<Set<string>>(new Set())
   const [userRole, setUserRole] = useState<UserRole>('member')
@@ -55,11 +54,11 @@ export default function AdminAgentPermissions() {
     setUserRole(u?.role ?? 'member')
 
     // 依選中使用者的 tenant_id 載入該 tenant 已購買的 agents
-    setAgentsLoading(true)
+    setIsLoadingAgents(true)
     getAgents(true, u?.tenant_id)
       .then(setAgents)
       .catch(() => setAgents([]))
-      .finally(() => setAgentsLoading(false))
+      .finally(() => setIsLoadingAgents(false))
 
     setIsLoadingUserAgents(true)
     getUserAgentIds(selectedUserId)

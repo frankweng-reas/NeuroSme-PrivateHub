@@ -8,14 +8,35 @@ alwaysApply: false
 
 ## 端到端流程
 
-1. **結構化意圖**：LLM / 請求帶入 **Intent v4.0** JSON（須含 `"version": "4.0"`）；shape 與欄位見 `docs/intent_v4_protocol.md`。自然語言提示詞：`config/system_prompt_analysis_intent_tool.md`（內含 `{{SCHEMA_DEFINITION}}`、`{{DIMENSION_HIERARCHY}}` 占位）。
+1. **結構化意圖**：LLM / 請求帶入 **Intent v4.0** JSON（須含 `"version": "4.0"`）；shape 與欄位見 `docs/intent_v4_protocol.md`。自然語言提示詞：`config/system_prompt_analysis_intent_tool.md`（純規則，**無占位符**）；schema 與層級由 `_build_user_content_intent()` 注入 **user message 最前段**（非 system prompt）。
 2. **Schema**：由 PostgreSQL **`bi_schemas.schema_json`** 載入 **`schema_def`**（`load_schema_from_db` / `_resolve_schema_def`）；缺少則無法計算。正式路徑不依賴 repo 內 YAML。
-3. **產品側建立／編輯 Schema**：`frontend/src/components/SchemaManagerOverlayV2.tsx` — Wizard 建立／更新 `bi_schemas`；CSV 可自動帶入 **`col_1`, `col_2`, …** 與別名；**`dimension_hierarchy`** 寫入 `schema_json`，由 `chat_compute_tool` 轉成區塊注入 intent prompt。存檔後父層應 **`onSchemaChanged`** 刷新可選 schema。
+3. **產品側建立／編輯 Schema**：`frontend/src/components/SchemaManagerOverlayV2.tsx` — Wizard 建立／更新 `bi_schemas`；CSV 可自動帶入 **`col_1`, `col_2`, …** 與別名；**`dimension_hierarchy`** 寫入 `schema_json`，由 `chat_compute_tool` 轉成區塊注入 intent user message。dim 欄位可設定 **`enum_values`**（可選值清單），供 UI 顯示與 prompt 注入。存檔後父層應 **`onSchemaChanged`** 刷新可選 schema。
 4. **計算入口**：多數專案流程走 `chat_compute_tool` 的 `_compute_with_intent` → **`run_compute_engine(duckdb_name, intent, schema_def)`**，其中 `duckdb_name` 通常等於 **project_id** 字串。
 5. **引擎核心**：`compute_engine.run_compute_engine` 驗證 v4 → `resolve_duckdb_path` → **`run_sql_compute_engine_v4`**（`compute_engine_sql.py`）：`IntentV4` 驗證 → **`try_build_sql_v4`**（`compute_engine_sql_v4.py`）→ SQL **僅查單表 `data`** → **`execute_sql_on_duckdb_file`**（`duckdb_store.py`）→ DataFrame → `chart_from_sql_dataframe` / list 變體 → **`chart_result`**。欄位須在 **`schema_def.columns`** 的 key 白名單內（`column_allowlist_from_schema`）。
 6. **文字階段**（例如 `compute-from-intent`）：先有 `chart_result`，再 `_chart_result_to_detail_lines` 組區塊，用 **`_load_prompt("text")`**（預設可對應 `config/system_prompt_analysis_text_tool.md`）呼叫 LLM 產 **Markdown 分析文字**；數字須與計算結果一致。
 
-## 換產業／多 Schema（零售、汽車、CRM 等）
+## enum_values 自動偵測
+
+CSV 匯入成功後，`bi_projects.py` 的 `_detect_and_patch_enum_values()` 會掃描所有 dim 欄位（非 dim_time）：
+- 若 distinct 值 ≤ 10（`_ENUM_VALUES_MAX`）→ 寫入 `bi_schemas.schema_json` 的 `enum_values`（union 合併，不覆蓋舊值）
+- 若 distinct 值 > 10 → 標記 `enum_values: []`（高基數，不注入 prompt）
+
+`_build_schema_block` 讀取 `enum_values` 後在 user message schema 區塊中附上 `（可選值：A, B, C）`，提升 LLM 篩選條件的準確度。
+
+## Prompt 組裝架構
+
+```
+system prompt  = config/system_prompt_analysis_intent_tool.md（純規則，不含 schema）
+user message   = # Data Schema\n{schema_block}\n\n
+                 **層級** {hierarchy_block}\n\n
+                 **輸出的每個 col_N 必須出現在上方 Data Schema 的 columns 清單中**\n\n
+                 當前時間：{now_str}\n\n
+                 問題: {question}
+```
+
+
+
+## 換產業／多 Schema
 
 - **可運作條件**：該專案綁定的 **`schema_id`** 與 **DuckDB `data` 表欄位** 必須與同一份 **`schema_json.columns`** 的 key 一致（CSV `import-csv` 依 schema 做 mapping）。只改 `bi_schemas` 而不依新 schema 重匯資料會失敗或結果錯誤。
 - **模型對欄**：Intent 內僅能使用真實存在的欄位代碼；Overlay 預設 **`col_N`** 與 v4／prompt 契約一致。**時間篩選**行為依欄位 **`attr: dim_time`**（見 `compute_engine_sql_v4`）與型別設定；UI 上 CSV 推斷型別有領域偏置，新產業宜手動核對。

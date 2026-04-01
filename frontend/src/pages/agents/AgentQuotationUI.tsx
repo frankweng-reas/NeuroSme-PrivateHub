@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ChevronRight, FileDown, Loader2, MoreVertical, Pencil, Plus, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
 import html2pdf from 'html2pdf.js'
 import AgentChat, { type Message, type ResponseMeta } from '@/components/AgentChat'
-import ModelSelect from '@/components/ModelSelect'
+import LLMModelSelect from '@/components/LLMModelSelect'
 import AgentHeader from '@/components/AgentHeader'
 import ConfirmModal from '@/components/ConfirmModal'
 import InputModal from '@/components/InputModal'
@@ -1590,7 +1590,7 @@ export default function AgentQuotationUI({ agent }: AgentQuotationUIProps) {
                 />
               </div>
               <div className="h-6 w-px shrink-0 bg-gray-200" aria-hidden />
-              <ModelSelect
+              <LLMModelSelect
                 value={model}
                 onChange={setModel}
                 selectClassName="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-base focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-400"

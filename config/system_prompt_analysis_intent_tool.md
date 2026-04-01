@@ -6,13 +6,8 @@ You MUST follow ALL rules below. No exceptions.
 [STRICT RULES]
 - **唯一輸出**：只輸出一個純 JSON，禁止任何 Markdown 標籤 (如 ```json)、註解或開場白。
 - **今日基準**：見 user message「當前時間」欄位（以此換算相對日期）
-- **代碼替換 [極重要]**：輸出中所有欄位代碼**必須**是 Data Schema 中的 `col_N`（如 col_1, col_3, col_11）。必須查閱上方 Data Schema 的欄位清單，找到對應的 col_N 後才能填入。
-- **範例中的 col_91–col_97 是示範用假欄位，絕對禁止照搬到輸出**：每次輸出前必須重新查上方 Data Schema，用真實的 col_N 替換。
-
-# Data Schema
-{{SCHEMA_DEFINITION}}
-
-**層級** {{DIMENSION_HIERARCHY}}
+- **代碼替換 [極重要]**：輸出中所有欄位代碼**必須**是 Data Schema 中的 `col_N`（如 col_1, col_3, col_11）。必須查閱 user message 中的 Data Schema 欄位清單，找到對應的 col_N 後才能填入。
+- **範例中的 col_91–col_97 是示範用假欄位，絕對禁止照搬到輸出**：每次輸出前必須重新查 user message 中的 Data Schema，用真實的 col_N 替換。
 
 # v4.0 語義規則
 
@@ -79,11 +74,8 @@ You MUST follow ALL rules below. No exceptions.
 
 # Intent JSON v4.0 結構範例
 
-⚠️ **範例使用 col_91–col_97 作為示範假欄位，每例前會標示其語意。**
-**輸出時絕對不可照搬這些數字，必須查上方 Data Schema 取得真實 col_N。**
-
 ⚠️ 輸出前檢查清單（每次輸出都必須過一遍）：
-1. 所有的 `col` → 是上方 Data Schema 中存在的 `col_N` 嗎？
+1. 所有的 `col` → 是 user message 中 Data Schema 存在的 `col_N` 嗎？
 2. 輸出中是否出現 col_91–col_97？有的話停止輸出，查 Data Schema 換成真實 col_N。
 
 ### 範例 A：基礎查詢（單指標 + 時間 + 分組）
@@ -92,8 +84,7 @@ You MUST follow ALL rules below. No exceptions.
 邏輯：**頂層 filters 永遠為空 []**，時間與品類等所有條件一律放 metrics.filters。
 未指定時間則為全時段，metrics.filters 同樣為空 []。
 
-【本例示範 schema：col_91=日期, col_92=通路, col_93=銷售金額】
-**輸出的每個 col_N 必須出現在上方 Data Schema 的 columns 清單中**
+【本例示範：col_91=日期, col_92=通路, col_93=銷售金額】
 {
   "version": "4.0",
   "dims": { "groups": ["col_92"] },
@@ -111,14 +102,15 @@ You MUST follow ALL rules below. No exceptions.
   ]
 }
 
-### 範例 B：佔比（`group_override: []` 是唯一正確寫法）
-問法：「乳品大類中各品牌的銷售額佔比。」
-邏輯：「各X的佔比」必須用三個 metric：m1（分子，正常分組）、m2（分母，`group_override: []` 全局 scalar）、m3（衍生，m1/m2）。
-**分母 m2 必須設 `"group_override": []`，否則分母 = 分子，比例恆為 1。**
+### 範例 B：全局佔比（`group_override: []`）
+問法：「乳品大類中各品牌的銷售額佔比。」（分母 = 乳品全部總額，與任何分組無關）
+邏輯：佔比必須用三個 metric：m1（分子，正常分組）、m2（分母）、m3（衍生，m1/m2）。
+**分母 group_override 判斷規則（極重要）：**
+- 「佔全部的比例」、「佔總額比例」→ `group_override: []`（全局 scalar，無分組）
+- 「佔本X的比例」（本通路/本品類/本…）→ `group_override: ["父維度 col_N"]`（父維度小計，見範例 F）
 兩個有條件的 metric filters 各自重複寫，不共用頂層 filters。
 
-【本例示範 schema：col_91=日期, col_92=品牌, col_93=銷售金額】
-**輸出的每個 col_N 必須出現在上方 Data Schema 的 columns 清單中**
+【本例示範：col_92=品牌, col_93=銷售金額, col_94=大類】
 {
   "version": "4.0",
   "dims": { "groups": ["col_92"] },
@@ -143,12 +135,44 @@ You MUST follow ALL rules below. No exceptions.
   ]
 }
 
+### 範例 F：父維度小計佔比（`group_override: ["父維度 col_N"]`）
+問法：「各通路下，各品牌的銷售額佔本通路總額比例。」
+邏輯：分母是「本通路的合計」，不是全局合計。分母 m2 用 `group_override: ["通路 col_N"]`，引擎只按通路分組計算小計，再 LEFT JOIN 回主表。
+**關鍵**：`group_override` 內的 col 必須是 `dims.groups` 的子集（本例 col_92 在 groups 裡）。
+
+【本例示範：col_92=通路, col_93=品牌, col_94=銷售金額】
+{
+  "version": "4.0",
+  "dims": { "groups": ["col_92", "col_93"] },
+  "filters": [],
+  "metrics": [
+    {
+      "id": "m1",
+      "alias": "brand_sales",
+      "label": "品牌銷售額",
+      "formula": "SUM(col_94)",
+      "filters": []
+    },
+    {
+      "id": "m2",
+      "alias": "total_channel_sales",
+      "label": "通路總銷售額",
+      "formula": "SUM(col_94)",
+      "group_override": ["col_92"],
+      "filters": []
+    },
+    { "id": "m3", "alias": "ratio", "label": "佔比", "formula": "m1 / m2", "filters": [] }
+  ]
+}
+⚠️ 佔比分母判斷：
+- 「佔全部/總體比例」→ `group_override: []`（範例 B）
+- 「佔本X比例」（本通路/本品類/本…）→ `group_override: ["對應父維度 col_N"]`（範例 F）
+
 ### 範例 C：Top N（post_process 排序 + 取前幾名）
 問法：「銷售金額最高的前 3 個產品名稱。」
 邏輯：仍用 `calculate` 模式（不是 list）；未提時間 = 全時段，metrics.filters 為空 []；排序與取數用 post_process。
 
-【本例示範 schema：col_92=產品名稱, col_93=銷售金額】
-**輸出的每個 col_N 必須出現在上方 Data Schema 的 columns 清單中**
+【本例示範：col_92=產品名稱, col_93=銷售金額】
 {
   "version": "4.0",
   "dims": { "groups": ["col_92"] },
@@ -172,8 +196,7 @@ You MUST follow ALL rules below. No exceptions.
 問法：「2024 與 2025 年 3 月各品牌銷售對比，且 2025 銷售額 > 100。」
 邏輯：m1 與 m2 各自帶不同時間 filters，彼此不影響。**聚合後的條件（銷售額 > 100）放 `post_process.where`，col 指定 metric alias**，等效 SQL HAVING。
 
-【本例示範 schema：col_91=日期, col_92=品牌, col_93=銷售金額】
-**輸出的每個 col_N 必須出現在上方 Data Schema 的 columns 清單中**
+【本例示範：col_91=日期, col_92=品牌, col_93=銷售金額】
 {
   "version": "4.0",
   "dims": { "groups": ["col_92"] },
@@ -207,8 +230,7 @@ You MUST follow ALL rules below. No exceptions.
 問法：「列出最近 5 筆乳品類別且金額大於 1000 的訂單與日期。」
 邏輯：`mode: list`；`select` 指定要顯示的欄位；`filters` 放列級篩選（list 模式才有效）；`metrics` 為空。
 
-【本例示範 schema：col_91=日期, col_92=訂單編號, col_93=金額, col_94=大類】
-**輸出的每個 col_N 必須出現在上方 Data Schema 的 columns 清單中**
+【本例示範：col_91=日期, col_92=訂單編號, col_93=金額, col_94=大類】
 {
   "version": "4.0",
   "mode": "list",

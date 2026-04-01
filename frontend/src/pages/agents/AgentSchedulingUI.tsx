@@ -6,8 +6,8 @@ import { solveSchedule, type ScheduleAssignment } from '@/api/scheduling'
 import { ApiError } from '@/api/client'
 import AgentHeader from '@/components/AgentHeader'
 import HelpModal from '@/components/HelpModal'
+import LLMModelSelect from '@/components/LLMModelSelect'
 import SourceFileManager from '@/components/SourceFileManager'
-import { MODEL_OPTIONS } from '@/constants/aiOptions'
 import type { Agent } from '@/types'
 
 interface AgentSchedulingUIProps {
@@ -209,20 +209,16 @@ export default function AgentSchedulingUI({ agent }: AgentSchedulingUIProps) {
               disabled={isLoading}
               rows={4}
             />
-            <div className="mb-4 flex items-center gap-3">
-              <label className="text-sm font-medium text-gray-700">模型：</label>
-              <select
+            <div className="mb-4 flex flex-wrap items-start gap-3">
+              <LLMModelSelect
+                label="模型"
                 value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="rounded-lg border border-gray-300 px-3 py-1.5 text-[16px] focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                onChange={setModel}
                 disabled={isLoading}
-              >
-                {MODEL_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
+                labelClassName="shrink-0 text-sm font-medium text-gray-700"
+                selectClassName="rounded-lg border border-gray-300 px-3 py-1.5 text-[16px] focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="min-w-0 flex-1"
+              />
               <button
                 type="button"
                 onClick={handleSolve}

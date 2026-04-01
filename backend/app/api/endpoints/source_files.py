@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.agent_catalog import AgentCatalog
 from app.models.source_file import SourceFile
 from app.models.user import User
 from app.schemas.source_file import (
@@ -15,7 +14,7 @@ from app.schemas.source_file import (
     SourceFileResponse,
     SourceFileUpdate,
 )
-from app.services.permission import get_agent_ids_for_user
+from app.services.permission import get_agent_ids_for_user, resolve_agent_catalog
 
 router = APIRouter()
 
@@ -29,17 +28,17 @@ def _parse_agent_id(agent_id: str, fallback_tenant_id: str) -> tuple[str, str]:
 
 
 def _check_agent_access(db: Session, user: User, agent_id: str) -> tuple[str, str]:
-    """驗證使用者有權限存取該 agent，回傳 (tenant_id, agent_id)"""
+    """驗證使用者有權限存取該 agent，回傳 (tenant_id, 業務 agent_id)。"""
     tenant_id, aid = _parse_agent_id(agent_id, user.tenant_id)
     if tenant_id != user.tenant_id:
         raise HTTPException(status_code=403, detail="無權限存取此助理")
-    catalog = db.query(AgentCatalog).filter(AgentCatalog.agent_id == aid).first()
+    catalog = resolve_agent_catalog(db, aid)
     if not catalog:
         raise HTTPException(status_code=404, detail="Agent not found")
     allowed = get_agent_ids_for_user(db, user.id)
     if catalog.agent_id not in allowed:
         raise HTTPException(status_code=403, detail="無權限存取此助理")
-    return tenant_id, aid
+    return tenant_id, catalog.agent_id
 
 
 @router.post("/", response_model=SourceFileResponse)

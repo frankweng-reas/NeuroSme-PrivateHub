@@ -4,7 +4,7 @@ import {
   LANGUAGE_OPTIONS,
   ROLE_OPTIONS,
 } from '@/constants/aiOptions'
-import ModelSelect from '@/components/ModelSelect'
+import LLMModelSelect from '@/components/LLMModelSelect'
 
 export interface AISettingsPanelBasicProps {
   model: string
@@ -37,7 +37,7 @@ export default function AISettingsPanelBasic({
         基本設定
       </h3>
       <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-        <ModelSelect value={model} onChange={onModelChange} />
+        <LLMModelSelect value={model} onChange={onModelChange} />
         <div className="flex items-center gap-2">
           <label className="shrink-0 text-[16px] font-medium text-gray-700">角色</label>
           <select

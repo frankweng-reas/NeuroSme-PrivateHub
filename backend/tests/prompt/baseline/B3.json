@@ -1,7 +1,9 @@
 {
   "version": "4.0",
   "dims": {
-    "groups": []
+    "groups": [
+      "col_4"
+    ]
   },
   "filters": [],
   "metrics": [

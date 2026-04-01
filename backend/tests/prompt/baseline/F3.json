@@ -13,27 +13,15 @@
       "alias": "brand_sales",
       "label": "品牌銷售額",
       "formula": "SUM(col_11)",
-      "filters": [
-        {
-          "col": "col_3",
-          "op": "is_not_null",
-          "val": null
-        }
-      ]
+      "filters": []
     },
     {
       "id": "m2",
       "alias": "total_channel_sales",
       "label": "通路總銷售額",
       "formula": "SUM(col_11)",
-      "group_override": [],
-      "filters": [
-        {
-          "col": "col_3",
-          "op": "is_not_null",
-          "val": null
-        }
-      ]
+      "group_override": ["col_3"],
+      "filters": []
     },
     {
       "id": "m3",

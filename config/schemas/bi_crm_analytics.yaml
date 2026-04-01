@@ -1,0 +1,96 @@
+---
+id: bi_crm_analytics
+name: CRM Analytics
+
+# ---------------------------------------------------------------------------
+# CRM 分析寬表 Schema
+#
+# 資料模型：以「活動/互動記錄」為單位的非正規化寬表（每筆 = 一次客戶互動）
+# 適用場景：客戶分析、銷售漏斗、業務績效、NPS 與健康分追蹤
+#
+# 格式: field: { type, attr, aliases }
+#   type: str | num | time
+#   attr: dim | dim_time | val | val_num | val_denom | val_avg
+#     dim       - 維度（字串分群）
+#     dim_time  - 時間維度（篩選 & 分組基準）
+#     val       - 可加總數值
+#     val_num   - 比率的分子
+#     val_denom - 比率的分母
+#     val_avg   - 平均指標
+# ---------------------------------------------------------------------------
+
+columns:
+  activity_id:          { type: str,  attr: dim,      aliases: [活動ID, 互動ID, 記錄ID] }
+  activity_date:        { type: time, attr: dim_time, aliases: [日期, 活動日期, 互動日期, 月份, 月] }
+  customer_id:          { type: str,  attr: dim,      aliases: [客戶ID, 客戶編號, Customer ID] }
+  customer_name:        { type: str,  attr: dim,      aliases: [客戶名稱, 客戶, 公司名稱, Customer] }
+  customer_type:        { type: str,  attr: dim,      aliases: [客戶類型, 客戶性質, 企業/個人],             enum_values: [企業, 個人] }
+  customer_segment:     { type: str,  attr: dim,      aliases: [客戶分群, 客戶等級, VIP分級, 分群],         enum_values: [VIP, 標準, 潛力] }
+  industry:             { type: str,  attr: dim,      aliases: [產業別, 產業, 行業, 垂直市場] }
+  region:               { type: str,  attr: dim,      aliases: [地區, 區域, 城市, 縣市, Region] }
+  acquisition_channel:  { type: str,  attr: dim,      aliases: [獲客渠道, 來源渠道, 客戶來源, Channel],     enum_values: [推薦, 官網, 廣告, 冷開發, 合作夥伴] }
+  activity_type:        { type: str,  attr: dim,      aliases: [活動類型, 互動類型, 接觸方式],               enum_values: [電話, Email, 拜訪, 會議, 提案, 展示] }
+  pipeline_stage:       { type: str,  attr: dim,      aliases: [漏斗階段, 管道階段, 銷售階段, Pipeline],   enum_values: [潛在, 接觸, 提案, 協商, 成交, 流失] }
+  opportunity_status:   { type: str,  attr: dim,      aliases: [商機狀態, 案件狀態, 機會狀態],               enum_values: [進行中, 贏單, 輸單, 暫停] }
+  sales_rep:            { type: str,  attr: dim,      aliases: [業務員, 業務, 負責人, Sales Rep] }
+  is_won:               { type: str,  attr: dim,      aliases: [是否贏單, 成交與否, Won] }
+  is_churned:           { type: str,  attr: dim,      aliases: [是否流失, 流失標記, Churn] }
+  deal_value:           { type: num,  attr: val_denom, aliases: [商機金額, 預估合約金額, Deal Value, 機會金額] }
+  contract_value:       { type: num,  attr: val_num,  aliases: [合約金額, 成交金額, 實收合約, Contract Value] }
+  activity_count:       { type: num,  attr: val,      aliases: [活動次數, 互動次數, 接觸次數] }
+  days_to_close:        { type: num,  attr: val_avg,  aliases: [成交天數, 銷售週期, Days to Close] }
+  customer_health_score:{ type: num,  attr: val_avg,  aliases: [客戶健康分, 健康分, Health Score] }
+  nps_score:            { type: num,  attr: val_avg,  aliases: [NPS評分, 淨推薦值, NPS] }
+
+# ---------------------------------------------------------------------------
+# 維度層級（由大到小），用於多層 group_by 與語意解析
+# ---------------------------------------------------------------------------
+dimension_hierarchy:
+  客戶層級:   [customer_segment, customer_type, customer_name]
+  業務層級:   [region, sales_rep]
+  管道層級:   [pipeline_stage, opportunity_status]
+  活動層級:   [activity_type]
+  來源層級:   [acquisition_channel]
+
+# ---------------------------------------------------------------------------
+# Business Logic
+# ---------------------------------------------------------------------------
+aggregation:
+  default: sum
+
+indicators:
+  win_rate:
+    type: ratio
+    display_label: 贏單率
+    value_components: [contract_value, deal_value]
+    as_percent: true
+
+  contract_conversion:
+    type: ratio
+    display_label: 合約轉換率
+    value_components: [contract_value, deal_value]
+    as_percent: true
+
+  avg_deal_size:
+    type: ratio
+    display_label: 平均商機金額
+    value_components: [deal_value, activity_count]
+    as_percent: false
+
+  avg_nps:
+    type: ratio
+    display_label: 平均NPS
+    value_components: [nps_score, activity_count]
+    as_percent: false
+
+  avg_health_score:
+    type: ratio
+    display_label: 平均健康分
+    value_components: [customer_health_score, activity_count]
+    as_percent: false
+
+  sales_cycle:
+    type: ratio
+    display_label: 平均銷售週期(天)
+    value_components: [days_to_close, activity_count]
+    as_percent: false

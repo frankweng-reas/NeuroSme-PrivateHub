@@ -1,16 +1,4 @@
-/** AI 設定選項常數，供 AISettingsPanelBasic 及 buildUserPrompt 使用 */
-
-export const MODEL_OPTIONS = [
-  { value: 'gpt-4o-mini', label: 'gpt-4o-mini' },
-  { value: 'gpt-4o', label: 'gpt-4o' },
-  { value: 'gemini/gemini-2.0-flash', label: 'gemini-2.0-flash' },
-  { value: 'gemini/gemini-2.5-flash', label: 'gemini-2.5-flash' },
-  { value: 'gemini/gemini-2.5-flash-lite', label: 'gemini-2.5-flash-lite' },
-  { value: 'gemini/gemini-1.5-pro', label: 'gemini-1.5-pro' },
-  { value: 'gemini/gemini-pro', label: 'gemini-pro' },
-  { value: 'twcc/Llama3.1-FFM-8B-32K', label: '台智雲 Llama3.1-FFM-8B' },
-  { value: 'twcc/Llama3.3-FFM-70B-32K', label: '台智雲 Llama3.3-FFM-70B' },
-] as const
+/** AI 設定選項常數（LLM model 清單僅能透過 LLMModelSelect + /llm-configs/model-options，勿與此檔其他選項混用） */
 
 export const ROLE_OPTIONS = [
   { value: 'manager', label: '管理者', prompt: '以管理者的角度來分析。' },

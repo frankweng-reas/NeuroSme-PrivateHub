@@ -6,7 +6,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { chatCompletionsDev } from '@/api/chat'
 import { ApiError } from '@/api/client'
-import ModelSelect from '@/components/ModelSelect'
+import LLMModelSelect from '@/components/LLMModelSelect'
 
 const CHAT_MARKDOWN_COMPONENTS = {
   p: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
@@ -546,11 +546,11 @@ export default function TestLLMChat() {
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-gray-50">
           <div className="flex flex-1 flex-col overflow-hidden">
             <div className="flex flex-shrink-0 flex-wrap items-center gap-3 border-b border-emerald-200 bg-emerald-50 px-4 py-2">
-              <ModelSelect
+              <LLMModelSelect
                 id="model-select"
                 value={model}
                 onChange={setModel}
-                label="Model"
+                label="模型"
                 labelClassName="shrink-0 text-lg font-medium text-emerald-800"
                 selectClassName="rounded-lg border border-emerald-200 bg-white px-4 py-2 text-lg text-gray-800 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
