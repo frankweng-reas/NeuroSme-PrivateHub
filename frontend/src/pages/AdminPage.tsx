@@ -10,8 +10,11 @@ const SIDEBAR_ITEMS = [
   { to: '/admin/tenant-settings', label: 'REAS-系統 Tenants 設定', icon: Building2, superAdminOnly: true },
   { to: '/admin/llm-settings', label: 'LLM 設定（租戶）', icon: KeyRound, superAdminOnly: false },
   { to: '/admin/agent-permissions', label: 'Agent 權限設定', icon: ShieldCheck, superAdminOnly: false },
-  { to: '/admin/companies', label: '公司資訊', icon: Building, superAdminOnly: false },
   { to: '/admin/users', label: '會員管理', icon: Users, superAdminOnly: false },
+] as const
+
+const SIDEBAR_ITEMS_SECONDARY = [
+  { to: '/admin/companies', label: '公司資訊', icon: Building, superAdminOnly: false },
 ] as const
 
 export default function AdminPage() {
@@ -24,6 +27,9 @@ export default function AdminPage() {
   }, [])
 
   const visibleItems = SIDEBAR_ITEMS.filter(
+    (item) => !item.superAdminOnly || user?.role === 'super_admin'
+  )
+  const visibleSecondaryItems = SIDEBAR_ITEMS_SECONDARY.filter(
     (item) => !item.superAdminOnly || user?.role === 'super_admin'
   )
   return (
@@ -54,6 +60,21 @@ export default function AdminPage() {
         >
           <nav className="flex flex-col py-4">
             {visibleItems.map(({ to, label, icon: Icon }) => (
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) =>
+                  `flex items-center gap-3 px-5 py-3 text-white transition-colors ${
+                    isActive ? 'bg-white/20 font-semibold' : 'hover:bg-white/10'
+                  }`
+                }
+              >
+                <Icon className="h-5 w-5 flex-shrink-0" />
+                <span>{label}</span>
+              </NavLink>
+            ))}
+            <div className="mx-4 my-2 border-t border-white/20" />
+            {visibleSecondaryItems.map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
                 to={to}

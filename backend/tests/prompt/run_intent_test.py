@@ -6,9 +6,8 @@ Intent Prompt 回歸測試腳本
   ./venv/bin/python tests/prompt/run_intent_test.py --save-baseline   # 初次建立 baseline
   ./venv/bin/python tests/prompt/run_intent_test.py                   # 比對 baseline
   ./venv/bin/python tests/prompt/run_intent_test.py --ids A1 B1 F1   # 只跑特定題號
-  ./venv/bin/python tests/prompt/run_intent_test.py --model gemini/gemini-2.0-flash
+  ./venv/bin/python tests/prompt/run_intent_test.py --model gemini/gemini-2.5-flash
   ./venv/bin/python tests/prompt/run_intent_test.py --model twcc/Llama3.3-FFM-70B-32K
-  ./venv/bin/python tests/prompt/run_intent_test.py --model twcc/Llama3.1-FFM-8B-32K
   ./venv/bin/python tests/prompt/run_intent_test.py --verbose         # 失敗時顯示 LLM 原始輸出
 """
 from __future__ import annotations
@@ -336,7 +335,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         default=None,
-        help="覆寫 model，如 gemini/gemini-2.0-flash",
+        help="覆寫 model，如 gemini/gemini-2.5-flash",
     )
     parser.add_argument(
         "--verbose",

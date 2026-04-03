@@ -7,7 +7,7 @@ import { getLLMModelOptions, type LLMModelOption } from '@/api/llmConfigs'
 import { ApiError } from '@/api/client'
 
 export interface LLMModelSelectProps {
-  /** 傳給後端 chat 的 model id（例 gpt-4o-mini、gemini/gemini-2.0-flash） */
+  /** 傳給後端 chat 的 model id（例 gpt-4o-mini、gemini/gemini-2.5-flash） */
   value: string
   onChange: (modelId: string) => void
   id?: string

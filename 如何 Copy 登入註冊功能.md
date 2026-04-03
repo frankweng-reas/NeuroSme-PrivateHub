@@ -180,11 +180,36 @@ proxy: {
 
 ---
 
-## 五、LocalAuth API 規格
+## 五、On-Prem 部署控制
 
-若同事需自行實作認證服務，需符合以下規格：
+On-prem 環境通常無法寄信（無 SMTP），且不開放自助註冊，需在 `localauth/.env` 調整以下開關：
 
-### POST /auth/login
+| LocalAuth 環境變數 | 預設值 | On-Prem 建議值 | 說明 |
+|---|---|---|---|
+| `REQUIRE_EMAIL_VERIFICATION` | `true` | `false` | 跳過 Email 驗證，註冊後直接可登入 |
+| `REGISTRATION_DISABLED` | `false` | `true` | 禁止自助註冊，僅限 Admin API 建帳 |
+| `FORGOT_PASSWORD_ENABLED` | `true` | `false` | 停用「忘記密碼」寄信（無 SMTP 時建議關閉） |
+| `ADMIN_API_KEY` | （必填） | 32+ 字元隨機字串 | 保護 `/admin/*`，可用 `openssl rand -hex 32` 產生 |
+| `EMAIL_PROVIDER` | `console` | `console` 或 `smtp` | 無寄信需求維持 console；有需求改 smtp |
+
+**對應前端開關**（`frontend/.env`）：
+
+| 前端環境變數 | On-Prem 建議值 | 說明 |
+|---|---|---|
+| `VITE_AUTH_ALLOW_REGISTER` | `false` | 隱藏登入頁「前往註冊」連結 |
+| `VITE_AUTH_ALLOW_FORGOT_PASSWORD` | `false` | 隱藏登入頁「忘記密碼」連結 |
+
+> LocalAuth 端的設定控制「是否真的接受 API 請求」；前端開關控制「UI 是否顯示入口」。兩者應保持一致。
+
+---
+
+## 六、LocalAuth API 規格
+
+JWT payload 包含 `sub`（user id）與 `email`，後端以 `email` 驗證並建立/查詢使用者。
+
+### `/auth` 端點（公開或需 JWT）
+
+#### POST /auth/login
 
 **Request：**
 ```json
@@ -200,16 +225,34 @@ proxy: {
 }
 ```
 
-### POST /auth/register
+**錯誤：**
+- `401` 帳密錯誤，或 email 未驗證（`REQUIRE_EMAIL_VERIFICATION=true`）
+- `403` 密碼已過期（需導向 `/change-password-expired`）
+
+---
+
+#### POST /auth/register
+
+> 若 `REGISTRATION_DISABLED=true` 回傳 `403`。
 
 **Request：**
 ```json
 { "email": "user@example.com", "password": "123456", "name": "User" }
 ```
 
-**Response：** 同 login
+**Response（`REQUIRE_EMAIL_VERIFICATION=true`，預設）：**
+```json
+{ "message": "Registration successful. Please check your email to verify your account." }
+```
 
-### POST /auth/refresh
+**Response（`REQUIRE_EMAIL_VERIFICATION=false`，on-prem）：**
+```json
+{ "message": "Registration successful. You can now log in." }
+```
+
+---
+
+#### POST /auth/refresh
 
 **Request：**
 ```json
@@ -218,59 +261,181 @@ proxy: {
 
 **Response：**
 ```json
-{
-  "access_token": "eyJ...",
-  "refresh_token": "eyJ..."
-}
+{ "access_token": "eyJ...", "refresh_token": "eyJ..." }
 ```
 
-### PATCH /auth/password（已登入修改密碼）
+---
 
-**Request：** 需 `Authorization: Bearer <access_token>`
+#### POST /auth/validate-token
+
+驗證 token 是否有效（供後端或其他服務呼叫）。
+
+**Request：**
+```json
+{ "token": "eyJ..." }
+```
+
+**Response：**
+```json
+{ "valid": true, "userId": "xxx", "email": "user@example.com", "name": "User" }
+```
+
+---
+
+#### GET /auth/profile（需 JWT）
+
+取得當前登入使用者資訊。
+
+**Response：** `{ "id", "email", "name" }`
+
+---
+
+#### GET /auth/userinfo（需 JWT）
+
+OIDC 相容格式，含 `email_verified`。
+
+**Response：** `{ "sub", "email", "name", "email_verified" }`
+
+---
+
+#### PATCH /auth/password（需 JWT，已登入改密碼）
+
+**Request：**
 ```json
 { "old_password": "舊密碼", "new_password": "新密碼" }
 ```
 
-**Response：** 204 No Content 或成功訊息
+**Response：** `{ "message": "Password updated successfully" }`
 
-### POST /auth/change-password-expired（密碼過期更換，未登入）
+---
+
+#### POST /auth/change-password-expired（密碼過期，未登入）
 
 **Request：**
 ```json
 { "email": "user@example.com", "old_password": "舊密碼", "new_password": "新密碼" }
 ```
 
-**Response：** 204 No Content 或成功訊息
-
-### POST /auth/forgot-password（忘記密碼，寄送重設連結）
-
-**Request：**
-```json
-{ "email": "user@example.com" }
-```
-
-**Response：** 204 No Content 或成功訊息。LocalAuth 會寄送含 `?token=xxx` 的連結，導向 `/auth/reset-password?token=xxx`。
-
-### POST /auth/reset-password（以 token 重設密碼）
-
-**Request：**
-```json
-{ "token": "重設連結中的 token", "new_password": "新密碼" }
-```
-
-**Response：** 204 No Content 或成功訊息
+**Response：** `{ "message": "Password updated successfully" }`
 
 ---
 
-JWT payload 需包含 `email` 欄位，後端以此驗證並建立/查詢使用者。
+#### POST /auth/logout（需 JWT）
+
+撤銷目前 refresh token。
+
+**Response：** `{ "message": "Logged out successfully" }`
 
 ---
 
-## 六、注意事項
+#### POST /auth/revoke-all-sessions（需 JWT）
+
+撤銷所有 session（重設密碼/安全事件時使用）。
+
+**Response：** `{ "message": "All sessions revoked successfully" }`
+
+---
+
+#### POST /auth/forgot-password
+
+> 若 `FORGOT_PASSWORD_ENABLED=false` 回傳 `503`。  
+> 為防 email 枚舉，無論 email 是否存在皆回傳成功。
+
+**Request：** `{ "email": "user@example.com" }`
+
+**Response：** `{ "message": "若該信箱已註冊，您將收到密碼重設郵件" }`
+
+LocalAuth 寄出的連結導向 `{BASE_URL}/auth/reset-password?token=xxx`（在 `localauth/.env` 設 `BASE_URL` 為前端網址）。
+
+---
+
+#### POST /auth/reset-password（以 token 重設密碼）
+
+**Request：** `{ "token": "重設連結中的 token", "new_password": "新密碼" }`
+
+**Response：** `{ "message": "密碼已重設成功，請使用新密碼登入" }`
+
+---
+
+#### GET /auth/reset-password?token=xxx
+
+回傳重設密碼 HTML 表單（LocalAuth 自帶，不走 SPA）。  
+⚠️ Vite proxy 需對此路徑的 page load（`Accept: text/html`）做 bypass，讓 SPA 的 `/auth/reset-password` 頁面優先提供（見 4.3 proxy 設定）。
+
+---
+
+#### POST /auth/verify-email
+
+**Request：** `{ "token": "驗證碼" }`
+
+**Response：** `{ "message": "Email verified successfully", "email": "..." }`
+
+---
+
+#### GET /auth/verify-email?token=xxx
+
+回傳驗證結果 HTML 頁面（LocalAuth 自帶）。
+
+---
+
+#### POST /auth/resend-verification
+
+重新寄送驗證信（僅適用 `REQUIRE_EMAIL_VERIFICATION=true`）。
+
+**Request：** `{ "email": "user@example.com" }`
+
+---
+
+### `/admin` 端點（需 `x-admin-api-key` header）
+
+所有 `/admin/*` 端點需在 request header 帶：
+
+```
+x-admin-api-key: <ADMIN_API_KEY>
+```
+
+#### GET /admin/users
+
+列出所有使用者。
+
+---
+
+#### POST /admin/users
+
+由管理員建立使用者（適合 on-prem 禁止自助註冊的場景）。
+
+**Request：**
+```json
+{
+  "email": "user@example.com",
+  "password": "初始密碼",
+  "name": "王小明",
+  "mustChangePassword": true
+}
+```
+
+- `mustChangePassword: true`：使用者首次登入時會被強制要求更換密碼（密碼過期機制）。
+
+**Response：**
+```json
+{ "id": "xxx", "email": "...", "name": "...", "mustChangePassword": true }
+```
+
+---
+
+#### DELETE /admin/users/:id
+
+刪除指定使用者（`204 No Content`）。
+
+---
+
+## 七、注意事項
 
 1. **JWT_SECRET**：後端與 LocalAuth 必須使用相同 secret
 2. **CORS**：若前後端不同網域，後端需允許前端 origin
 3. **Token 儲存**：前端使用 `localStorage`（`neurosme_access_token`、`neurosme_refresh_token`、`neurosme_user`）
 4. **首次登入同步**：`get_current_user` 會依 JWT 的 email 在 NeuroSme2.0 建立 User（若尚不存在），並歸入第一個 tenant
 5. **重設密碼流程**：忘記密碼 → LocalAuth 寄送 Email 連結（`/auth/reset-password?token=xxx`）→ 使用者點擊進入 SPA 重設密碼頁。Vite proxy 需對 `/auth/reset-password` 的 page load 做 bypass，讓 SPA 提供頁面
-6. **密碼過期**：登入時若 LocalAuth 回傳密碼過期，前端可導向 `/change-password-expired`，並以 `location.state` 傳遞 `email`、`password` 供使用者更換密碼
+6. **密碼過期**：登入時若 LocalAuth 回傳密碼過期（403），前端導向 `/change-password-expired`，以 `location.state` 傳遞 `email`、`password`
+7. **On-Prem 帳號建立流程**：`REGISTRATION_DISABLED=true` → 管理員呼叫 `POST /admin/users`（帶 `ADMIN_API_KEY`）建立帳號 → 通知使用者初始密碼 → 使用者登入後被要求改密碼（若 `mustChangePassword: true`）
+8. **AD 整合**：設定 `AD_ENABLED=true` 後，AD 使用者可用 AD 帳密登入，但無法在 LocalAuth 修改或重設密碼（需由 AD 管理）

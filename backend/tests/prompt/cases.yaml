@@ -25,20 +25,9 @@ cases:
     question: "「鮮乳坊」在「Momo」通路賣了多少錢？"
 
   - id: B2
-    label: "ne 排除"
-    question: "除了「Momo」以外，各通路的銷售額。"
+    label: "ne 排除 + in 多值+contains 模糊+is_not_null"
+    question: "統計在『蝦皮以外』的通路中，產品名稱包含『鮮乳』且有成本的，計算『鮮乳坊』與『牧場直送』這兩個品牌的銷售總額。"
 
-  - id: B3
-    label: "in 多值"
-    question: "「鮮乳坊」與「牧場直送」這兩個品牌的銷售總額。"
-
-  - id: B4
-    label: "contains 模糊"
-    question: "產品名稱中包含「鮮乳」字樣的產品銷售額。"
-
-  - id: B5
-    label: "is_not_null"
-    question: "有填寫產品描述的品項，各自的銷售總額。"
 
   # C. Metrics 類型
   - id: C1
@@ -68,27 +57,15 @@ cases:
 
   # E. post_process
   - id: E1
-    label: "Top N"
-    question: "銷售金額最高的前 3 個產品。"
-
-  - id: E2
-    label: "HAVING"
-    question: "銷售總額超過 500 元的品牌。"
-
-  - id: E3
     label: "Top N + HAVING 組合"
     question: "2024 與 2025 年 Q1 各通路銷售對比，且 2025 銷售額大於 1000，取前 5。"
 
   # F. group_override 佔比
   - id: F1
-    label: "篩選後全局佔比"
-    question: "「乳品」大類中各品牌的銷售額佔比。"
+    label: "全局佔比"
+    question: "「乳品」大類佔全部銷售總額的比例。"
 
   - id: F2
-    label: "真全局佔比"
-    question: "各品牌的銷售額佔全通路全品牌總額的比例。"
-
-  - id: F3
     label: "父維度小計佔比"
     question: "各通路下，各品牌的銷售額佔本通路總額比例。"
 

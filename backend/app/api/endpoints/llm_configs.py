@@ -25,24 +25,15 @@ PROVIDER_DEFAULT_MODELS: dict[str, list[str]] = {
     "openai": [
         "gpt-4o-mini",
         "gpt-4o",
-        "gpt-4-turbo",
-        "gpt-3.5-turbo",
     ],
     "gemini": [
-        "gemini/gemini-2.0-flash",
         "gemini/gemini-2.5-flash",
-        "gemini/gemini-2.5-flash-lite",
-        "gemini/gemini-1.5-pro",
         "gemini/gemini-pro",
     ],
-    "twcc": [
-        "twcc/Llama3.1-FFM-8B-32K",
-        "twcc/Llama3.3-FFM-70B-32K",
-    ],
+    "twcc": ["twcc/Llama3.3-FFM-70B-32K"],
 }
 
 _TWCC_OPTION_LABELS: dict[str, str] = {
-    "twcc/Llama3.1-FFM-8B-32K": "台智雲 Llama3.1-FFM-8B",
     "twcc/Llama3.3-FFM-70B-32K": "台智雲 Llama3.3-FFM-70B",
 }
 
@@ -265,8 +256,8 @@ def delete_llm_config(
 # 各 provider 測試用預設模型
 _TEST_DEFAULT_MODELS: dict[str, str] = {
     "openai": "gpt-4o-mini",
-    "gemini": "gemini/gemini-2.0-flash",
-    "twcc": "twcc/Llama3.1-FFM-8B-32K",
+    "gemini": "gemini/gemini-2.5-flash",
+    "twcc": "twcc/Llama3.3-FFM-70B-32K",
 }
 
 _TWCC_MODEL_MAP: dict[str, str] = {

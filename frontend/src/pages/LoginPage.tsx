@@ -5,9 +5,23 @@ import { useAuth } from '@/contexts/AuthContext'
 
 const RETURN_URL_KEY = 'login_return_url'
 
+/** on-prem 等可設 VITE_AUTH_ALLOW_REGISTER=false、VITE_AUTH_ALLOW_FORGOT_PASSWORD=false */
+function authUiEnabled(name: `VITE_${string}`): boolean {
+  const v = import.meta.env[name] as string | undefined
+  if (v === undefined || v === '') return true
+  const s = String(v).trim().toLowerCase()
+  return s !== 'false' && s !== '0' && s !== 'no'
+}
+
+const APP_NAME = (import.meta.env.VITE_APP_NAME as string | undefined)?.trim() || 'NeuroSme'
+
+/** 僅 dev server 預填測試帳密；production build 欄位為空。上線前若改為永遠預填請刪除此判斷。 */
+const DEV_DEFAULT_EMAIL = import.meta.env.DEV ? 'test01@test.com' : ''
+const DEV_DEFAULT_PASSWORD = import.meta.env.DEV ? 'test@000' : ''
+
 export default function LoginPage() {
-  const [email, setEmail] = useState('test01@test.com')
-  const [password, setPassword] = useState('test@000')
+  const [email, setEmail] = useState(DEV_DEFAULT_EMAIL)
+  const [password, setPassword] = useState(DEV_DEFAULT_PASSWORD)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [searchParams] = useSearchParams()
@@ -16,6 +30,8 @@ export default function LoginPage() {
   const isPasswordChanged = searchParams.get('password_changed') === '1'
   const { login } = useAuth()
   const navigate = useNavigate()
+  const allowRegister = authUiEnabled('VITE_AUTH_ALLOW_REGISTER')
+  const allowForgotPassword = authUiEnabled('VITE_AUTH_ALLOW_FORGOT_PASSWORD')
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -48,7 +64,7 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-100 px-4">
       <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-8 shadow-lg">
-        <h1 className="mb-6 text-center text-2xl font-bold text-gray-800">NeuroSme 登入</h1>
+        <h1 className="mb-6 text-center text-2xl font-bold text-gray-800">{APP_NAME} 登入</h1>
         {isRegistered && (
           <div
             className="mb-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800"
@@ -115,16 +131,24 @@ export default function LoginPage() {
             {loading ? '登入中...' : '登入'}
           </button>
         </form>
-        <p className="mt-4 text-center text-sm text-gray-500">
-          尚未註冊？{' '}
-          <Link to="/register" className="font-medium text-indigo-600 hover:text-indigo-500">
-            前往註冊
-          </Link>
-          {' · '}
-          <Link to="/forgot-password" className="font-medium text-indigo-600 hover:text-indigo-500">
-            忘記密碼
-          </Link>
-        </p>
+        {(allowRegister || allowForgotPassword) && (
+          <p className="mt-4 text-center text-sm text-gray-500">
+            {allowRegister && (
+              <>
+                尚未註冊？{' '}
+                <Link to="/register" className="font-medium text-indigo-600 hover:text-indigo-500">
+                  前往註冊
+                </Link>
+              </>
+            )}
+            {allowRegister && allowForgotPassword && ' · '}
+            {allowForgotPassword && (
+              <Link to="/forgot-password" className="font-medium text-indigo-600 hover:text-indigo-500">
+                忘記密碼
+              </Link>
+            )}
+          </p>
+        )}
       </div>
     </div>
   )

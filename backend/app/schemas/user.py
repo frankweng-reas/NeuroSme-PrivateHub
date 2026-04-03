@@ -1,4 +1,6 @@
 """User 相關 Pydantic 結構：UserBase, UserCreate, UserResponse"""
+from typing import Optional
+
 from pydantic import BaseModel, EmailStr
 
 Role = str  # 'admin' | 'manager' | 'member'
@@ -11,6 +13,8 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str
+    role: str = "member"
+    must_change_password: bool = False
 
 
 class UserResponse(UserBase):
@@ -30,3 +34,9 @@ class UserAgentsUpdate(BaseModel):
 class UserRoleUpdate(BaseModel):
     """更新使用者角色"""
     role: str  # 'admin' | 'manager' | 'member'
+
+
+class UserUpdate(BaseModel):
+    """管理員修改使用者：顯示名稱、角色"""
+    username: Optional[str] = None
+    role: Optional[str] = None

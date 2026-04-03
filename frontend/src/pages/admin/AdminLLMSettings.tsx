@@ -223,12 +223,13 @@ export default function AdminLLMSettings() {
           <KeyRound className="h-6 w-6 text-gray-600" />
           <div>
             <h2 className="text-xl font-bold text-gray-800">LLM 設定（租戶）</h2>
-            <p className="text-lg text-gray-500 mt-0.5">
-              設定本租戶 LLM API Key，優先於環境變數（.env）。Key 以加密方式儲存於資料庫。
-              {currentTenantId ? (
-                <span className="block mt-1 text-gray-600">目前租戶 ID：<code className="rounded bg-gray-100 px-1.5 py-0.5">{currentTenantId}</code></span>
-              ) : null}
-            </p>
+            {currentTenantId ? (
+              <p className="text-lg text-gray-500 mt-0.5">
+                <span className="text-gray-600">
+                  目前租戶 ID：<code className="rounded bg-gray-100 px-1.5 py-0.5">{currentTenantId}</code>
+                </span>
+              </p>
+            ) : null}
           </div>
         </div>
         <button
@@ -242,9 +243,7 @@ export default function AdminLLMSettings() {
 
       {/* 說明卡片 */}
       <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-lg text-amber-800">
-        <strong>優先序：</strong> 本租戶 DB 設定（此頁面）&gt; 環境變數（.env）<br />
-        API Key 以 Fernet 對稱加密儲存，金鑰由 <code className="bg-amber-100 px-1 rounded">LLM_ENCRYPTION_KEY</code> 環境變數控制。
-        未設定加密金鑰時系統使用開發用預設金鑰（僅適合本地測試）。
+        Key 會加密後存入資料庫。正式環境請由維運設定伺服端加密金鑰。
       </div>
 
       {/* 錯誤 */}

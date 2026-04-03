@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     # JWT（與 LocalAuth 共用 secret）
     JWT_SECRET: str = "change-me-in-production"
 
+    # LocalAuth Admin API（後端代理用，勿暴露給前端）
+    # 僅 on-prem / REGISTRATION_DISABLED 場景需設定；SaaS 自助註冊可留空
+    LOCALAUTH_ADMIN_URL: str = "http://localhost:4000"
+    LOCALAUTH_ADMIN_API_KEY: str = ""
+
     # CORS
     CORS_ORIGINS: List[str] = [
         "http://localhost:3000",
