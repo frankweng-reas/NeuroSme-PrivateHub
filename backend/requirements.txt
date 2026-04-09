@@ -1,6 +1,7 @@
 # FastAPI & Server
 fastapi==0.109.2
 uvicorn[standard]==0.27.1
+python-multipart>=0.0.9
 
 # Database
 sqlalchemy==2.0.25
@@ -24,6 +25,7 @@ pandas>=2.0.0
 
 # Utils
 pydantic[email]==2.6.1
+pypdf>=4.0.0
 PyYAML>=6.0
 PyJWT>=2.8.0
 pydantic-settings==2.1.0

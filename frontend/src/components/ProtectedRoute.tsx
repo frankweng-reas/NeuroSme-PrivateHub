@@ -2,6 +2,8 @@
 import { Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 
+const LOGIN_RETURN_URL_KEY = 'login_return_url'
+
 export default function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, loading } = useAuth()
   const location = useLocation()
@@ -15,7 +17,11 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
   }
 
   if (!isAuthenticated) {
-    return <Navigate to="/login" state={{ from: location }} replace />
+    const path = `${location.pathname}${location.search}`
+    if (path && !path.startsWith('/login')) {
+      sessionStorage.setItem(LOGIN_RETURN_URL_KEY, path)
+    }
+    return <Navigate to="/login" replace />
   }
 
   return <>{children}</>

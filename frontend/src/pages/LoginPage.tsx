@@ -44,7 +44,9 @@ export default function LoginPage() {
         sessionStorage.removeItem(RETURN_URL_KEY)
         navigate(returnUrl, { replace: true })
       } else {
-        navigate('/', { replace: true })
+        const postLogin =
+          (import.meta.env.VITE_POST_LOGIN_PATH as string | undefined)?.trim() || ''
+        navigate(postLogin || '/', { replace: true })
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '登入失敗'

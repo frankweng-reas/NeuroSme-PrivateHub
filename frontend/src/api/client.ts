@@ -65,8 +65,9 @@ export async function apiFetch<T>(
   const id = setTimeout(() => controller.abort(), timeout)
 
   const token = localStorage.getItem(TOKEN_KEY)
+  const isFormData = typeof FormData !== 'undefined' && rest.body instanceof FormData
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
     ...(rest.headers as Record<string, string>),
   }
   if (token) headers['Authorization'] = `Bearer ${token}`
@@ -82,7 +83,7 @@ export async function apiFetch<T>(
     const newToken = await tryRefreshToken()
     if (newToken) {
       const retryHeaders: Record<string, string> = {
-        'Content-Type': 'application/json',
+        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
         Authorization: `Bearer ${newToken}`,
         ...(rest.headers as Record<string, string>),
       }

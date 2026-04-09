@@ -10,7 +10,7 @@
     {
       "id": "m1",
       "alias": "sales_2025",
-      "label": "2025年Q1銷售額",
+      "label": "2025年銷售額",
       "formula": "SUM(col_11)",
       "filters": [
         {
@@ -26,7 +26,7 @@
     {
       "id": "m2",
       "alias": "sales_2024",
-      "label": "2024年Q1銷售額",
+      "label": "2024年銷售額",
       "formula": "SUM(col_11)",
       "filters": [
         {

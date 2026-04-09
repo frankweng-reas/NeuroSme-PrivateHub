@@ -2,7 +2,7 @@
   "version": "4.0",
   "dims": {
     "groups": [
-      "col_3"
+      "col_4"
     ]
   },
   "filters": [],
@@ -10,13 +10,31 @@
     {
       "id": "m1",
       "alias": "total_sales",
-      "label": "通路銷售額",
+      "label": "銷售總額",
       "formula": "SUM(col_11)",
       "filters": [
         {
           "col": "col_3",
           "op": "ne",
-          "val": "Momo"
+          "val": "蝦皮"
+        },
+        {
+          "col": "col_7",
+          "op": "contains",
+          "val": "鮮乳"
+        },
+        {
+          "col": "col_12",
+          "op": "is_not_null",
+          "val": []
+        },
+        {
+          "col": "col_4",
+          "op": "in",
+          "val": [
+            "鮮乳坊",
+            "牧場直送"
+          ]
         }
       ]
     }

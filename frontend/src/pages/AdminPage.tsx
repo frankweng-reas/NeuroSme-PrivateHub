@@ -1,7 +1,18 @@
-/** 管理頁面：admin 專用，含 sidebar 導航 */
+/** 管理頁面：admin 專用，含 sidebar 導航（可折疊） */
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
-import { ArrowLeft, Building2, Building, KeyRound, LayoutGrid, ShieldCheck, Users } from 'lucide-react'
+import {
+  ArrowLeft,
+  BarChart3,
+  Building2,
+  Building,
+  ChevronsLeft,
+  ChevronsRight,
+  KeyRound,
+  LayoutGrid,
+  ShieldCheck,
+  Users,
+} from 'lucide-react'
 import { getMe } from '@/api/users'
 import type { User } from '@/types'
 
@@ -11,20 +22,48 @@ const SIDEBAR_ITEMS = [
   { to: '/admin/llm-settings', label: 'LLM 設定（租戶）', icon: KeyRound, superAdminOnly: false },
   { to: '/admin/users', label: '會員管理', icon: Users, superAdminOnly: false },
   { to: '/admin/agent-permissions', label: 'Agent 權限設定', icon: ShieldCheck, superAdminOnly: false },
+  { to: '/admin/chat-insights', label: 'Chat 用量洞察', icon: BarChart3, superAdminOnly: false },
 ] as const
 
 const SIDEBAR_ITEMS_SECONDARY = [
   { to: '/admin/companies', label: '公司資訊', icon: Building, superAdminOnly: false },
 ] as const
 
+const SIDEBAR_COLLAPSED_KEY = 'neurosme-admin-sidebar-collapsed'
+
+function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeSidebarCollapsed(v: boolean) {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, v ? '1' : '0')
+  } catch {
+    /* ignore */
+  }
+}
+
 export default function AdminPage() {
   const [user, setUser] = useState<User | null>(null)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed)
 
   useEffect(() => {
     getMe()
       .then(setUser)
       .catch(() => setUser(null))
   }, [])
+
+  const toggleSidebar = () => {
+    setSidebarCollapsed((c) => {
+      const next = !c
+      writeSidebarCollapsed(next)
+      return next
+    })
+  }
 
   const visibleItems = SIDEBAR_ITEMS.filter(
     (item) => !item.superAdminOnly || user?.role === 'super_admin'
@@ -55,37 +94,58 @@ export default function AdminPage() {
       <div className="mt-4 flex flex-1 min-h-0 overflow-hidden">
         {/* Sidebar - 與 header 同色系 */}
         <aside
-          className="flex-shrink-0 w-72 rounded-l-lg border-2 border-r-0 border-gray-200 shadow-sm"
+          className={`flex-shrink-0 rounded-l-lg border-2 border-r-0 border-gray-200 shadow-sm transition-[width] duration-200 ease-out ${
+            sidebarCollapsed ? 'w-14' : 'w-72'
+          }`}
           style={{ backgroundColor: '#4b5563' }}
         >
-          <nav className="flex flex-col py-4">
+          <nav className={`flex flex-col py-2 ${sidebarCollapsed ? 'items-center' : ''}`}>
+            <div className={`mb-1 flex w-full ${sidebarCollapsed ? 'justify-center px-1' : 'justify-end px-2 pr-3'}`}>
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                className="rounded-md p-2 text-white/90 transition-colors hover:bg-white/15 hover:text-white"
+                aria-label={sidebarCollapsed ? '展開側邊選單' : '收合側邊選單'}
+                title={sidebarCollapsed ? '展開選單' : '收合選單'}
+              >
+                {sidebarCollapsed ? (
+                  <ChevronsRight className="h-5 w-5" />
+                ) : (
+                  <ChevronsLeft className="h-5 w-5" />
+                )}
+              </button>
+            </div>
             {visibleItems.map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
                 to={to}
+                title={sidebarCollapsed ? label : undefined}
                 className={({ isActive }) =>
-                  `flex items-center gap-3 px-5 py-3 text-white transition-colors ${
-                    isActive ? 'bg-white/20 font-semibold' : 'hover:bg-white/10'
-                  }`
+                  `flex items-center text-white transition-colors ${
+                    sidebarCollapsed ? 'justify-center px-2 py-3' : 'gap-3 px-5 py-3'
+                  } ${isActive ? 'bg-white/20 font-semibold' : 'hover:bg-white/10'}`
                 }
               >
                 <Icon className="h-5 w-5 flex-shrink-0" />
-                <span>{label}</span>
+                {!sidebarCollapsed && <span className="min-w-0">{label}</span>}
               </NavLink>
             ))}
-            <div className="mx-4 my-2 border-t border-white/20" />
+            <div
+              className={`my-2 border-t border-white/20 ${sidebarCollapsed ? 'mx-2 w-8' : 'mx-4'}`}
+            />
             {visibleSecondaryItems.map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
                 to={to}
+                title={sidebarCollapsed ? label : undefined}
                 className={({ isActive }) =>
-                  `flex items-center gap-3 px-5 py-3 text-white transition-colors ${
-                    isActive ? 'bg-white/20 font-semibold' : 'hover:bg-white/10'
-                  }`
+                  `flex items-center text-white transition-colors ${
+                    sidebarCollapsed ? 'justify-center px-2 py-3' : 'gap-3 px-5 py-3'
+                  } ${isActive ? 'bg-white/20 font-semibold' : 'hover:bg-white/10'}`
                 }
               >
                 <Icon className="h-5 w-5 flex-shrink-0" />
-                <span>{label}</span>
+                {!sidebarCollapsed && <span className="min-w-0">{label}</span>}
               </NavLink>
             ))}
           </nav>

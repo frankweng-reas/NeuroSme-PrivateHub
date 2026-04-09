@@ -9,11 +9,18 @@ Intent Prompt 回歸測試腳本
   ./venv/bin/python tests/prompt/run_intent_test.py --model gemini/gemini-2.5-flash
   ./venv/bin/python tests/prompt/run_intent_test.py --model twcc/Llama3.3-FFM-70B-32K
   ./venv/bin/python tests/prompt/run_intent_test.py --verbose         # 失敗時顯示 LLM 原始輸出
+  ./venv/bin/python tests/prompt/run_intent_test.py --prune-baseline  # 刪除 baseline/ 中已不在 cases.yaml 的 .json
+
+Gemini／OpenAI：API Key 與產品相同，自 DB llm_provider_configs 讀取（需租戶）。
+  --tenant-id <id> 或環境變數 INTENT_TEST_TENANT_ID，或 cases.yaml 的 tenant_id；
+  若皆未設定，會依 schema 所屬 user_id 推斷租戶。
+TWCC：仍使用環境變數 TWCC_API_KEY（與原腳本一致）。
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -32,7 +39,10 @@ load_dotenv(_BACKEND / ".env")
 
 # ── 現在才 import app 模組（需要 .env 先載入）─────────────────────────────
 import litellm
+from app.api.endpoints.chat import _get_llm_params, _get_provider_name
 from app.core.database import SessionLocal
+from app.models.bi_schema import BiSchema
+from app.models.user import User
 from app.services.schema_loader import load_schema_from_db
 from app.api.endpoints.chat_compute_tool import (
     _extract_json_from_llm,
@@ -60,6 +70,35 @@ def load_cases() -> dict:
         return yaml.safe_load(f)
 
 
+def resolve_intent_test_tenant_id(
+    db,
+    schema_id: str,
+    *,
+    cli_tenant: str | None,
+    cases_config: dict,
+) -> str | None:
+    """
+    優先順序：CLI --tenant-id → INTENT_TEST_TENANT_ID → cases.yaml tenant_id
+    → bi_schemas.user_id 對應 users.tenant_id。
+    """
+    for raw in (cli_tenant, os.environ.get("INTENT_TEST_TENANT_ID"), cases_config.get("tenant_id")):
+        if raw is None:
+            continue
+        s = str(raw).strip()
+        if s:
+            return s
+    key = (schema_id or "").strip()
+    if not key:
+        return None
+    row = db.query(BiSchema).filter(BiSchema.id == key).first()
+    if not row or row.user_id is None:
+        return None
+    u = db.query(User).filter(User.id == row.user_id).first()
+    if not u:
+        return None
+    return (u.tenant_id or "").strip() or None
+
+
 def build_intent_prompt(schema_def: dict) -> str:
     """載入 intent system prompt（schema 已移至 user message）。"""
     base = _REPO / "config" / "system_prompt_analysis_intent_tool.md"
@@ -79,14 +118,20 @@ def build_user_content(schema_def: dict, now_str: str, question: str) -> str:
     )
 
 
-def call_llm(model: str, system_prompt: str, user_content: str) -> str:
+def call_llm(
+    model: str,
+    system_prompt: str,
+    user_content: str,
+    *,
+    db,
+    tenant_id: str | None,
+) -> str:
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
     ]
 
     if model.startswith("twcc/"):
-        import os
         import urllib.request
         import urllib.error
         from app.api.endpoints.chat import _twcc_model_id
@@ -124,11 +169,36 @@ def call_llm(model: str, system_prompt: str, user_content: str) -> str:
             raise RuntimeError(f"TWCC API 錯誤 {e.code}：{err_body}") from e
         return data.get("generated_text", "") or ""
 
-    resp = litellm.completion(
-        model=model,
-        messages=messages,
-        temperature=0,
-    )
+    tid = (tenant_id or "").strip()
+    if not tid:
+        raise RuntimeError(
+            "Gemini／OpenAI 須指定租戶以從 DB 讀取 API Key（與後台一致）。"
+            "請使用 --tenant-id、環境變數 INTENT_TEST_TENANT_ID、在 cases.yaml 設定 tenant_id，"
+            "或讓該 schema 的 bi_schemas.user_id 可對應到 users.tenant_id。"
+        )
+    litellm_model, api_key, api_base = _get_llm_params(model, db=db, tenant_id=tid)
+    if not api_key:
+        raise RuntimeError(
+            f"租戶 {tid!r} 未設定 {_get_provider_name(model)} 的 API Key（llm_provider_configs.is_active）。"
+            "請在管理介面設定後再跑測試。"
+        )
+    if model.startswith("gemini/"):
+        os.environ["GEMINI_API_KEY"] = api_key
+    else:
+        os.environ["OPENAI_API_KEY"] = api_key
+
+    completion_kwargs: dict = {
+        "model": litellm_model,
+        "messages": messages,
+        "api_key": api_key,
+        "temperature": 0,
+        "timeout": 120,
+    }
+    if api_base:
+        base = (api_base or "").rstrip("/")
+        completion_kwargs["api_base"] = base if base.endswith("/v1") else f"{base}/v1"
+
+    resp = litellm.completion(**completion_kwargs)
     return resp.choices[0].message.content or ""  # type: ignore[union-attr]
 
 
@@ -149,6 +219,16 @@ def validate_intent(raw_output: str) -> tuple[dict | None, str | None]:
         loc = " → ".join(str(x) for x in first_err.get("loc", []))
         msg = first_err.get("msg", "")
         return None, f"{loc}：{msg}" if loc else msg
+
+
+def prune_baselines_not_in_cases(case_ids: set[str]) -> list[str]:
+    """刪除 baseline 目錄下 stem 不在 case_ids 的 .json，回傳已刪檔名。"""
+    removed: list[str] = []
+    for path in sorted(BASELINE_DIR.glob("*.json")):
+        if path.stem not in case_ids:
+            path.unlink()
+            removed.append(path.name)
+    return removed
 
 
 def load_baseline(case_id: str) -> dict | None:
@@ -205,6 +285,7 @@ def run(
     filter_ids: list[str] | None = None,
     model_override: str | None = None,
     verbose: bool = False,
+    tenant_id_cli: str | None = None,
 ) -> None:
     config = load_cases()
     schema_id = config["schema_id"]
@@ -228,70 +309,89 @@ def run(
     db = SessionLocal()
     try:
         schema_def = load_schema_from_db(schema_id, db)
+        if not schema_def:
+            print(f"{RED}無法載入 schema（id={schema_id}），請確認 DB 連線與 schema_id。{RESET}")
+            sys.exit(1)
+
+        resolved_schema_pk = str(schema_def.get("id") or schema_id).strip()
+        intent_tenant = resolve_intent_test_tenant_id(
+            db, resolved_schema_pk, cli_tenant=tenant_id_cli, cases_config=config
+        )
+        if not model.startswith("twcc/"):
+            if not intent_tenant:
+                print(
+                    f"{RED}無法解析租戶（Gemini/OpenAI 需從 DB 讀取 API Key）。"
+                    f"請使用 --tenant-id、INTENT_TEST_TENANT_ID、cases.yaml tenant_id，"
+                    f"或為 schema 設定 bi_schemas.user_id。{RESET}"
+                )
+                sys.exit(1)
+            print(f"tenant_id : {intent_tenant}（與後台 llm_provider_configs 一致）")
+
+        intent_prompt = build_intent_prompt(schema_def)
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        results = {"pass": [], "warn": [], "fail": [], "new": []}
+
+        for case in cases:
+            cid = case["id"]
+            label = case["label"]
+            question = case["question"]
+            user_content = build_user_content(schema_def, now_str, question)
+
+            sys.stdout.write(f"  {cid} {label} ... ")
+            sys.stdout.flush()
+
+            try:
+                raw = call_llm(
+                    model,
+                    intent_prompt,
+                    user_content,
+                    db=db,
+                    tenant_id=intent_tenant if not model.startswith("twcc/") else None,
+                )
+            except Exception as e:
+                print(f"{RED}❌ LLM 呼叫失敗：{e}{RESET}")
+                results["fail"].append((cid, label, f"LLM 呼叫失敗：{e}"))
+                continue
+
+            intent, err = validate_intent(raw)
+
+            if err:
+                print(f"{RED}❌ 驗證失敗{RESET}")
+                print(f"     原因：{err}")
+                if verbose:
+                    print(f"     LLM 輸出：{raw[:300]}")
+                results["fail"].append((cid, label, err))
+                continue
+
+            if save_baseline_mode:
+                assert intent is not None
+                save_baseline(cid, intent)
+                print(f"{GREEN}✅ 已儲存 baseline{RESET}")
+                results["new"].append((cid, label))
+                continue
+
+            baseline = load_baseline(cid)
+            if baseline is None:
+                print(f"{YELLOW}⚠️  無 baseline（請先執行 --save-baseline）{RESET}")
+                results["warn"].append((cid, label, "無 baseline"))
+                continue
+
+            assert intent is not None
+            diffs = diff_summary(
+                _normalize_for_compare(baseline),
+                _normalize_for_compare(intent),
+            )
+            if not diffs:
+                print(f"{GREEN}✅ 通過{RESET}")
+                results["pass"].append((cid, label))
+            else:
+                print(f"{YELLOW}⚠️  輸出有變動{RESET}")
+                for d in diffs:
+                    print(d)
+                results["warn"].append((cid, label, f"{len(diffs)} 個欄位變動"))
     finally:
         db.close()
-
-    if not schema_def:
-        print(f"{RED}無法載入 schema（id={schema_id}），請確認 DB 連線與 schema_id。{RESET}")
-        sys.exit(1)
-
-    intent_prompt = build_intent_prompt(schema_def)
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-    results = {"pass": [], "warn": [], "fail": [], "new": []}
-
-    for case in cases:
-        cid = case["id"]
-        label = case["label"]
-        question = case["question"]
-        user_content = build_user_content(schema_def, now_str, question)
-
-        sys.stdout.write(f"  {cid} {label} ... ")
-        sys.stdout.flush()
-
-        try:
-            raw = call_llm(model, intent_prompt, user_content)
-        except Exception as e:
-            print(f"{RED}❌ LLM 呼叫失敗：{e}{RESET}")
-            results["fail"].append((cid, label, f"LLM 呼叫失敗：{e}"))
-            continue
-
-        intent, err = validate_intent(raw)
-
-        if err:
-            print(f"{RED}❌ 驗證失敗{RESET}")
-            print(f"     原因：{err}")
-            if verbose:
-                print(f"     LLM 輸出：{raw[:300]}")
-            results["fail"].append((cid, label, err))
-            continue
-
-        if save_baseline_mode:
-            assert intent is not None
-            save_baseline(cid, intent)
-            print(f"{GREEN}✅ 已儲存 baseline{RESET}")
-            results["new"].append((cid, label))
-            continue
-
-        baseline = load_baseline(cid)
-        if baseline is None:
-            print(f"{YELLOW}⚠️  無 baseline（請先執行 --save-baseline）{RESET}")
-            results["warn"].append((cid, label, "無 baseline"))
-            continue
-
-        assert intent is not None
-        diffs = diff_summary(
-            _normalize_for_compare(baseline),
-            _normalize_for_compare(intent),
-        )
-        if not diffs:
-            print(f"{GREEN}✅ 通過{RESET}")
-            results["pass"].append((cid, label))
-        else:
-            print(f"{YELLOW}⚠️  輸出有變動{RESET}")
-            for d in diffs:
-                print(d)
-            results["warn"].append((cid, label, f"{len(diffs)} 個欄位變動"))
 
     # ── 報告 ────────────────────────────────────────────────────────────────
     total = len(cases)
@@ -338,14 +438,36 @@ if __name__ == "__main__":
         help="覆寫 model，如 gemini/gemini-2.5-flash",
     )
     parser.add_argument(
+        "--tenant-id",
+        default=None,
+        metavar="ID",
+        help="租戶 id（ Gemini/OpenAI 時從 DB 讀 API Key；優先於 INTENT_TEST_TENANT_ID 與 cases.yaml）",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="失敗時顯示 LLM 原始輸出",
     )
+    parser.add_argument(
+        "--prune-baseline",
+        action="store_true",
+        help="刪除 baseline/ 內已不在目前 cases.yaml 的題目檔案，然後結束（不跑 LLM）",
+    )
     args = parser.parse_args()
+    if args.prune_baseline:
+        config = load_cases()
+        case_ids = {c["id"] for c in config["cases"]}
+        removed = prune_baselines_not_in_cases(case_ids)
+        if removed:
+            print(f"已移除過舊 baseline：{', '.join(removed)}")
+        else:
+            print("無需移除的 baseline（皆仍在 cases.yaml）")
+        raise SystemExit(0)
+
     run(
         save_baseline_mode=args.save_baseline,
         filter_ids=args.ids,
         model_override=args.model,
         verbose=args.verbose,
+        tenant_id_cli=args.tenant_id,
     )

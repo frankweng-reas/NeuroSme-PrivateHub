@@ -2,11 +2,15 @@
 import json
 import logging
 import os
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import litellm
 from sqlalchemy.orm import Session
@@ -24,6 +28,8 @@ from app.models.llm_provider_config import LLMProviderConfig
 from app.models.qtn_catalog import QtnCatalog
 from app.models.qtn_project import QtnProject
 from app.models.qtn_source import QtnSource
+from app.models.chat_llm_request import ChatLlmRequest
+from app.models.chat_thread import ChatThread
 from app.models.source_file import SourceFile
 from app.models.user import User
 from app.services.duckdb_store import get_project_data_as_csv
@@ -90,14 +96,16 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     agent_id: str = ""  # chat.py 必填；chat_dev 不填
     project_id: str = ""  # quotation_parse 時可填，改從 qtn_sources 取參考資料
-    prompt_type: str = ""  # 空或 analysis → system_prompt_analysis.md；quotation_parse → system_prompt_quotation_1_parse.md
+    prompt_type: str = ""  # chat_agent → system_prompt_chat_agent.md；空或 analysis → system_prompt_analysis.md；quotation_parse → …
     schema_id: str = ""  # dev-test-compute-tool：覆寫專案 schema，從 bi_schemas 載入
     system_prompt: str = ""
     user_prompt: str = ""
-    data: str = ""  # 保留，chat.py 由後端組 data 時忽略
+    data: str = ""  # Chat Agent 等：前端可傳純文字參考（如本頁上傳檔），與後端組出之資料合併後一併受長度上限檢查
     model: str = "gpt-4o-mini"
     messages: list[ChatMessage] = []
     content: str  # 新使用者訊息
+    chat_thread_id: str = ""
+    trace_id: str = ""
 
 
 class UsageMeta(BaseModel):
@@ -111,6 +119,83 @@ class ChatResponse(BaseModel):
     model: str = ""
     usage: UsageMeta | None = None
     finish_reason: str | None = None
+    llm_request_id: str | None = None
+
+
+def _infer_llm_provider(model: str) -> str:
+    m = (model or "").strip()
+    if m.startswith("gemini/"):
+        return "gemini"
+    if m.startswith("twcc/"):
+        return "twcc"
+    return "openai"
+
+
+def _parse_optional_chat_thread_id(
+    db: Session,
+    current: User,
+    tenant_id: str,
+    business_agent_id: str,
+    raw: str | None,
+) -> UUID | None:
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        tid = UUID(s)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="chat_thread_id 格式錯誤")
+    row = (
+        db.query(ChatThread)
+        .filter(
+            ChatThread.id == tid,
+            ChatThread.tenant_id == tenant_id,
+            ChatThread.user_id == current.id,
+            ChatThread.agent_id == business_agent_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=403, detail="無權限使用此對話串或 agent 不符")
+    return tid
+
+
+def _persist_chat_llm_request(
+    db: Session,
+    *,
+    tenant_id: str,
+    user_id: int,
+    thread_id: UUID,
+    model: str,
+    trace_id: str | None,
+    latency_ms: int,
+    status: str,
+    usage: UsageMeta | None,
+    finish_reason: str | None,
+    error_code: str | None,
+    error_message: str | None,
+) -> UUID:
+    msg = (error_message or "").strip()[:8000] if error_message else None
+    tid = (trace_id or "").strip()[:128] if trace_id else None
+    row = ChatLlmRequest(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        thread_id=thread_id,
+        model=model or None,
+        provider=_infer_llm_provider(model),
+        prompt_tokens=usage.prompt_tokens if usage else None,
+        completion_tokens=usage.completion_tokens if usage else None,
+        total_tokens=usage.total_tokens if usage else None,
+        latency_ms=latency_ms,
+        finished_at=datetime.now(timezone.utc),
+        status=status,
+        error_code=error_code,
+        error_message=msg,
+        trace_id=tid,
+    )
+    db.add(row)
+    db.flush()
+    return row.id
 
 
 def _build_messages(req: ChatRequest, data: str = "") -> list[dict]:
@@ -122,6 +207,7 @@ def _build_messages(req: ChatRequest, data: str = "") -> list[dict]:
         system_parts.append(file_prompt)
     if req.system_prompt.strip():
         system_parts.append(req.system_prompt.strip())
+    # 參考資料（含 Chat 附檔）置於 system 末段；前段為檔案 system_prompt + 自訂 system_prompt，前綴穩定以利 LLM prompt cache。勿改為併入 user。
     if data.strip():
         system_parts.append(f"以下為參考資料：\n\n{data.strip()}")
     if system_parts:
@@ -193,19 +279,29 @@ async def _call_twcc_conversation(
         "X-API-KEY": api_key,
         "Content-Type": "application/json",
     }
-    timeout = aiohttp.ClientTimeout(total=60)
+    timeout = aiohttp.ClientTimeout(total=180)
     async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, json=payload, headers=headers) as resp:
                 if not resp.ok:
                     err_body = await resp.text()
+                    hint = (err_body or "").strip() or "（無回應內容）"
                     raise HTTPException(
                         status_code=resp.status,
-                        detail=f"TWCC API 錯誤 {resp.status}：{err_body}",
+                        detail=f"TWCC API 錯誤 {resp.status}：{hint[:4000]}",
                     )
                 data = await resp.json()
 
+    if not isinstance(data, dict):
+        raise HTTPException(
+            status_code=502,
+            detail=f"台智雲回應格式異常（非 JSON 物件）：{type(data).__name__}",
+        )
+
     # 台智雲回應格式：generated_text, prompt_tokens, generated_tokens, total_tokens, finish_reason
-    content = data.get("generated_text", "") or ""
+    content = data.get("generated_text") or data.get("text") or data.get("output") or ""
+    if isinstance(content, list):
+        content = "\n".join(str(x) for x in content)
+    content = str(content) if content is not None else ""
     usage = None
     if "prompt_tokens" in data or "total_tokens" in data:
         usage = UsageMeta(
@@ -213,6 +309,19 @@ async def _call_twcc_conversation(
             completion_tokens=data.get("generated_tokens", data.get("completion_tokens", 0)),
             total_tokens=data.get("total_tokens", 0),
         )
+
+    if not (content or "").strip():
+        err_hint = data.get("error") or data.get("message") or data.get("err_msg") or data.get("detail")
+        if isinstance(err_hint, dict):
+            err_hint = err_hint.get("message") or err_hint.get("msg") or json.dumps(err_hint, ensure_ascii=False)[:500]
+        keys = list(data.keys())
+        tail = json.dumps(data, ensure_ascii=False)[:1500]
+        hint = f" API 錯誤欄位：{err_hint}" if err_hint else ""
+        raise HTTPException(
+            status_code=502,
+            detail=f"台智雲未回傳可讀文字（generated_text 等為空）。{hint} 回應欄位：{keys}。摘要：{tail}",
+        )
+
     return ChatResponse(
         content=content,
         model=model_id,
@@ -364,6 +473,7 @@ def _get_qtn_final_content(db: Session, user_id: int, project_id: str) -> str:
 
 
 _PROMPT_TYPE_FILES: dict[str, str] = {
+    "chat_agent": "system_prompt_chat_agent.md",
     "quotation_parse": "system_prompt_quotation_1_parse.md",
     "quotation_share": "system_prompt_quotation_4_share.md",
     "analysis": "system_prompt_analysis.md",
@@ -386,6 +496,145 @@ def _load_system_prompt_from_file(prompt_type: str = "") -> str:
     return ""
 
 
+@dataclass(frozen=True)
+class ChatCompletionPrepared:
+    """chat_completions／completions-stream 共用：參考資料、messages、金鑰與 thread 等。"""
+
+    tenant_id: str
+    messages: list[dict]
+    model: str
+    litellm_model: str
+    api_key: str
+    api_base: str | None
+    thread_uuid: UUID | None
+    trace_raw: str | None
+    user_id: int
+
+
+def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> ChatCompletionPrepared:
+    if not (req.agent_id or "").strip():
+        raise HTTPException(status_code=400, detail="agent_id is required")
+    tenant_id, aid = _check_agent_access(db, current, req.agent_id.strip())
+    trace_raw = (req.trace_id or "").strip() or None
+    thread_uuid = _parse_optional_chat_thread_id(db, current, tenant_id, aid, req.chat_thread_id)
+
+    pt = (req.prompt_type or "").strip()
+    pid = (req.project_id or "").strip()
+    if pt == "quotation_parse" and pid:
+        data = _get_qtn_sources_content(db, current.id, pid)
+    elif pt == "quotation_share" and pid:
+        data = _get_qtn_final_content(db, current.id, pid)
+    elif pid:
+        try:
+            bi_proj = db.query(BiProject).filter(BiProject.project_id == UUID(pid)).first()
+            if bi_proj and bi_proj.user_id == str(current.id):
+                data = get_project_data_as_csv(pid) or ""
+            else:
+                data = _get_selected_source_files_content(db, current.id, tenant_id, aid)
+        except ValueError:
+            data = _get_selected_source_files_content(db, current.id, tenant_id, aid)
+    else:
+        data = _get_selected_source_files_content(db, current.id, tenant_id, aid)
+    client_ref = (req.data or "").strip()
+    if client_ref:
+        base = (data or "").strip()
+        if base:
+            data = f"{base}\n\n---\n【來自 Chat 上傳之參考】\n\n{client_ref}"
+        else:
+            data = client_ref
+    data_len = len(data.strip()) if data else 0
+    max_chars = (
+        settings.CHAT_AGENT_REFERENCE_MAX_CHARS
+        if pt == "chat_agent"
+        else settings.CHAT_DATA_MAX_CHARS
+    )
+    if data_len > max_chars:
+        raise HTTPException(
+            status_code=413,
+            detail=f"參考資料超過 {max_chars:,} 字元（目前約 {data_len:,} 字元），請減少選用的來源檔案後再試。",
+        )
+    if data_len == 0:
+        if pt == "quotation_parse":
+            raise HTTPException(
+                status_code=400,
+                detail="請先選擇專案並上傳產品/服務清單與需求描述後再進行解析。",
+            )
+        if pt == "quotation_share":
+            raise HTTPException(
+                status_code=400,
+                detail="請先完成報價單（步驟 3）並進入發送跟進步驟後再生成建議。",
+            )
+        if pid:
+            try:
+                bi_proj = db.query(BiProject).filter(BiProject.project_id == UUID(pid)).first()
+                if bi_proj and bi_proj.user_id == str(current.id):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="DuckDB 尚無資料，請先在 CSV 分頁匯入資料",
+                    )
+            except HTTPException:
+                raise
+            except ValueError:
+                pass
+        logger.warning(
+            "chat_completions: 無參考資料 (agent_id=%r, tenant_id=%r, aid=%r, user_id=%s) - 請在該 agent 頁面左欄上傳並勾選來源檔案",
+            req.agent_id,
+            tenant_id,
+            aid,
+            current.id,
+        )
+    else:
+        logger.info("chat_completions: 已載入參考資料 %d 字元", data_len)
+
+    model = (req.model or "").strip() or "gpt-4o-mini"
+    litellm_model, api_key, api_base = _get_llm_params(model, db=db, tenant_id=tenant_id)
+
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{_get_provider_name(model)} API Key 未設定，請在管理介面（租戶 LLM 設定）設定對應的 key",
+        )
+    if model.startswith("twcc/") and not api_base:
+        raise HTTPException(
+            status_code=503,
+            detail="台智雲 TWCC_API_BASE 未設定，請在管理介面（租戶 LLM 設定）設定",
+        )
+
+    messages = _build_messages(req, data=data)
+    return ChatCompletionPrepared(
+        tenant_id=tenant_id,
+        messages=messages,
+        model=model,
+        litellm_model=litellm_model,
+        api_key=cast(str, api_key),
+        api_base=api_base,
+        thread_uuid=thread_uuid,
+        trace_raw=trace_raw,
+        user_id=current.id,
+    )
+
+
+def _sse_line(obj: dict) -> str:
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+
+def _sse_error_user_message(obj: object) -> str:
+    """SSE error 給前端的 message：避免空字串導致畫面只顯示「錯誤：」"""
+    if obj is None:
+        return "未知錯誤（伺服器未提供詳情）。"
+    if isinstance(obj, str):
+        s = obj.strip()
+        return s if s else "未知錯誤（伺服器回傳空字串）。請查看後端日誌或網路／逾時。"
+    s = str(obj).strip()
+    if s:
+        return s[:8000]
+    return f"未知錯誤（{type(obj).__name__}）。請查看後端日誌。"
+
+
+def _sse_event_error(message: object) -> str:
+    return _sse_line({"event": "error", "message": _sse_error_user_message(message)})
+
+
 @router.post("/completions", response_model=ChatResponse)
 async def chat_completions(
     req: ChatRequest,
@@ -393,87 +642,16 @@ async def chat_completions(
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):
     logger.info(f"chat_completions: model={req.model!r}, content_len={len(req.content) if req.content else 0}")
-    if not (req.agent_id or "").strip():
-        raise HTTPException(status_code=400, detail="agent_id is required")
     try:
-        tenant_id, aid = _check_agent_access(db, current, req.agent_id.strip())
-
-        # quotation_parse + project_id：從 qtn_sources 取資料
-        # quotation_share + project_id：從 qtn_final 取資料
-        # project_id + bi_project：從 DuckDB 取資料（get_project_data_as_csv）
-        # 否則從 source_files
-        pt = (req.prompt_type or "").strip()
-        pid = (req.project_id or "").strip()
-        if pt == "quotation_parse" and pid:
-            data = _get_qtn_sources_content(db, current.id, pid)
-        elif pt == "quotation_share" and pid:
-            data = _get_qtn_final_content(db, current.id, pid)
-        elif pid:
-            try:
-                bi_proj = db.query(BiProject).filter(BiProject.project_id == UUID(pid)).first()
-                if bi_proj and bi_proj.user_id == str(current.id):
-                    data = get_project_data_as_csv(pid) or ""
-                else:
-                    data = _get_selected_source_files_content(db, current.id, tenant_id, aid)
-            except ValueError:
-                data = _get_selected_source_files_content(db, current.id, tenant_id, aid)
-        else:
-            data = _get_selected_source_files_content(db, current.id, tenant_id, aid)
-        data_len = len(data.strip()) if data else 0
-        max_chars = settings.CHAT_DATA_MAX_CHARS
-        if data_len > max_chars:
-            raise HTTPException(
-                status_code=413,
-                detail=f"參考資料超過 {max_chars:,} 字元（目前約 {data_len:,} 字元），請減少選用的來源檔案後再試。",
-            )
-        if data_len == 0:
-            if pt == "quotation_parse":
-                raise HTTPException(
-                    status_code=400,
-                    detail="請先選擇專案並上傳產品/服務清單與需求描述後再進行解析。",
-                )
-            if pt == "quotation_share":
-                raise HTTPException(
-                    status_code=400,
-                    detail="請先完成報價單（步驟 3）並進入發送跟進步驟後再生成建議。",
-                )
-            if pid:
-                try:
-                    bi_proj = db.query(BiProject).filter(BiProject.project_id == UUID(pid)).first()
-                    if bi_proj and bi_proj.user_id == str(current.id):
-                        raise HTTPException(
-                            status_code=400,
-                            detail="DuckDB 尚無資料，請先在 CSV 分頁匯入資料",
-                        )
-                except HTTPException:
-                    raise
-                except ValueError:
-                    pass
-            logger.warning(
-                "chat_completions: 無參考資料 (agent_id=%r, tenant_id=%r, aid=%r, user_id=%s) - 請在該 agent 頁面左欄上傳並勾選來源檔案",
-                req.agent_id,
-                tenant_id,
-                aid,
-                current.id,
-            )
-        else:
-            logger.info("chat_completions: 已載入參考資料 %d 字元", data_len)
-
-        model = (req.model or "").strip() or "gpt-4o-mini"
-        litellm_model, api_key, api_base = _get_llm_params(model, db=db, tenant_id=tenant_id)
-
-        if not api_key:
-            raise HTTPException(
-                status_code=503,
-                detail=f"{_get_provider_name(model)} API Key 未設定，請在管理介面（租戶 LLM 設定）設定對應的 key",
-            )
-        if model.startswith("twcc/") and not api_base:
-            raise HTTPException(
-                status_code=503,
-                detail="台智雲 TWCC_API_BASE 未設定，請在管理介面（租戶 LLM 設定）設定",
-            )
-
-        messages = _build_messages(req, data=data)
+        prepared = _prepare_chat_completion(req, db, current)
+        tenant_id = prepared.tenant_id
+        thread_uuid = prepared.thread_uuid
+        trace_raw = prepared.trace_raw
+        model = prepared.model
+        litellm_model = prepared.litellm_model
+        api_key = prepared.api_key
+        api_base = prepared.api_base
+        messages = prepared.messages
 
         if model.startswith("twcc/"):
             # 台智雲：直接呼叫 Conversation API（X-API-KEY、/models/conversation）
@@ -484,7 +662,56 @@ async def chat_completions(
                     detail="台智雲 TWCC_API_BASE 未設定，請在管理介面（租戶 LLM 設定）設定",
                 )
             model_id = _twcc_model_id(model[5:])  # twcc/Llama3.1-FFM-8B-32K -> Llama3.1-FFM-8B-32K
-            return await _call_twcc_conversation(url=url, api_key=api_key, model_id=model_id, messages=messages)
+            t0 = time.perf_counter()
+            try:
+                twcc_out = await _call_twcc_conversation(url=url, api_key=api_key, model_id=model_id, messages=messages)
+            except HTTPException:
+                raise
+            except Exception as e:
+                latency_ms = int((time.perf_counter() - t0) * 1000)
+                if thread_uuid:
+                    _persist_chat_llm_request(
+                        db,
+                        tenant_id=tenant_id,
+                        user_id=current.id,
+                        thread_id=thread_uuid,
+                        model=model,
+                        trace_id=trace_raw,
+                        latency_ms=latency_ms,
+                        status="error",
+                        usage=None,
+                        finish_reason=None,
+                        error_code="twcc_error",
+                        error_message=str(e),
+                    )
+                    db.commit()
+                raise
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            rid_str: str | None = None
+            if thread_uuid:
+                rid = _persist_chat_llm_request(
+                    db,
+                    tenant_id=tenant_id,
+                    user_id=current.id,
+                    thread_id=thread_uuid,
+                    model=model,
+                    trace_id=trace_raw,
+                    latency_ms=latency_ms,
+                    status="success",
+                    usage=twcc_out.usage,
+                    finish_reason=twcc_out.finish_reason,
+                    error_code=None,
+                    error_message=None,
+                )
+                db.commit()
+                rid_str = str(rid)
+            return ChatResponse(
+                content=twcc_out.content,
+                model=twcc_out.model,
+                usage=twcc_out.usage,
+                finish_reason=twcc_out.finish_reason,
+                llm_request_id=rid_str,
+            )
 
         if model.startswith("gemini/"):
             os.environ["GEMINI_API_KEY"] = api_key
@@ -502,11 +729,260 @@ async def chat_completions(
             base = api_base.rstrip("/")
             completion_kwargs["api_base"] = base if base.endswith("/v1") else f"{base}/v1"
 
-        resp = await litellm.acompletion(**completion_kwargs)
-        return _parse_response(resp)
+        t0 = time.perf_counter()
+        try:
+            resp = await litellm.acompletion(**completion_kwargs)
+            parsed = _parse_response(resp)
+        except Exception as e:
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            if thread_uuid:
+                _persist_chat_llm_request(
+                    db,
+                    tenant_id=tenant_id,
+                    user_id=current.id,
+                    thread_id=thread_uuid,
+                    model=model,
+                    trace_id=trace_raw,
+                    latency_ms=latency_ms,
+                    status="error",
+                    usage=None,
+                    finish_reason=None,
+                    error_code="litellm_error",
+                    error_message=str(e),
+                )
+                db.commit()
+            import traceback
+
+            logger.exception("chat_completions 發生錯誤")
+            raise HTTPException(status_code=500, detail=str(e))
+
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        rid_str = None
+        if thread_uuid:
+            rid = _persist_chat_llm_request(
+                db,
+                tenant_id=tenant_id,
+                user_id=current.id,
+                thread_id=thread_uuid,
+                model=model,
+                trace_id=trace_raw,
+                latency_ms=latency_ms,
+                status="success",
+                usage=parsed.usage,
+                finish_reason=parsed.finish_reason,
+                error_code=None,
+                error_message=None,
+            )
+            db.commit()
+            rid_str = str(rid)
+        return ChatResponse(
+            content=parsed.content,
+            model=parsed.model,
+            usage=parsed.usage,
+            finish_reason=parsed.finish_reason,
+            llm_request_id=rid_str,
+        )
     except HTTPException:
         raise
     except Exception as e:
         import traceback
         logger.exception("chat_completions 發生錯誤")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/completions-stream")
+async def chat_completions_stream(
+    req: ChatRequest,
+    db: Annotated[Session, Depends(get_db)] = ...,
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """SSE：`data: {JSON}\\n\\n`。事件 type 見 event 欄位：delta / done / error。"""
+    logger.info(
+        "chat_completions_stream: model=%r, content_len=%s",
+        req.model,
+        len(req.content) if req.content else 0,
+    )
+    try:
+        prepared = _prepare_chat_completion(req, db, current)
+    except HTTPException:
+        raise
+
+    async def event_gen():
+        from app.core.database import SessionLocal
+
+        t0 = time.perf_counter()
+        parts: list[str] = []
+        finish_reason: str | None = None
+        usage_out: UsageMeta | None = None
+        resp_model = prepared.model
+
+        def persist_fail(msg: str, code: str = "stream_error") -> None:
+            if not prepared.thread_uuid:
+                return
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            s = SessionLocal()
+            try:
+                _persist_chat_llm_request(
+                    s,
+                    tenant_id=prepared.tenant_id,
+                    user_id=prepared.user_id,
+                    thread_id=prepared.thread_uuid,
+                    model=prepared.model,
+                    trace_id=prepared.trace_raw,
+                    latency_ms=latency_ms,
+                    status="error",
+                    usage=None,
+                    finish_reason=None,
+                    error_code=code,
+                    error_message=msg[:8000],
+                )
+                s.commit()
+            finally:
+                s.close()
+
+        def persist_ok(u: UsageMeta | None, fr: str | None) -> str | None:
+            if not prepared.thread_uuid:
+                return None
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            s = SessionLocal()
+            try:
+                rid = _persist_chat_llm_request(
+                    s,
+                    tenant_id=prepared.tenant_id,
+                    user_id=prepared.user_id,
+                    thread_id=prepared.thread_uuid,
+                    model=prepared.model,
+                    trace_id=prepared.trace_raw,
+                    latency_ms=latency_ms,
+                    status="success",
+                    usage=u,
+                    finish_reason=fr,
+                    error_code=None,
+                    error_message=None,
+                )
+                s.commit()
+                return str(rid)
+            finally:
+                s.close()
+
+        try:
+            if prepared.model.startswith("twcc/"):
+                url = (prepared.api_base or "").rstrip("/")
+                if not url:
+                    persist_fail("台智雲 API Base 未設定", "twcc_config")
+                    yield _sse_event_error("台智雲 API Base 未設定")
+                    return
+                model_id = _twcc_model_id(prepared.model[5:])
+                try:
+                    twcc_out = await _call_twcc_conversation(
+                        url=url,
+                        api_key=prepared.api_key,
+                        model_id=model_id,
+                        messages=prepared.messages,
+                    )
+                except HTTPException as he:
+                    det = he.detail
+                    msg = det if isinstance(det, str) else str(det)
+                    persist_fail(msg, "twcc_error")
+                    yield _sse_event_error(msg)
+                    return
+                except Exception as e:
+                    persist_fail(str(e), "twcc_error")
+                    yield _sse_event_error(e)
+                    return
+                body = twcc_out.content or ""
+                if body:
+                    yield _sse_line({"event": "delta", "text": body})
+                parts.append(body)
+                finish_reason = twcc_out.finish_reason
+                usage_out = twcc_out.usage
+                resp_model = twcc_out.model or resp_model
+            else:
+                if prepared.model.startswith("gemini/"):
+                    os.environ["GEMINI_API_KEY"] = prepared.api_key
+                else:
+                    os.environ["OPENAI_API_KEY"] = prepared.api_key
+                completion_kwargs: dict = {
+                    "model": prepared.litellm_model,
+                    "messages": prepared.messages,
+                    "api_key": prepared.api_key,
+                    "timeout": 120,
+                    "temperature": 0,
+                    "stream": True,
+                }
+                if prepared.api_base:
+                    base = prepared.api_base.rstrip("/")
+                    completion_kwargs["api_base"] = base if base.endswith("/v1") else f"{base}/v1"
+                try:
+                    stream_resp = await litellm.acompletion(**completion_kwargs)
+                except Exception as e:
+                    logger.exception("completions-stream litellm 初始錯誤")
+                    persist_fail(str(e), "litellm_error")
+                    yield _sse_event_error(e)
+                    return
+                async for chunk in stream_resp:
+                    mod = getattr(chunk, "model", None)
+                    if mod:
+                        resp_model = mod
+                    if not chunk.choices:
+                        u = getattr(chunk, "usage", None)
+                        if u is not None:
+                            try:
+                                usage_out = UsageMeta(
+                                    prompt_tokens=int(getattr(u, "prompt_tokens", None) or 0),
+                                    completion_tokens=int(getattr(u, "completion_tokens", None) or 0),
+                                    total_tokens=int(getattr(u, "total_tokens", None) or 0),
+                                )
+                            except (TypeError, ValueError):
+                                pass
+                        continue
+                    ch0 = chunk.choices[0]
+                    delta = getattr(ch0, "delta", None)
+                    if delta and getattr(delta, "content", None):
+                        piece = delta.content
+                        if piece:
+                            parts.append(piece)
+                            yield _sse_line({"event": "delta", "text": piece})
+                    if ch0.finish_reason:
+                        finish_reason = ch0.finish_reason
+                    u = getattr(chunk, "usage", None)
+                    if u is not None:
+                        try:
+                            pt = getattr(u, "prompt_tokens", None)
+                            ct = getattr(u, "completion_tokens", None)
+                            tt = getattr(u, "total_tokens", None)
+                            if pt is not None or ct is not None or tt is not None:
+                                usage_out = UsageMeta(
+                                    prompt_tokens=int(pt or 0),
+                                    completion_tokens=int(ct or 0),
+                                    total_tokens=int(tt or 0),
+                                )
+                        except (TypeError, ValueError):
+                            pass
+        except Exception as e:
+            logger.exception("completions-stream 未預期錯誤")
+            persist_fail(str(e), "stream_error")
+            yield _sse_event_error(e)
+            return
+
+        full = "".join(parts)
+        rid_str = persist_ok(usage_out, finish_reason)
+        done_payload = {
+            "event": "done",
+            "content": full,
+            "model": resp_model or "",
+            "usage": usage_out.model_dump() if usage_out else None,
+            "finish_reason": finish_reason,
+            "llm_request_id": rid_str,
+        }
+        yield _sse_line(done_payload)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

@@ -1,10 +1,11 @@
-/** Agent 詳情頁：依 agent_id 選擇 Business/Customer/Default UI 並渲染 */
+/** Agent 詳情頁：依 agent_id 選擇 Business/Customer/Chat/Default UI 並渲染 */
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { getAgent } from '@/api/agents'
 import { ApiError } from '@/api/client'
 import type { Agent } from '@/types'
 import AgentBusinessUI from './agents/AgentBusinessUI'
+import AgentChatUI from './agents/AgentChatUI'
 import AgentCustomerUI from './agents/AgentCustomerUI'
 import AgentQuotationUI from './agents/AgentQuotationUI'
 import AgentSchedulingUI from './agents/AgentSchedulingUI'
@@ -12,6 +13,7 @@ import AgentDefaultUI from './agents/AgentDefaultUI'
 
 function getAgentUI(agent: Agent) {
   const id = agent.agent_id.toLowerCase()
+  if (id === 'chat') return AgentChatUI
   if (id.includes('business')) return AgentBusinessUI
   if (id.includes('customer')) return AgentCustomerUI
   if (id.includes('quotation')) return AgentQuotationUI

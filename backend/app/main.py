@@ -11,6 +11,7 @@ from litellm.llms.custom_httpx.aiohttp_handler import BaseLLMAIOHTTPHandler
 
 from app.api import router as api_router
 from app.core.config import settings
+from app.services.stored_files_store import get_stored_files_base_dir
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,6 +25,10 @@ async def lifespan(app: FastAPI):
         connector=aiohttp.TCPConnector(limit=300),
     )
     litellm.base_llm_aiohttp_handler = BaseLLMAIOHTTPHandler(client_session=session)
+    _sf = get_stored_files_base_dir()
+    logger.info("STORED_FILES 儲存根目錄（絕對路徑）: %s", _sf)
+    if _sf is not None:
+        _sf.mkdir(parents=True, exist_ok=True)
     yield
     await session.close()
 

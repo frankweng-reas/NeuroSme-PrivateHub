@@ -10,7 +10,7 @@
     {
       "id": "m1",
       "alias": "total_sales",
-      "label": "品牌銷售額",
+      "label": "品牌總銷售額",
       "formula": "SUM(col_11)",
       "filters": []
     }

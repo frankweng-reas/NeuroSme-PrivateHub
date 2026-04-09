@@ -2,15 +2,15 @@
   "version": "4.0",
   "dims": {
     "groups": [
-      "col_4"
+      "col_5"
     ]
   },
   "filters": [],
   "metrics": [
     {
       "id": "m1",
-      "alias": "brand_sales",
-      "label": "品牌銷售額",
+      "alias": "dairy_sales",
+      "label": "乳品銷售額",
       "formula": "SUM(col_11)",
       "filters": [
         {
@@ -22,17 +22,11 @@
     },
     {
       "id": "m2",
-      "alias": "total_dairy_sales",
-      "label": "乳品總銷售額",
+      "alias": "total_sales",
+      "label": "全部銷售總額",
       "formula": "SUM(col_11)",
       "group_override": [],
-      "filters": [
-        {
-          "col": "col_5",
-          "op": "eq",
-          "val": "乳品"
-        }
-      ]
+      "filters": []
     },
     {
       "id": "m3",

@@ -23,7 +23,7 @@
     },
     {
       "id": "m3",
-      "alias": "gross_margin_ratio",
+      "alias": "gross_margin_rate",
       "label": "毛利率",
       "formula": "(m1 - m2) / m1",
       "filters": []

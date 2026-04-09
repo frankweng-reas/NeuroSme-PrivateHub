@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import { createPortal } from 'react-dom'
 
 type ToastType = 'success' | 'error'
 
@@ -22,7 +23,7 @@ interface ToastContextValue {
 
 const ToastContext = createContext<ToastContextValue | null>(null)
 
-const DURATION_MS = 2500
+const DURATION_MS = 4000
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([])
@@ -36,25 +37,33 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     }, DURATION_MS)
   }, [])
 
+  const toastStack =
+    typeof document !== 'undefined'
+      ? createPortal(
+          <div
+            className="pointer-events-none fixed bottom-8 left-1/2 z-[10000] flex max-w-[min(100vw-1rem,36rem)] -translate-x-1/2 flex-col gap-2 px-2"
+            role="status"
+            aria-live="polite"
+          >
+            {toasts.map((t) => (
+              <div
+                key={t.id}
+                className={`pointer-events-auto rounded-lg px-4 py-2 text-center text-[18px] font-medium text-white shadow-lg ${
+                  t.type === 'error' ? 'bg-red-600' : 'bg-gray-800'
+                }`}
+              >
+                {t.message}
+              </div>
+            ))}
+          </div>,
+          document.body
+        )
+      : null
+
   return (
     <ToastContext.Provider value={{ showToast }}>
       {children}
-      <div
-        className="fixed bottom-8 left-1/2 z-[100] flex -translate-x-1/2 flex-col gap-2"
-        role="status"
-        aria-live="polite"
-      >
-        {toasts.map((t) => (
-          <div
-            key={t.id}
-            className={`rounded-lg px-4 py-2 text-[18px] font-medium text-white shadow-lg ${
-              t.type === 'error' ? 'bg-red-600' : 'bg-gray-800'
-            }`}
-          >
-            {t.message}
-          </div>
-        ))}
-      </div>
+      {toastStack}
     </ToastContext.Provider>
   )
 }

@@ -9,7 +9,7 @@
   "metrics": [
     {
       "id": "m1",
-      "alias": "average_daily_sales",
+      "alias": "average_sales",
       "label": "每日平均銷售額",
       "formula": "AVG(col_11)",
       "filters": [
@@ -17,8 +17,8 @@
           "col": "col_1",
           "op": "between",
           "val": [
-            "2026-03-23",
-            "2026-03-30"
+            "2026-03-31",
+            "2026-04-06"
           ]
         }
       ]

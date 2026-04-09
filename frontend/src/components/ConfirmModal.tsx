@@ -6,6 +6,8 @@ interface ConfirmModalProps {
   cancelText?: string
   confirmText: string
   variant?: 'danger' | 'primary'
+  /** 若 false，僅顯示確認鈕（點遮罩視同確認） */
+  showCancel?: boolean
   onConfirm: () => void
   onCancel: () => void
 }
@@ -17,6 +19,7 @@ export default function ConfirmModal({
   cancelText = '取消',
   confirmText,
   variant = 'danger',
+  showCancel = true,
   onConfirm,
   onCancel,
 }: ConfirmModalProps) {
@@ -28,10 +31,12 @@ export default function ConfirmModal({
       : 'rounded-2xl px-4 py-2 text-white hover:opacity-90'
   const confirmStyle = variant === 'primary' ? { backgroundColor: '#4b5563' } : undefined
 
+  const dismissOverlay = showCancel ? onCancel : onConfirm
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
-      onClick={onCancel}
+      onClick={dismissOverlay}
       role="dialog"
       aria-modal="true"
     >
@@ -43,13 +48,15 @@ export default function ConfirmModal({
         <h2 className="mb-4 font-semibold text-gray-800">{title}</h2>
         <p className="mb-6 text-gray-600">{message}</p>
         <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="rounded-2xl border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50"
-          >
-            {cancelText}
-          </button>
+          {showCancel ? (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="rounded-2xl border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50"
+            >
+              {cancelText}
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onConfirm}

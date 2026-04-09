@@ -1,6 +1,6 @@
 """API 路由彙總：掛載 users、agents、source_files、prompt_templates、qtn_projects、bi_projects 等 endpoint"""
 from fastapi import APIRouter
-from app.api.endpoints import users, agents, agent_catalog, chat, chat_dev, chat_compute_tool, source_files, prompt_templates, tenants, qtn_projects, qtn_sources, qtn_catalogs, companies, scheduling, bi_projects, bi_sources, bi_schemas, bi_sample_qa, llm_configs
+from app.api.endpoints import users, agents, agent_catalog, chat, chat_dev, chat_compute_tool, chat_threads, chat_insights, source_files, prompt_templates, tenants, qtn_projects, qtn_sources, qtn_catalogs, companies, scheduling, bi_projects, bi_sources, bi_schemas, bi_sample_qa, llm_configs
 
 router = APIRouter()
 router.include_router(users.router, prefix="/users", tags=["users"])
@@ -8,6 +8,8 @@ router.include_router(tenants.router, prefix="/tenants", tags=["tenants"])
 router.include_router(agent_catalog.router, prefix="/agent-catalog", tags=["agent-catalog"])
 router.include_router(agents.router, prefix="/agents", tags=["agents"])
 router.include_router(chat.router, prefix="/chat", tags=["chat"])
+router.include_router(chat_threads.router, prefix="/chat", tags=["chat-threads"])
+router.include_router(chat_insights.router, prefix="/chat/insights", tags=["chat-insights"])
 router.include_router(chat_dev.router, prefix="/chat/dev", tags=["chat-dev"])
 router.include_router(chat_compute_tool.router, prefix="/chat", tags=["chat-compute-tool"])
 router.include_router(source_files.router, prefix="/source-files", tags=["source-files"])

@@ -9,7 +9,7 @@
   "metrics": [
     {
       "id": "m1",
-      "alias": "unique_brands_count",
+      "alias": "unique_brands",
       "label": "不重複品牌數",
       "formula": "COUNT(DISTINCT col_4)",
       "filters": []

@@ -15,6 +15,7 @@ import AdminCompanies from './pages/admin/AdminCompanies'
 import AdminLLMSettings from './pages/admin/AdminLLMSettings'
 import AdminTenantSettings from './pages/admin/AdminTenantSettings'
 import AdminUsers from './pages/admin/AdminUsers'
+import AdminChatInsights from './pages/admin/AdminChatInsights'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import ChangePasswordPage from './pages/ChangePasswordPage'
@@ -69,6 +70,7 @@ function App() {
                 <Route path="companies" element={<AdminCompanies />} />
                 <Route path="tenant-settings" element={<SuperAdminRoute><AdminTenantSettings /></SuperAdminRoute>} />
                 <Route path="llm-settings" element={<AdminLLMSettings />} />
+                <Route path="chat-insights" element={<AdminChatInsights />} />
                 <Route path="users" element={<AdminUsers />} />
               </Route>
               <Route
