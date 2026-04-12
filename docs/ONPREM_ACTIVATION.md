@@ -57,11 +57,24 @@ REAS 業務／工程師                    客戶
 
 ### Step 3：交付安裝包
 
-提供客戶以下檔案：
+在 VM 上執行以下指令產生交付包：
 
-- `neurosme-1.x.x.tar`（NeuroSme 主系統 image）
-- `localauth-1.x.x.tar`（認證服務 image）
-- `docker-compose.onprem.yml`（啟動設定，所有客戶同一份）
+```bash
+bash ~/scripts/build-onprem.sh v1.0.0
+```
+
+產出：`~/release/neurosme-onprem-v1.0.0.tar.gz`
+
+壓縮包內容：
+
+- `images/neurosme-backend.tar.gz`（後端 image）
+- `images/neurosme-frontend.tar.gz`（前端 image）
+- `images/localauth.tar.gz`（認證服務 image）
+- `docker-compose.onprem.yml`（啟動設定）
+- `nginx.conf`（路由設定）
+- `QUICKSTART.md`（客戶快速啟動說明）
+
+將此壓縮檔透過 SCP、USB 或雲端硬碟傳送給客戶 IT。
 
 ---
 
@@ -69,10 +82,17 @@ REAS 業務／工程師                    客戶
 
 ### Step 4：安裝系統（一次性）
 
+**解壓縮：**
+```bash
+tar xzf neurosme-onprem-v1.0.0.tar.gz
+cd neurosme-onprem-v1.0.0
+```
+
 **載入 image：**
 ```bash
-docker load -i neurosme-1.x.x.tar
-docker load -i localauth-1.x.x.tar
+docker load < images/neurosme-backend.tar.gz
+docker load < images/neurosme-frontend.tar.gz
+docker load < images/localauth.tar.gz
 ```
 
 **啟動：**
@@ -85,7 +105,7 @@ docker compose -f docker-compose.onprem.yml up -d
 docker compose -f docker-compose.onprem.yml ps
 ```
 
-所有服務應顯示 `Up`。
+所有服務應顯示 `running`。
 
 ---
 
