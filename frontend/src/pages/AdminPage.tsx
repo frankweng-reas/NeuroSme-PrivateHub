@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { getMe } from '@/api/users'
 import type { User } from '@/types'
+import ActivationDialog from '@/components/ActivationDialog'
 
 const SIDEBAR_ITEMS = [
   { to: '/admin/agents', label: 'REAS-系統 Agents 設定', icon: LayoutGrid, superAdminOnly: true },
@@ -52,6 +53,7 @@ function writeSidebarCollapsed(v: boolean) {
 export default function AdminPage() {
   const [user, setUser] = useState<User | null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed)
+  const [showActivation, setShowActivation] = useState(false)
 
   useEffect(() => {
     getMe()
@@ -75,6 +77,15 @@ export default function AdminPage() {
   )
   return (
     <div className="flex h-full flex-col p-4">
+      {showActivation && (
+        <ActivationDialog
+          onActivated={() => {
+            setShowActivation(false)
+            window.location.reload()
+          }}
+          onClose={() => setShowActivation(false)}
+        />
+      )}
       {/* Header 容器 - 與既有風格一致 */}
       <header
         className="flex-shrink-0 rounded-lg border-b border-gray-200 px-6 py-4 shadow-sm"
@@ -135,6 +146,20 @@ export default function AdminPage() {
             <div
               className={`my-2 border-t border-white/20 ${sidebarCollapsed ? 'mx-2 w-8' : 'mx-4'}`}
             />
+            {/* 啟用授權：admin only（非 super_admin） */}
+            {user?.role === 'admin' && (
+              <button
+                type="button"
+                onClick={() => setShowActivation(true)}
+                title={sidebarCollapsed ? '啟用授權' : undefined}
+                className={`flex items-center text-white transition-colors hover:bg-white/10 ${
+                  sidebarCollapsed ? 'justify-center px-2 py-3' : 'gap-3 px-5 py-3'
+                }`}
+              >
+                <KeySquare className="h-5 w-5 flex-shrink-0" />
+                {!sidebarCollapsed && <span className="min-w-0">啟用授權</span>}
+              </button>
+            )}
             {visibleSecondaryItems.map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
