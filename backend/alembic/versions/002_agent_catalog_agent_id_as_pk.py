@@ -17,6 +17,16 @@ depends_on = None
 def upgrade() -> None:
     conn = op.get_bind()
 
+    # 001 已建立「僅 agent_id 為 PK、無 id 欄位」的 agent_catalog；此 revision 僅服務由舊版 schema 升級。
+    has_legacy_id = conn.execute(
+        sa.text(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'agent_catalog' AND column_name = 'id'"
+        )
+    ).first()
+    if has_legacy_id is None:
+        return
+
     # 1. Drop FK constraints that reference agent_catalog(agent_id)
     #    (they will be re-added after agent_id becomes the PK)
     conn.execute(sa.text(

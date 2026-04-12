@@ -11,6 +11,13 @@ from litellm.llms.custom_httpx.aiohttp_handler import BaseLLMAIOHTTPHandler
 
 from app.api import router as api_router
 from app.core.config import settings
+from app.core.database import SessionLocal
+from app.services.startup_seed import (
+    seed_agent_catalog,
+    seed_default_admin,
+    seed_default_tenant,
+    seed_tenant_agents,
+)
 from app.services.stored_files_store import get_stored_files_base_dir
 
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +36,19 @@ async def lifespan(app: FastAPI):
     logger.info("STORED_FILES 儲存根目錄（絕對路徑）: %s", _sf)
     if _sf is not None:
         _sf.mkdir(parents=True, exist_ok=True)
+
+    with SessionLocal() as db:
+        seed_agent_catalog(db)
+        seed_default_tenant(db)
+        seed_default_admin(db)
+        if settings.ONPREM_ENABLED_AGENTS.strip():
+            enabled = [
+                aid.strip()
+                for aid in settings.ONPREM_ENABLED_AGENTS.split(",")
+                if aid.strip()
+            ]
+            seed_tenant_agents(db, enabled)
+
     yield
     await session.close()
 

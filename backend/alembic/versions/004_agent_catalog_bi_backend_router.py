@@ -18,6 +18,17 @@ FRONTEND_KEY = "agent-bi"
 
 
 def upgrade() -> None:
+    # 001 initial schema 未含此二欄；舊庫若已存在則略過
+    op.execute(
+        sa.text(
+            "ALTER TABLE agent_catalog ADD COLUMN IF NOT EXISTS backend_router VARCHAR(255)"
+        )
+    )
+    op.execute(
+        sa.text(
+            "ALTER TABLE agent_catalog ADD COLUMN IF NOT EXISTS frontend_key VARCHAR(100)"
+        )
+    )
     # 以關鍵字對應商務/BI 型 agent；若環境 agent_id 不同，可手動 UPDATE 或於後台調整。
     op.execute(
         sa.text(

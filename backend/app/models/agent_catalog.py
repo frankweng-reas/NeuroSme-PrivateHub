@@ -12,3 +12,5 @@ class AgentCatalog(Base):
     group_name = Column(String(255), nullable=False)
     agent_name = Column(String(255), nullable=False)
     icon_name = Column(String(100), nullable=True)
+    backend_router = Column(String(255), nullable=True)
+    frontend_key = Column(String(100), nullable=True)

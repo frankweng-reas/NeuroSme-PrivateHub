@@ -1,0 +1,110 @@
+# NeuroSme On-Prem 完整部署
+#
+# 架構：
+#   nginx (port 80) → frontend / backend / localauth
+#   backend → neurosme-db (postgres)
+#   localauth → localauth-db (postgres)
+#
+# 客戶 IT 操作指南：
+#   啟動：  docker compose -f docker-compose.onprem.yml up -d
+#   升級：  docker compose -f docker-compose.onprem.yml pull
+#           docker compose -f docker-compose.onprem.yml up -d
+#   備份：  ./neurosme_data/  ./localauth_data/  兩個目錄定期備份即可
+#
+# ⚠ 禁止修改本檔案內的 secrets（已由 REAS 預先設定）
+
+services:
+
+  # ── 外層反向代理 ────────────────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - backend
+      - localauth
+
+  # ── 前端（React SPA） ────────────────────────────────────────
+  frontend:
+    image: ghcr.io/reas/neurosme-frontend:latest
+    restart: unless-stopped
+    # 不暴露 port 給外部；透過 nginx 路由
+
+  # ── NeuroSme 後端 ────────────────────────────────────────────
+  backend:
+    image: ghcr.io/reas/neurosme-backend:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://neurosme:a3f8e2c1d74b96054e1f2c3d4a5b6c7d@neurosme-db:5432/neurosme
+      JWT_SECRET: db0b7dde5c731381ba4aac77eb2640a9f74bf2efb20cdf9b3e51e9280b3faeb8
+      LLM_ENCRYPTION_KEY: bshN1sbIbaws0gJzDk6AsFtjSNSjo_5DzUfR_zFos68=
+      ACTIVATION_SECRET: b00874c6cef87073f86b1ef7b462ca0a65f5b78eda8e451a942b2e16c075b866
+      LOCALAUTH_ADMIN_URL: http://localauth:4000
+      LOCALAUTH_ADMIN_API_KEY: d21c4782231ea69c3223597d6d7df6d8210b0cae7c3c4e36ce11327d9aac7752
+      CORS_ORIGINS: '["http://localhost", "http://localhost:80"]'
+      EXPOSE_COMPUTE_ERROR_DETAIL: "false"
+      # 若要在不使用 Activation Code 的情況下預設開啟某些 agent：
+      # ONPREM_ENABLED_AGENTS: business,chat,quotation
+    volumes:
+      - ./neurosme_data/stored_files:/app/data/stored_files
+      - ./neurosme_data/duckdb:/app/data/duckdb
+    depends_on:
+      neurosme-db:
+        condition: service_healthy
+
+  # ── NeuroSme 資料庫 ──────────────────────────────────────────
+  neurosme-db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: neurosme
+      POSTGRES_PASSWORD: a3f8e2c1d74b96054e1f2c3d4a5b6c7d
+      POSTGRES_DB: neurosme
+    volumes:
+      - ./neurosme_data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U neurosme"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── LocalAuth（認證服務） ─────────────────────────────────────
+  localauth:
+    image: ghcr.io/reas/localauth:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://localauth:ccb7e57879127b441728934b2fa56dc3db1d40ceae05084c@localauth-db:5432/localauth
+      JWT_SECRET: db0b7dde5c731381ba4aac77eb2640a9f74bf2efb20cdf9b3e51e9280b3faeb8
+      JWT_ACCESS_EXPIRES_IN: 1h
+      JWT_REFRESH_EXPIRES_IN: 7d
+      BASE_URL: ""
+      PORT: 4000
+      DEPLOY_MODE: onprem
+      ADMIN_API_KEY: d21c4782231ea69c3223597d6d7df6d8210b0cae7c3c4e36ce11327d9aac7752
+      DEFAULT_ADMIN_EMAIL: admin@local.dev
+      DEFAULT_ADMIN_PASSWORD: Admin1234!
+      AD_ENABLED: false
+      EMAIL_PROVIDER: console
+    depends_on:
+      localauth-db:
+        condition: service_healthy
+
+  # ── LocalAuth 資料庫 ─────────────────────────────────────────
+  localauth-db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: localauth
+      POSTGRES_PASSWORD: ccb7e57879127b441728934b2fa56dc3db1d40ceae05084c
+      POSTGRES_DB: localauth
+    volumes:
+      - ./localauth_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U localauth"]
+      interval: 5s
+      timeout: 5s
+      retries: 5

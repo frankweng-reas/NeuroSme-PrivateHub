@@ -1,0 +1,214 @@
+/** REAS-Activate Code 產生器（super_admin 專用） */
+import { useEffect, useState } from 'react'
+import { Copy, Check } from 'lucide-react'
+import { listAgentCatalog } from '@/api/agentCatalog'
+import { generateActivationCode } from '@/api/activation'
+import { useToast } from '@/contexts/ToastContext'
+import type { AgentCatalog } from '@/types'
+
+export default function AdminActivateCode() {
+  const [agents, setAgents] = useState<AgentCatalog[]>([])
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [customerName, setCustomerName] = useState('')
+  const [expiresAt, setExpiresAt] = useState('')
+  const [generatedCode, setGeneratedCode] = useState('')
+  const [isLoading, setIsLoading] = useState(true)
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const { showToast } = useToast()
+
+  useEffect(() => {
+    listAgentCatalog()
+      .then(setAgents)
+      .catch(() => setAgents([]))
+      .finally(() => setIsLoading(false))
+  }, [])
+
+  function toggleAgent(agentId: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(agentId)) next.delete(agentId)
+      else next.add(agentId)
+      return next
+    })
+  }
+
+  function selectAll() {
+    setSelectedIds(new Set(agents.map((a) => a.agent_id)))
+  }
+
+  function deselectAll() {
+    setSelectedIds(new Set())
+  }
+
+  async function handleGenerate() {
+    if (!customerName.trim()) {
+      showToast('請輸入客戶名稱', 'error')
+      return
+    }
+    if (selectedIds.size === 0) {
+      showToast('請至少選擇一個 Agent', 'error')
+      return
+    }
+    setIsGenerating(true)
+    setGeneratedCode('')
+    try {
+      const res = await generateActivationCode({
+        customer_name: customerName.trim(),
+        agent_ids: Array.from(selectedIds),
+        expires_at: expiresAt || null,
+      })
+      setGeneratedCode(res.code)
+      showToast('Activation Code 已產生')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '產生失敗'
+      showToast(msg, 'error')
+    } finally {
+      setIsGenerating(false)
+    }
+  }
+
+  async function handleCopy() {
+    if (!generatedCode) return
+    try {
+      await navigator.clipboard.writeText(generatedCode)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      showToast('複製失敗，請手動選取複製', 'error')
+    }
+  }
+
+  // 依 group_name 分組
+  const groups = agents.reduce<Record<string, AgentCatalog[]>>((acc, agent) => {
+    const g = agent.group_name ?? '其他'
+    if (!acc[g]) acc[g] = []
+    acc[g].push(agent)
+    return acc
+  }, {})
+
+  return (
+    <div className="max-w-2xl">
+      <h2 className="mb-1 text-xl font-bold text-gray-800">REAS-Activate Code</h2>
+      <p className="mb-6 text-sm text-gray-500">產生客戶授權碼，指定可使用的 Agent 模組與到期日。</p>
+
+      {/* 客戶名稱 */}
+      <div className="mb-4">
+        <label className="mb-1 block text-sm font-medium text-gray-700">
+          客戶名稱 <span className="text-red-500">*</span>
+        </label>
+        <input
+          type="text"
+          value={customerName}
+          onChange={(e) => setCustomerName(e.target.value)}
+          placeholder="例：ACME 科技股份有限公司"
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-400"
+        />
+      </div>
+
+      {/* 到期日 */}
+      <div className="mb-5">
+        <label className="mb-1 block text-sm font-medium text-gray-700">
+          到期日 <span className="text-gray-400 font-normal">（留空 = 永不到期）</span>
+        </label>
+        <input
+          type="date"
+          value={expiresAt}
+          onChange={(e) => setExpiresAt(e.target.value)}
+          className="w-48 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-400"
+        />
+      </div>
+
+      {/* Agent 選擇 */}
+      <div className="mb-5">
+        <div className="mb-2 flex items-center justify-between">
+          <label className="text-sm font-medium text-gray-700">
+            授權 Agents <span className="text-red-500">*</span>
+            {selectedIds.size > 0 && (
+              <span className="ml-2 text-gray-400 font-normal">（已選 {selectedIds.size} 個）</span>
+            )}
+          </label>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={selectAll}
+              className="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
+            >
+              全選
+            </button>
+            <button
+              type="button"
+              onClick={deselectAll}
+              className="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
+            >
+              全取消
+            </button>
+          </div>
+        </div>
+
+        {isLoading ? (
+          <div className="flex items-center gap-2 py-4 text-sm text-gray-400">
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-transparent" />
+            載入中...
+          </div>
+        ) : (
+          <div className="space-y-4 rounded-lg border border-gray-200 bg-gray-50 p-3">
+            {Object.entries(groups).map(([groupName, groupAgents]) => (
+              <div key={groupName}>
+                <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-gray-400">{groupName}</p>
+                <div className="space-y-1">
+                  {groupAgents.map((agent) => (
+                    <label
+                      key={agent.agent_id}
+                      className="flex cursor-pointer items-center gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2 hover:bg-gray-50"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(agent.agent_id)}
+                        onChange={() => toggleAgent(agent.agent_id)}
+                        className="h-4 w-4 rounded border-gray-300 text-gray-600"
+                      />
+                      <span className="text-sm text-gray-800">{agent.agent_name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* 產生按鈕 */}
+      <button
+        type="button"
+        onClick={handleGenerate}
+        disabled={isGenerating}
+        className="rounded-lg px-5 py-2.5 font-medium text-white shadow-sm disabled:opacity-50"
+        style={{ backgroundColor: '#4b5563' }}
+      >
+        {isGenerating ? '產生中...' : '產生 Activation Code'}
+      </button>
+
+      {/* 產生結果 */}
+      {generatedCode && (
+        <div className="mt-6 rounded-lg border border-green-200 bg-green-50 p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-sm font-semibold text-green-800">Activation Code 已產生</p>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="flex items-center gap-1.5 rounded-lg border border-green-300 bg-white px-3 py-1.5 text-sm text-green-700 hover:bg-green-50"
+            >
+              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              {copied ? '已複製' : '複製'}
+            </button>
+          </div>
+          <div className="break-all rounded-md border border-green-200 bg-white px-3 py-2 font-mono text-xs text-gray-700 select-all">
+            {generatedCode}
+          </div>
+          <p className="mt-2 text-xs text-green-600">請將此 Code 傳送給客戶，客戶登入後在啟用對話框貼入即可。</p>
+        </div>
+      )}
+    </div>
+  )
+}

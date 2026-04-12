@@ -2,6 +2,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getAgents } from '@/api/agents'
+import { getActivationStatus } from '@/api/activation'
+import { getMe } from '@/api/users'
+import ActivationDialog from '@/components/ActivationDialog'
 import type { Agent } from '@/types'
 import AgentIcon from '@/components/AgentIcon'
 
@@ -9,12 +12,26 @@ export default function HomePage() {
   const navigate = useNavigate()
   const [agents, setAgents] = useState<Agent[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [showActivationDialog, setShowActivationDialog] = useState(false)
 
   useEffect(() => {
     getAgents(false)
       .then(setAgents)
       .catch(() => setAgents([]))
       .finally(() => setIsLoading(false))
+  }, [])
+
+  // 登入後檢查是否需要啟用（admin 且 tenant_agents 為空）
+  useEffect(() => {
+    getMe()
+      .then((me) => {
+        if (me.role === 'super_admin') return
+        if (me.role !== 'admin') return
+        return getActivationStatus().then((status) => {
+          if (!status.activated) setShowActivationDialog(true)
+        })
+      })
+      .catch(() => { /* 靜默忽略 */ })
   }, [])
 
   const groups = useMemo(() => {
@@ -39,6 +56,14 @@ export default function HomePage() {
 
   return (
     <div className="container mx-auto px-4 py-8">
+      {showActivationDialog && (
+        <ActivationDialog
+          onActivated={() => {
+            setShowActivationDialog(false)
+            window.location.reload()
+          }}
+        />
+      )}
       <div className="mx-auto max-w-7xl">
         {/* 標題和按鈕區域 */}
         <div className="mb-8 rounded-2xl border border-gray-200/80 bg-white px-8 py-6 shadow-md ring-1 ring-gray-200/50">

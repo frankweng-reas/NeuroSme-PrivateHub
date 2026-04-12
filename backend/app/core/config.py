@@ -61,6 +61,17 @@ class Settings(BaseSettings):
     LOCALAUTH_ADMIN_URL: str = "http://localhost:4000"
     LOCALAUTH_ADMIN_API_KEY: str = ""
 
+    # On-prem 授權 agents（逗號分隔的 agent_id 清單）
+    # 設定後，系統啟動時會自動將這些 agent 同步進所有 tenant 的 tenant_agents。
+    # SaaS 環境留空，由後台手動管理 tenant_agents。
+    # 範例：ONPREM_ENABLED_AGENTS=business,chat,quotation
+    ONPREM_ENABLED_AGENTS: str = ""
+
+    # Activation Code 簽名用 secret（HMAC-SHA256）
+    # 產生方式：python -c "import secrets; print(secrets.token_hex(32))"
+    # 此值需 bake 在 image 裡，不對外公開。
+    ACTIVATION_SECRET: str = "change-me-in-production"
+
     # CORS
     CORS_ORIGINS: List[str] = [
         "http://localhost:3000",
