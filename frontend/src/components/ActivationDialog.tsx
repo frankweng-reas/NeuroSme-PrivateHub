@@ -1,15 +1,16 @@
-/** 系統啟用對話框：admin 首次登入且 tenant_agents 為空時顯示 */
+/** 系統啟用對話框：admin 首次登入且 tenant_agents 為空時顯示，或手動重新啟用 */
 import { useState } from 'react'
-import { KeyRound } from 'lucide-react'
+import { KeyRound, X } from 'lucide-react'
 import { redeemActivationCode } from '@/api/activation'
 import { useToast } from '@/contexts/ToastContext'
 import { ApiError } from '@/api/client'
 
 interface Props {
   onActivated: () => void
+  onClose?: () => void
 }
 
-export default function ActivationDialog({ onActivated }: Props) {
+export default function ActivationDialog({ onActivated, onClose }: Props) {
   const [code, setCode] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const { showToast } = useToast()
@@ -39,14 +40,25 @@ export default function ActivationDialog({ onActivated }: Props) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
       <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-8 shadow-xl">
-        <div className="mb-5 flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-100">
-            <KeyRound className="h-5 w-5 text-gray-600" />
+        <div className="mb-5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-100">
+              <KeyRound className="h-5 w-5 text-gray-600" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-gray-800">系統啟用</h2>
+              <p className="text-sm text-gray-500">請輸入您的 Activation Code 以啟用功能模組</p>
+            </div>
           </div>
-          <div>
-            <h2 className="text-lg font-bold text-gray-800">系統啟用</h2>
-            <p className="text-sm text-gray-500">請輸入您的 Activation Code 以啟用功能模組</p>
-          </div>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
