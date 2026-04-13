@@ -2,7 +2,7 @@
  * 【僅供 LLM 使用】此元件只負責選擇送給 Chat / LiteLLM 的 model 字串（來源：/llm-configs/model-options）。
  * 請勿用於 Schema、公司、專案、角色等非 LLM model 的下拉選單；那些請用一般 <select> 或專用元件。
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { getLLMModelOptions, type LLMModelOption } from '@/api/llmConfigs'
 import { ApiError } from '@/api/client'
 
@@ -49,6 +49,10 @@ export default function LLMModelSelect({
 }: LLMModelSelectProps) {
   const [loadState, setLoadState] = useState<LoadState>({ kind: 'idle' })
 
+  // 用 ref 持有最新的 onChange，讓自動切換 effect 不需把 onChange 加進依賴
+  const onChangeRef = useRef(onChange)
+  useLayoutEffect(() => { onChangeRef.current = onChange }, [onChange])
+
   useEffect(() => {
     if (optionsOverride != null) {
       setLoadState({ kind: 'ok', options: optionsOverride })
@@ -79,6 +83,17 @@ export default function LLMModelSelect({
     loadState.kind === 'ok' &&
     (optionsOverride != null ? optionsOverride.length === 0 : loadState.options.length === 0)
 
+  // 選項載入成功後，若目前 value 已不在有效清單（例如 provider 已停用），自動切換至第一個可用模型
+  useEffect(() => {
+    if (loadState.kind !== 'ok') return
+    if (hasNoModels) return
+    if (!value) return
+    const valid = loadState.options
+    if (!valid.some((o) => o.value === value)) {
+      onChangeRef.current(valid[0]?.value ?? '')
+    }
+  }, [loadState, value, hasNoModels])
+
   const displayOptions = useMemo(() => {
     if (loadState.kind === 'ok' && hasNoModels) {
       return [{ value: NO_MODELS_PLACEHOLDER_VALUE, label: NO_MODELS_PLACEHOLDER_LABEL }]
@@ -86,7 +101,8 @@ export default function LLMModelSelect({
     let base: LLMModelOption[] = []
     if (loadState.kind === 'ok') base = loadState.options
     const opts = [...base]
-    if (value && !opts.some((o) => o.value === value)) {
+    // loading / idle 時保留舊值顯示（避免閃爍）；ok 時不加無效項目，由上方 effect 自動切換
+    if (loadState.kind !== 'ok' && value && !opts.some((o) => o.value === value)) {
       opts.unshift({ value, label: value })
     }
     return opts

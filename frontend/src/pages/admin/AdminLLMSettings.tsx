@@ -19,12 +19,14 @@ const PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
   gemini: 'Google Gemini',
   twcc: '台智雲 TWCC',
+  local: '本機模型 (Local)',
 }
 
 const PROVIDER_COLORS: Record<string, string> = {
   openai: 'bg-green-100 text-green-800',
   gemini: 'bg-blue-100 text-blue-800',
   twcc: 'bg-orange-100 text-orange-800',
+  local: 'bg-purple-100 text-purple-800',
 }
 
 interface FormState {
@@ -63,6 +65,9 @@ export default function AdminLLMSettings() {
 
   // 展開/收合各筆設定
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set())
+
+  // 啟用/停用切換中
+  const [togglingIds, setTogglingIds] = useState<Set<number>>(new Set())
 
   // 刪除確認
   const [deleteTarget, setDeleteTarget] = useState<number | null>(null)
@@ -150,7 +155,7 @@ export default function AdminLLMSettings() {
           api_base_url: form.api_base_url || null,
           default_model: form.default_model || null,
           available_models: availableModels.length > 0 ? availableModels : null,
-          is_active: true,
+          is_active: form.is_active,
         }
         if (form.api_key.trim()) {
           body.api_key = form.api_key.trim()
@@ -213,6 +218,24 @@ export default function AdminLLMSettings() {
     }
   }
 
+  async function handleToggleActive(cfg: LLMProviderConfig) {
+    setTogglingIds((prev) => new Set([...prev, cfg.id]))
+    try {
+      await updateLLMConfig(cfg.id, { is_active: !cfg.is_active })
+      showToast(cfg.is_active ? '已停用' : '已啟用', 'success')
+      load()
+    } catch (err) {
+      const msg = err instanceof ApiError ? (err.detail ?? err.message) : '操作失敗'
+      showToast(msg, 'error')
+    } finally {
+      setTogglingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(cfg.id)
+        return next
+      })
+    }
+  }
+
   const defaultModelsForProvider = providerOptions[form.provider] ?? []
 
   return (
@@ -265,17 +288,18 @@ export default function AdminLLMSettings() {
             <div className="rounded-lg border-2 border-dashed border-gray-200 py-12 text-center text-gray-400 text-lg">
               <KeyRound className="mx-auto h-10 w-10 mb-3 opacity-30" />
               <p>尚無 LLM 設定</p>
-              <p className="text-lg mt-1">點擊「新增設定」加入 OpenAI / Gemini / 台智雲的 API Key</p>
+              <p className="text-lg mt-1">點擊「新增設定」加入 OpenAI / Gemini / 台智雲 / 本機模型的 API Key</p>
             </div>
           )}
 
           {configs.map((cfg) => {
             const isExpanded = expandedIds.has(cfg.id)
+            const isToggling = togglingIds.has(cfg.id)
             const colorClass = PROVIDER_COLORS[cfg.provider] ?? 'bg-gray-100 text-gray-800'
             return (
               <div
                 key={cfg.id}
-                className="rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden"
+                className={`rounded-lg border bg-white shadow-sm overflow-hidden transition-opacity ${cfg.is_active ? 'border-gray-200' : 'border-gray-200 opacity-60'}`}
               >
                 {/* 主列 */}
                 <div className="flex items-center justify-between px-5 py-4">
@@ -286,6 +310,11 @@ export default function AdminLLMSettings() {
                     <span className="font-medium text-gray-800 truncate text-lg">
                       {cfg.label || `${PROVIDER_LABELS[cfg.provider] ?? cfg.provider} 設定`}
                     </span>
+                    {!cfg.is_active && (
+                      <span className="shrink-0 rounded-full bg-gray-200 px-2.5 py-0.5 text-lg font-medium text-gray-500">
+                        停用中
+                      </span>
+                    )}
                     {cfg.api_key_masked && (
                       <span className="shrink-0 rounded bg-gray-50 border border-gray-200 px-2 py-0.5 font-mono text-lg text-gray-500">
                         {cfg.api_key_masked}
@@ -293,6 +322,22 @@ export default function AdminLLMSettings() {
                     )}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => void handleToggleActive(cfg)}
+                      disabled={isToggling}
+                      className={`flex items-center gap-1 rounded px-2 py-1.5 text-lg font-medium transition-colors disabled:opacity-50 ${
+                        cfg.is_active
+                          ? 'text-gray-500 hover:text-orange-600 hover:bg-orange-50'
+                          : 'text-gray-500 hover:text-green-600 hover:bg-green-50'
+                      }`}
+                      title={cfg.is_active ? '停用此設定' : '啟用此設定'}
+                    >
+                      {isToggling ? (
+                        <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                      ) : (
+                        <span className="text-lg leading-none">{cfg.is_active ? '停用' : '啟用'}</span>
+                      )}
+                    </button>
                     <button
                       onClick={() => handleTest(cfg.id)}
                       disabled={testingId === cfg.id}
@@ -409,6 +454,7 @@ export default function AdminLLMSettings() {
                   <option value="openai">OpenAI</option>
                   <option value="gemini">Google Gemini</option>
                   <option value="twcc">台智雲 TWCC</option>
+                  <option value="local">本機模型 (Local / Ollama / LM Studio)</option>
                 </select>
               </Field>
 
@@ -424,7 +470,9 @@ export default function AdminLLMSettings() {
               </Field>
 
               {/* API Key */}
-              <Field label={editingId !== null ? 'API Key（留空表示不變更）' : 'API Key'}>
+              <Field label={editingId !== null ? 'API Key（留空表示不變更）' : 'API Key'}
+                hint={form.provider === 'local' ? '本機服務通常不需要 API Key，可留空或填任意字串（如 local）' : undefined}
+              >
                 <div className="relative">
                   <input
                     type={showApiKey ? 'text' : 'password'}
@@ -447,11 +495,13 @@ export default function AdminLLMSettings() {
               {/* API Base URL */}
               <Field
                 label="API Base URL"
-                required={form.provider === 'twcc'}
+                required={form.provider === 'twcc' || form.provider === 'local'}
                 hint={
                   form.provider === 'twcc'
                     ? '台智雲必填，例：https://api-ams.twcc.ai/api/models/conversation'
-                    : '選填，用於 Azure OpenAI 或 OpenAI-compatible Proxy'
+                    : form.provider === 'local'
+                      ? '本機服務必填，例：http://localhost:11434（Ollama）或 http://localhost:1234（LM Studio）'
+                      : '選填，用於 Azure OpenAI 或 OpenAI-compatible Proxy'
                 }
               >
                 <input
@@ -459,7 +509,9 @@ export default function AdminLLMSettings() {
                   placeholder={
                     form.provider === 'twcc'
                       ? 'https://api-ams.twcc.ai/api/models/conversation'
-                      : 'https://your-proxy.example.com/v1'
+                      : form.provider === 'local'
+                        ? 'http://localhost:11434'
+                        : 'https://your-proxy.example.com/v1'
                   }
                   value={form.api_base_url}
                   onChange={(e) => setForm((f) => ({ ...f, api_base_url: e.target.value }))}
@@ -519,7 +571,22 @@ export default function AdminLLMSettings() {
                 )}
               </Field>
 
-              {/* Is Active - always true, hidden from UI */}
+              {/* Is Active */}
+              <Field label="狀態">
+                <label className="flex cursor-pointer items-center gap-3">
+                  <div
+                    onClick={() => setForm((f) => ({ ...f, is_active: !f.is_active }))}
+                    className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${form.is_active ? 'bg-green-500' : 'bg-gray-300'}`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${form.is_active ? 'translate-x-6' : 'translate-x-1'}`}
+                    />
+                  </div>
+                  <span className={`text-lg font-medium ${form.is_active ? 'text-green-700' : 'text-gray-400'}`}>
+                    {form.is_active ? '啟用中' : '停用中'}
+                  </span>
+                </label>
+              </Field>
             </div>
 
             {/* Footer */}

@@ -78,6 +78,13 @@ class ChatMessageAttachmentItem(BaseModel):
     content_type: str | None = None
 
 
+class ChatMessageLlmMeta(BaseModel):
+    model: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+
+
 class ChatMessageResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -93,6 +100,7 @@ class ChatMessageResponse(BaseModel):
         None,
         description="user：非 None 表示錨定集合；None 表示沿用上一錨點",
     )
+    llm_meta: ChatMessageLlmMeta | None = None
 
 
 class ChatMessagePatch(BaseModel):
@@ -144,6 +152,16 @@ def _message_to_response(msg: ChatMessage) -> ChatMessageResponse:
                 content_type=sf.content_type,
             )
         )
+    llm_meta: ChatMessageLlmMeta | None = None
+    if msg.llm_request is not None:
+        r = msg.llm_request
+        if r.model or r.prompt_tokens is not None or r.completion_tokens is not None:
+            llm_meta = ChatMessageLlmMeta(
+                model=r.model or None,
+                prompt_tokens=r.prompt_tokens,
+                completion_tokens=r.completion_tokens,
+                total_tokens=r.total_tokens,
+            )
     return ChatMessageResponse(
         id=msg.id,
         thread_id=msg.thread_id,
@@ -154,6 +172,7 @@ def _message_to_response(msg: ChatMessage) -> ChatMessageResponse:
         created_at=msg.created_at,
         attachments=atts,
         context_file_ids=_parse_context_file_ids_column(msg),
+        llm_meta=llm_meta,
     )
 
 
@@ -269,6 +288,7 @@ def list_chat_messages(
         db.query(ChatMessage)
         .options(
             joinedload(ChatMessage.attachments).joinedload(ChatMessageAttachment.file),
+            joinedload(ChatMessage.llm_request),
         )
         .filter(ChatMessage.thread_id == thread_id)
         .order_by(ChatMessage.sequence.asc(), ChatMessage.created_at.asc())

@@ -249,11 +249,27 @@ function mapApiMessagesToNs(rows: ChatMessageItem[]): NsChatMessage[] {
           content = `${content}\n\n（附件：${nonImg.map((a) => a.original_filename).join('、')}）`
         }
       }
+      const meta =
+        r.role === 'assistant' && r.llm_meta?.model
+          ? {
+              model: r.llm_meta.model ?? '',
+              usage:
+                r.llm_meta.prompt_tokens != null
+                  ? {
+                      prompt_tokens: r.llm_meta.prompt_tokens ?? 0,
+                      completion_tokens: r.llm_meta.completion_tokens ?? 0,
+                      total_tokens: r.llm_meta.total_tokens ?? 0,
+                    }
+                  : null,
+              finish_reason: null,
+            }
+          : undefined
       return {
         id: r.id,
         role: r.role as 'user' | 'assistant',
         content,
         attachments: att.length > 0 ? att : undefined,
+        meta,
       }
     })
 }
@@ -818,11 +834,12 @@ export default function AgentChatUI({ agent }: AgentChatUIProps) {
             setMessages(
               mapApiMessagesToNs(finalRows).map((m, i, arr) => {
                 if (m.role !== 'assistant' || i !== arr.length - 1) return m
+                // 串流即時值包含 finish_reason，優先用；DB 值作備援
                 return {
                   ...m,
                   meta: {
-                    model: done.model ?? '',
-                    usage: done.usage,
+                    model: done.model ?? m.meta?.model ?? '',
+                    usage: done.usage ?? m.meta?.usage ?? null,
                     finish_reason: done.finish_reason ?? null,
                   },
                 }

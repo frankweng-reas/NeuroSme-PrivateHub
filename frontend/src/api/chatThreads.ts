@@ -32,6 +32,13 @@ export interface ChatMessageItem {
   attachments?: ChatMessageAttachmentMeta[]
   /** 非 null：該則 user 錨定附件集合；null：沿用上一錨點 */
   context_file_ids?: string[] | null
+  /** assistant 訊息的 LLM 觀測資訊（model + tokens） */
+  llm_meta?: {
+    model?: string | null
+    prompt_tokens?: number | null
+    completion_tokens?: number | null
+    total_tokens?: number | null
+  } | null
 }
 
 export interface ThreadFileItem {

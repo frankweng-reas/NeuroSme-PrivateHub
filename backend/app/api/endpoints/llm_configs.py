@@ -31,6 +31,11 @@ PROVIDER_DEFAULT_MODELS: dict[str, list[str]] = {
         "gemini/gemini-pro",
     ],
     "twcc": ["twcc/Llama3.3-FFM-70B-32K"],
+    "local": [
+        "local/gemma3:4b",
+        "local/llama3.2:latest",
+        "local/mistral:latest",
+    ],
 }
 
 _TWCC_OPTION_LABELS: dict[str, str] = {
@@ -42,6 +47,8 @@ def _model_display_label(model: str) -> str:
     m = (model or "").strip()
     if not m:
         return m
+    if m.startswith("local/"):
+        return m[len("local/"):]
     if m.startswith("gemini/gemini-"):
         return m[len("gemini/") :]
     if m.startswith("gemini/"):

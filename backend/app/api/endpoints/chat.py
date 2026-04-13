@@ -87,6 +87,11 @@ def _get_llm_params(model: str, db=None, tenant_id: str | None = None) -> tuple[
         db_key, db_base = _db_key("twcc")
         litellm_model = f"openai/{model[5:]}"
         return litellm_model, db_key or None, db_base or None
+    if model.startswith("local/"):
+        db_key, db_base = _db_key("local")
+        litellm_model = f"openai/{model[6:]}"
+        # 本機服務（Ollama / LM Studio / vLLM）通常不需要真實 key；用 "local" 作 placeholder
+        return litellm_model, db_key or "local", db_base or None
     db_key, _ = _db_key("openai")
     return model, db_key or None, None
 
@@ -455,6 +460,8 @@ def _get_provider_name(model: str) -> str:
         return "Gemini"
     if model.startswith("twcc/"):
         return "台智雲"
+    if model.startswith("local/"):
+        return "本機模型"
     return "OpenAI"
 
 
@@ -1043,6 +1050,8 @@ async def chat_completions_stream(
                     "timeout": stream_timeout,
                     "temperature": 0,
                     "stream": True,
+                    # 讓 LiteLLM 在串流結束後補送含 usage 的空 chunk（OpenAI / Gemini 皆適用）
+                    "stream_options": {"include_usage": True},
                 }
                 if prepared.api_base:
                     base = prepared.api_base.rstrip("/")
