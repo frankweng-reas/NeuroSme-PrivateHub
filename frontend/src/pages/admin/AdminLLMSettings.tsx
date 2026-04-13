@@ -150,7 +150,7 @@ export default function AdminLLMSettings() {
           api_base_url: form.api_base_url || null,
           default_model: form.default_model || null,
           available_models: availableModels.length > 0 ? availableModels : null,
-          is_active: form.is_active,
+          is_active: true,
         }
         if (form.api_key.trim()) {
           body.api_key = form.api_key.trim()
@@ -165,7 +165,7 @@ export default function AdminLLMSettings() {
           api_base_url: form.api_base_url || null,
           default_model: form.default_model || null,
           available_models: availableModels.length > 0 ? availableModels : null,
-          is_active: form.is_active,
+          is_active: true,
         }
         await createLLMConfig(body)
         showToast('LLM 設定已新增', 'success')
@@ -286,11 +286,6 @@ export default function AdminLLMSettings() {
                     <span className="font-medium text-gray-800 truncate text-lg">
                       {cfg.label || `${PROVIDER_LABELS[cfg.provider] ?? cfg.provider} 設定`}
                     </span>
-                    {!cfg.is_active && (
-                      <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-lg text-gray-500">
-                        停用
-                      </span>
-                    )}
                     {cfg.api_key_masked && (
                       <span className="shrink-0 rounded bg-gray-50 border border-gray-200 px-2 py-0.5 font-mono text-lg text-gray-500">
                         {cfg.api_key_masked}
@@ -524,19 +519,7 @@ export default function AdminLLMSettings() {
                 )}
               </Field>
 
-              {/* Is Active */}
-              <div className="flex items-center gap-3">
-                <input
-                  type="checkbox"
-                  id="is_active"
-                  checked={form.is_active}
-                  onChange={(e) => setForm((f) => ({ ...f, is_active: e.target.checked }))}
-                  className="h-4 w-4 rounded border-gray-300 text-gray-700"
-                />
-                <label htmlFor="is_active" className="text-lg text-gray-700">
-                  啟用此設定（停用後 chat 將 fallback 至環境變數）
-                </label>
-              </div>
+              {/* Is Active - always true, hidden from UI */}
             </div>
 
             {/* Footer */}
