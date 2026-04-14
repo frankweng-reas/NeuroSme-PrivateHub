@@ -16,6 +16,7 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5173,
+      allowedHosts: ['ee.neurosme.ai'],
       headers: {
         "Cache-Control": "no-cache",
       },
