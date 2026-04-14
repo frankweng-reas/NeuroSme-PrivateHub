@@ -46,6 +46,8 @@ services:
       LOCALAUTH_ADMIN_URL: http://localauth:4000
       LOCALAUTH_ADMIN_API_KEY: d21c4782231ea69c3223597d6d7df6d8210b0cae7c3c4e36ce11327d9aac7752
       CORS_ORIGINS: '["http://localhost", "http://localhost:80"]'
+      # 若客戶從其他網域嵌入 API，請將該網域加入此清單
+      # 例："http://localhost", "http://localhost:80", "https://erp.acme.com"
       EXPOSE_COMPUTE_ERROR_DETAIL: "false"
       # 若要在不使用 Activation Code 的情況下預設開啟某些 agent：
       # ONPREM_ENABLED_AGENTS: business,chat,quotation
