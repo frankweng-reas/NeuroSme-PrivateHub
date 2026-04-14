@@ -7,8 +7,7 @@
 #
 # 客戶 IT 操作指南：
 #   啟動：  docker compose -f docker-compose.onprem.yml up -d
-#   升級：  docker compose -f docker-compose.onprem.yml pull
-#           docker compose -f docker-compose.onprem.yml up -d
+#   升級：  （步驟與首次安裝相同，詳見 QUICKSTART.md）
 #   備份：  ./neurosme_data/  ./localauth_data/  兩個目錄定期備份即可
 #
 # ⚠ 禁止修改本檔案內的 secrets（已由 REAS 預先設定）
