@@ -1,11 +1,10 @@
 /** 管理頁面：admin 專用，含 sidebar 導航（可折疊） */
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
 import {
   ArrowLeft,
   BarChart3,
   Building2,
-  Building,
   ChevronsLeft,
   ChevronsRight,
   KeyRound,
@@ -25,9 +24,14 @@ const SIDEBAR_ITEMS = [
   { to: '/admin/chat-insights', label: 'Chat 用量洞察', icon: BarChart3, superAdminOnly: false },
 ] as const
 
-const SIDEBAR_ITEMS_SECONDARY = [
+const SIDEBAR_ITEMS_SECONDARY: Array<{
+  to: string
+  label: string
+  icon: React.ComponentType<{ className?: string }>
+  superAdminOnly: boolean
+}> = [
   // { to: '/admin/companies', label: '公司資訊', icon: Building, superAdminOnly: false },
-] as const
+]
 
 const SIDEBAR_COLLAPSED_KEY = 'neurosme-admin-sidebar-collapsed'
 
