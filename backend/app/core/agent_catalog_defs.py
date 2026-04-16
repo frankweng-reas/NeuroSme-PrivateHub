@@ -118,4 +118,14 @@ BUILTIN_AGENTS: list[AgentDef] = [
         "backend_router": None,
         "frontend_key": None,
     },
+    {
+        "group_id": "knowledge",
+        "group_name": "知識管理",
+        "agent_id": "knowledge",
+        "agent_name": "AI 知識庫",
+        "icon_name": "BookOpen",
+        "sort_id": "12",
+        "backend_router": None,
+        "frontend_key": "agent-knowledge",
+    },
 ]

@@ -7,6 +7,7 @@ import type { Agent } from '@/types'
 import AgentBusinessUI from './agents/AgentBusinessUI'
 import AgentChatUI from './agents/AgentChatUI'
 import AgentCustomerUI from './agents/AgentCustomerUI'
+import AgentKmUI from './agents/AgentKmUI'
 import AgentQuotationUI from './agents/AgentQuotationUI'
 import AgentSchedulingUI from './agents/AgentSchedulingUI'
 import AgentDefaultUI from './agents/AgentDefaultUI'
@@ -14,6 +15,7 @@ import AgentDefaultUI from './agents/AgentDefaultUI'
 function getAgentUI(agent: Agent) {
   const id = agent.agent_id.toLowerCase()
   if (id === 'chat') return AgentChatUI
+  if (id.includes('knowledge')) return AgentKmUI
   if (id.includes('business')) return AgentBusinessUI
   if (id.includes('customer')) return AgentCustomerUI
   if (id.includes('quotation')) return AgentQuotationUI

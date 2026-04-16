@@ -195,7 +195,20 @@ def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> Ch
     thread_uuid = _parse_optional_chat_thread_id(db, current, tenant_id, aid, req.chat_thread_id)
 
     pt = (req.prompt_type or "").strip()
-    data = _get_selected_source_files_content(db, current.id, tenant_id, aid)
+
+    # KM Agent：RAG 向量檢索，不使用 source_files
+    if aid == "knowledge":
+        from app.services.km_service import format_km_context, km_retrieve_sync
+
+        chunks = km_retrieve_sync(req.content, db, tenant_id, current.id)
+        data = format_km_context(chunks)
+        if chunks:
+            logger.info("KM RAG: retrieved %d chunks for query", len(chunks))
+        else:
+            logger.info("KM RAG: no relevant chunks found (tenant=%r, user=%s)", tenant_id, current.id)
+    else:
+        data = _get_selected_source_files_content(db, current.id, tenant_id, aid)
+
     client_ref = (req.data or "").strip()
     if client_ref:
         base = (data or "").strip()
@@ -215,7 +228,7 @@ def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> Ch
             detail=f"參考資料超過 {max_chars:,} 字元（目前約 {data_len:,} 字元），請減少選用的來源檔案後再試。",
         )
 
-    if data_len == 0:
+    if data_len == 0 and aid != "knowledge":
         logger.warning(
             "chat_completions: 無參考資料 (agent_id=%r, tenant_id=%r, aid=%r, user_id=%s) - 請在該 agent 頁面左欄上傳並勾選來源檔案",
             req.agent_id,
@@ -223,7 +236,7 @@ def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> Ch
             aid,
             current.id,
         )
-    else:
+    elif data_len > 0:
         logger.info("chat_completions: 已載入參考資料 %d 字元", data_len)
 
     model = (req.model or "").strip() or "gpt-4o-mini"

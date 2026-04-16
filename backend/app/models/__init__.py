@@ -21,6 +21,8 @@ from app.models.stored_file import StoredFile
 from app.models.chat_message_attachment import ChatMessageAttachment
 from app.models.notebook_source import NotebookSource
 from app.models.activation_code import ActivationCode
+from app.models.km_document import KmDocument
+from app.models.km_chunk import KmChunk
 
 __all__ = [
     "Base", "Tenant", "User", "AgentCatalog", "TenantAgent", "UserAgent",
@@ -29,4 +31,5 @@ __all__ = [
     "ChatThread", "ChatMessage", "ChatLlmRequest",
     "Notebook", "StoredFile", "ChatMessageAttachment", "NotebookSource",
     "ActivationCode",
+    "KmDocument", "KmChunk",
 ]
