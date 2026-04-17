@@ -24,6 +24,7 @@ import {
   createKnowledgeBase,
   deleteKnowledgeBase,
   deleteKmDocument,
+  generateWidgetToken,
   listKbDocuments,
   listKnowledgeBases,
   updateKnowledgeBase,
@@ -106,11 +107,15 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
   // 刪除 KB
   const [deleteKbTarget, setDeleteKbTarget] = useState<KmKnowledgeBase | null>(null)
 
-  // KB 設定 Modal（model + system_prompt）
+  // KB 設定 Modal（model + system_prompt + widget）
   const [settingsKb, setSettingsKb] = useState<KmKnowledgeBase | null>(null)
   const [settingsModel, setSettingsModel] = useState('')
   const [settingsPrompt, setSettingsPrompt] = useState('')
+  const [settingsWidgetTitle, setSettingsWidgetTitle] = useState('')
+  const [settingsWidgetColor, setSettingsWidgetColor] = useState('#1A3A52')
+  const [settingsWidgetLang, setSettingsWidgetLang] = useState('zh-TW')
   const [settingsSaving, setSettingsSaving] = useState(false)
+  const [tokenGenerating, setTokenGenerating] = useState(false)
 
   const loadKbs = useCallback(() => {
     setKbsLoading(true)
@@ -187,14 +192,32 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
       const updated = await updateKnowledgeBase(settingsKb.id, {
         model_name: settingsModel,
         system_prompt: settingsPrompt,
+        widget_title: settingsWidgetTitle,
+        widget_color: settingsWidgetColor,
+        widget_lang: settingsWidgetLang,
       })
       setKbs((prev) => prev.map((kb) => kb.id === updated.id ? updated : kb))
-      setSettingsKb(null)
+      setSettingsKb(updated)
     } catch (err) {
       const msg = err instanceof Error ? err.message : '儲存失敗'
       setErrorModal({ title: '儲存設定失敗', message: msg })
     } finally {
       setSettingsSaving(false)
+    }
+  }
+
+  const handleGenerateToken = async () => {
+    if (!settingsKb) return
+    setTokenGenerating(true)
+    try {
+      const updated = await generateWidgetToken(settingsKb.id)
+      setKbs((prev) => prev.map((kb) => kb.id === updated.id ? updated : kb))
+      setSettingsKb(updated)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '產生失敗'
+      setErrorModal({ title: '產生 Token 失敗', message: msg })
+    } finally {
+      setTokenGenerating(false)
     }
   }
 
@@ -477,7 +500,7 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
           onMouseDown={(e) => { if (e.target === e.currentTarget) setSettingsKb(null) }}
         >
           <div
-            className="flex w-full max-w-md flex-col rounded-xl border border-gray-200 bg-white shadow-xl"
+            className="flex w-full max-w-md flex-col rounded-xl border border-gray-200 bg-white shadow-xl max-h-[90vh]"
             role="dialog"
             aria-labelledby="kb-settings-title"
             aria-modal="true"
@@ -495,7 +518,7 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="space-y-4 px-5 py-4">
+            <div className="space-y-4 overflow-y-auto px-5 py-4">
               {/* Model 選擇 */}
               <div>
                 <label className="mb-1.5 block text-base font-medium text-gray-700">LLM 模型</label>
@@ -523,6 +546,103 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
                   placeholder="你是 XX 公司的客服助手，請根據知識庫文件回答問題…"
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base text-gray-800 placeholder-gray-300 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
                 />
+              </div>
+              {/* ── Widget 設定 ── */}
+              <div className="border-t border-gray-100 pt-4">
+                <p className="mb-3 text-base font-semibold text-gray-700">Widget 設定</p>
+                <div className="mb-3">
+                  <label className="mb-1 block text-base font-medium text-gray-700">顯示名稱</label>
+                  <input
+                    type="text"
+                    value={settingsWidgetTitle}
+                    onChange={(e) => setSettingsWidgetTitle(e.target.value)}
+                    placeholder={settingsKb?.name ?? ''}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base text-gray-800 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  />
+                </div>
+                <div className="mb-3 flex gap-3">
+                  <div className="flex-1">
+                    <label className="mb-1 block text-base font-medium text-gray-700">主色</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={settingsWidgetColor}
+                        onChange={(e) => setSettingsWidgetColor(e.target.value)}
+                        className="h-9 w-12 cursor-pointer rounded border border-gray-300 p-0.5"
+                      />
+                      <input
+                        type="text"
+                        value={settingsWidgetColor}
+                        onChange={(e) => setSettingsWidgetColor(e.target.value)}
+                        className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-base text-gray-800 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                      />
+                    </div>
+                  </div>
+                  <div className="w-32">
+                    <label className="mb-1 block text-base font-medium text-gray-700">語言</label>
+                    <select
+                      value={settingsWidgetLang}
+                      onChange={(e) => setSettingsWidgetLang(e.target.value)}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                    >
+                      <option value="zh-TW">繁中</option>
+                      <option value="zh-CN">簡中</option>
+                      <option value="en">English</option>
+                      <option value="ja">日本語</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-1 block text-base font-medium text-gray-700">Widget Token</label>
+                  {settingsKb?.public_token ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <code className="flex-1 truncate rounded-lg bg-gray-100 px-3 py-2 text-base font-mono text-gray-700">
+                          {settingsKb.public_token}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(settingsKb.public_token ?? '')
+                            showToast('Token 已複製')
+                          }}
+                          className="shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-base text-gray-700 hover:bg-gray-50"
+                        >
+                          複製
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleGenerateToken()}
+                          disabled={tokenGenerating}
+                          className="shrink-0 rounded-lg border border-red-200 px-3 py-2 text-base text-red-600 hover:bg-red-50 disabled:opacity-50"
+                          title="重設 Token（舊 embed 連結將失效）"
+                        >
+                          重設
+                        </button>
+                      </div>
+                      <div>
+                        <p className="mb-1 text-base text-gray-500">Embed Code（iframe）</p>
+                        <textarea
+                          readOnly
+                          rows={3}
+                          value={`<iframe\n  src="${window.location.origin}/widget/${settingsKb.public_token}?embed=1"\n  width="400" height="600"\n  frameborder="0"\n/>`}
+                          className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-base font-mono text-gray-600 focus:outline-none"
+                          onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void handleGenerateToken()}
+                      disabled={tokenGenerating}
+                      className="flex items-center gap-1.5 rounded-lg border border-sky-300 bg-sky-50 px-4 py-2 text-base text-sky-700 transition-colors hover:bg-sky-100 disabled:opacity-50"
+                    >
+                      {tokenGenerating && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                      產生 Widget Token
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
             <div className="flex justify-end gap-2 border-t border-gray-100 px-5 py-4">
@@ -734,6 +854,9 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
                                 setSettingsKb(kb)
                                 setSettingsModel(kb.model_name ?? '')
                                 setSettingsPrompt(kb.system_prompt ?? '')
+                                setSettingsWidgetTitle(kb.widget_title ?? '')
+                                setSettingsWidgetColor(kb.widget_color ?? '#1A3A52')
+                                setSettingsWidgetLang(kb.widget_lang ?? 'zh-TW')
                                 setKbMenuId(null)
                               }}
                               className="flex w-full items-center gap-2 px-3 py-2 text-left text-base text-white/80 transition-colors hover:bg-white/10 hover:text-white"

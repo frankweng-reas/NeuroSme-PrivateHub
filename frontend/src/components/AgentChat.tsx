@@ -283,7 +283,9 @@ export default function AgentChat({
               </p>
             ) : (
               <ul className="flex flex-col space-y-4">
-                {messages.map((m, i) => (
+                {messages.map((m, i) => {
+                  if (m.role === 'assistant' && !m.content) return null
+                  return (
                   <li
                     key={i}
                     className={`flex flex-col rounded-xl px-4 py-3 shadow-sm ${
@@ -311,7 +313,7 @@ export default function AgentChat({
                         {m.meta.finish_reason && ` · finish: ${m.meta.finish_reason}`}
                       </div>
                     )}
-                    {m.role === 'assistant' && (showCopy || showChart || showPdf) && (
+                    {m.role === 'assistant' && m.content && (showCopy || showChart || showPdf) && (
                       <div className="mt-2 flex items-center gap-2 border-t border-gray-200 pt-2">
                         {showCopy && (
                           <button
@@ -349,7 +351,8 @@ export default function AgentChat({
                       </div>
                     )}
                   </li>
-                ))}
+                  )
+                })}
               </ul>
             )}
             {isLoading && (

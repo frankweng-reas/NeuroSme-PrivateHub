@@ -1,0 +1,25 @@
+{
+  "welcome": {
+    "title": "歡迎使用 {{title}}",
+    "subtitle": "請填寫以下資訊後開始對話",
+    "name_label": "姓名",
+    "name_required": "姓名 *",
+    "name_placeholder": "請輸入您的姓名",
+    "email_label": "Email",
+    "email_placeholder": "選填",
+    "phone_label": "電話",
+    "phone_placeholder": "選填",
+    "start_button": "開始對話",
+    "error_create": "建立對話失敗"
+  },
+  "chat": {
+    "greeting": "您好，{{name}}！請問有什麼可以協助您的嗎？",
+    "input_placeholder": "輸入訊息…",
+    "reset_title": "重新開始",
+    "thinking": "思考中…"
+  },
+  "error": {
+    "load_failed": "無法載入 Widget",
+    "generic": "發生錯誤，請稍後再試"
+  }
+}

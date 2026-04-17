@@ -23,6 +23,8 @@ from app.models.notebook_source import NotebookSource
 from app.models.activation_code import ActivationCode
 from app.models.km_document import KmDocument
 from app.models.km_chunk import KmChunk
+from app.models.km_knowledge_base import KmKnowledgeBase
+from app.models.widget_session import WidgetSession
 
 __all__ = [
     "Base", "Tenant", "User", "AgentCatalog", "TenantAgent", "UserAgent",
@@ -31,5 +33,5 @@ __all__ = [
     "ChatThread", "ChatMessage", "ChatLlmRequest",
     "Notebook", "StoredFile", "ChatMessageAttachment", "NotebookSource",
     "ActivationCode",
-    "KmDocument", "KmChunk",
+    "KmDocument", "KmChunk", "KmKnowledgeBase", "WidgetSession",
 ]

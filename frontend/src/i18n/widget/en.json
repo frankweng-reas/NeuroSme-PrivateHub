@@ -1,0 +1,25 @@
+{
+  "welcome": {
+    "title": "Welcome to {{title}}",
+    "subtitle": "Please fill in your information to start chatting",
+    "name_label": "Name",
+    "name_required": "Name *",
+    "name_placeholder": "Enter your name",
+    "email_label": "Email",
+    "email_placeholder": "Optional",
+    "phone_label": "Phone",
+    "phone_placeholder": "Optional",
+    "start_button": "Start Chat",
+    "error_create": "Failed to create session"
+  },
+  "chat": {
+    "greeting": "Hi {{name}}! How can I help you today?",
+    "input_placeholder": "Type a message…",
+    "reset_title": "Start over",
+    "thinking": "Thinking…"
+  },
+  "error": {
+    "load_failed": "Widget not found",
+    "generic": "Something went wrong, please try again"
+  }
+}

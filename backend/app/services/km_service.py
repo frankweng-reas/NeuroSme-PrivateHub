@@ -211,10 +211,11 @@ def km_retrieve_sync(
     query: str,
     db: Session,
     tenant_id: str,
-    user_id: int,
+    user_id: int = 0,
     top_k: int = 8,
     selected_doc_ids: list[int] | None = None,
     knowledge_base_id: int | None = None,
+    skip_scope_check: bool = False,
 ) -> list[KmChunk]:
     """同步向量檢索：query → embedding → cosine similarity 找 top-K chunks。
 
@@ -223,6 +224,7 @@ def km_retrieve_sync(
       - scope='private' 且 owner_user_id = user_id（個人私有）
     若提供 knowledge_base_id，只在該知識庫的文件中搜尋。
     若提供 selected_doc_ids（非空），則只在指定文件中搜尋。
+    skip_scope_check=True：跳過 scope/owner 過濾（Widget 公開存取用）。
     """
     api_key = _get_embed_api_key(db, tenant_id)
     if not api_key:
@@ -243,12 +245,12 @@ def km_retrieve_sync(
             .filter(
                 KmDocument.tenant_id == tenant_id,
                 KmDocument.status == "ready",
-                (
-                    (KmDocument.scope == "public")
-                    | (KmDocument.owner_user_id == user_id)
-                ),
             )
         )
+        if not skip_scope_check:
+            q = q.filter(
+                (KmDocument.scope == "public") | (KmDocument.owner_user_id == user_id)
+            )
         if knowledge_base_id is not None:
             q = q.filter(KmDocument.knowledge_base_id == knowledge_base_id)
         elif selected_doc_ids:
@@ -264,14 +266,17 @@ def km_retrieve_sync(
         return []
 
 
-def format_km_context(chunks: list[KmChunk]) -> str:
+def format_km_context(chunks: list[KmChunk], show_source: bool = True) -> str:
     """將 retrieved chunks 格式化為 system prompt 的參考資料字串。"""
     if not chunks:
         return ""
 
     parts: list[str] = []
     for chunk in chunks:
-        doc_name = chunk.document.filename if chunk.document else "未知文件"
-        parts.append(f"--- 來源：{doc_name} ---\n{chunk.content.strip()}")
+        if show_source:
+            doc_name = chunk.document.filename if chunk.document else "未知文件"
+            parts.append(f"--- 來源：{doc_name} ---\n{chunk.content.strip()}")
+        else:
+            parts.append(chunk.content.strip())
 
     return "\n\n".join(parts)

@@ -24,6 +24,12 @@ export interface KmKnowledgeBase {
   doc_count: number
   ready_count: number
   created_at: string
+  // Widget
+  public_token: string | null
+  widget_title: string | null
+  widget_logo_url: string | null
+  widget_color: string | null
+  widget_lang: string | null
 }
 
 export async function listKnowledgeBases(): Promise<KmKnowledgeBase[]> {
@@ -45,12 +51,27 @@ export async function createKnowledgeBase(data: {
 
 export async function updateKnowledgeBase(
   id: number,
-  data: { name?: string; description?: string; model_name?: string; system_prompt?: string }
+  data: {
+    name?: string
+    description?: string
+    model_name?: string
+    system_prompt?: string
+    widget_title?: string
+    widget_logo_url?: string
+    widget_color?: string
+    widget_lang?: string
+  }
 ): Promise<KmKnowledgeBase> {
   return apiFetch<KmKnowledgeBase>(`/km/knowledge-bases/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
+  })
+}
+
+export async function generateWidgetToken(id: number): Promise<KmKnowledgeBase> {
+  return apiFetch<KmKnowledgeBase>(`/km/knowledge-bases/${id}/generate-token`, {
+    method: 'POST',
   })
 }
 

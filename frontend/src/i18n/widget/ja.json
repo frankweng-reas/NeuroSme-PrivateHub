@@ -1,0 +1,25 @@
+{
+  "welcome": {
+    "title": "{{title}}へようこそ",
+    "subtitle": "以下の情報を入力してチャットを開始してください",
+    "name_label": "お名前",
+    "name_required": "お名前 *",
+    "name_placeholder": "お名前を入力してください",
+    "email_label": "メール",
+    "email_placeholder": "任意",
+    "phone_label": "電話番号",
+    "phone_placeholder": "任意",
+    "start_button": "チャットを開始",
+    "error_create": "セッションの作成に失敗しました"
+  },
+  "chat": {
+    "greeting": "こんにちは、{{name}}さん！何かお手伝いできることはありますか？",
+    "input_placeholder": "メッセージを入力…",
+    "reset_title": "最初からやり直す",
+    "thinking": "考え中…"
+  },
+  "error": {
+    "load_failed": "Widgetを読み込めません",
+    "generic": "エラーが発生しました。しばらくしてからお試しください"
+  }
+}

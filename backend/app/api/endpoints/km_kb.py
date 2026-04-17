@@ -1,5 +1,6 @@
 """KM 知識庫 API：建立、列表、更新、刪除知識庫（kb）"""
 import logging
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -33,6 +34,10 @@ class KbUpdate(BaseModel):
     description: str | None = None
     model_name: str | None = None
     system_prompt: str | None = None
+    widget_title: str | None = None
+    widget_logo_url: str | None = None
+    widget_color: str | None = None
+    widget_lang: str | None = None
 
 
 class KbResponse(BaseModel):
@@ -44,6 +49,11 @@ class KbResponse(BaseModel):
     doc_count: int
     ready_count: int
     created_at: str
+    public_token: str | None
+    widget_title: str | None
+    widget_logo_url: str | None
+    widget_color: str | None
+    widget_lang: str | None
 
     model_config = {"from_attributes": True}
 
@@ -59,6 +69,11 @@ def _to_response(kb: KmKnowledgeBase, db: Session) -> KbResponse:
         doc_count=len(all_docs),
         ready_count=sum(1 for d in all_docs if d.status == "ready"),
         created_at=kb.created_at.isoformat() if kb.created_at else "",
+        public_token=kb.public_token,
+        widget_title=kb.widget_title,
+        widget_logo_url=kb.widget_logo_url,
+        widget_color=kb.widget_color,
+        widget_lang=kb.widget_lang,
     )
 
 
@@ -138,6 +153,14 @@ def update_knowledge_base(
         kb.description = body.description
     kb.model_name = body.model_name or None
     kb.system_prompt = body.system_prompt or None
+    if body.widget_title is not None:
+        kb.widget_title = body.widget_title or None
+    if body.widget_logo_url is not None:
+        kb.widget_logo_url = body.widget_logo_url or None
+    if body.widget_color is not None:
+        kb.widget_color = body.widget_color or None
+    if body.widget_lang is not None:
+        kb.widget_lang = body.widget_lang or None
     db.commit()
     db.refresh(kb)
     return _to_response(kb, db)
@@ -162,3 +185,26 @@ def delete_knowledge_base(
 
     db.delete(kb)
     db.commit()
+
+
+@router.post("/knowledge-bases/{kb_id}/generate-token", response_model=KbResponse)
+def generate_widget_token(
+    kb_id: int,
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """產生（或重設）Widget public_token"""
+    if not _can_manage(current.role):
+        raise HTTPException(status_code=403, detail="只有管理員可以產生 Widget Token")
+
+    kb = db.query(KmKnowledgeBase).filter(
+        KmKnowledgeBase.id == kb_id,
+        KmKnowledgeBase.tenant_id == current.tenant_id,
+    ).first()
+    if not kb:
+        raise HTTPException(status_code=404, detail="知識庫不存在")
+
+    kb.public_token = uuid.uuid4().hex
+    db.commit()
+    db.refresh(kb)
+    return _to_response(kb, db)

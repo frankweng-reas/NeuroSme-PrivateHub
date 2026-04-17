@@ -11,9 +11,17 @@ class KmKnowledgeBase(Base):
     tenant_id = Column(String, nullable=False, index=True)
     name = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
-    model_name = Column(String(100), nullable=True)   # 例如 gpt-4o-mini、gemini/gemini-2.5-flash
-    system_prompt = Column(Text, nullable=True)        # 覆寫預設 CS system prompt
+    model_name = Column(String(100), nullable=True)
+    system_prompt = Column(Text, nullable=True)
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+    # Widget 設定
+    public_token = Column(String(64), nullable=True, unique=True, index=True)
+    widget_title = Column(String(100), nullable=True)
+    widget_logo_url = Column(String(500), nullable=True)
+    widget_color = Column(String(20), nullable=True, default="#1A3A52")
+    widget_lang = Column(String(10), nullable=True, default="zh-TW")
+
     documents = relationship("KmDocument", back_populates="knowledge_base", lazy="dynamic")
+    widget_sessions = relationship("WidgetSession", back_populates="knowledge_base", lazy="dynamic")

@@ -25,6 +25,7 @@ import ResetPasswordPage from './pages/ResetPasswordPage'
 import TestLLMChat from './pages/TestLLMChat'
 import TestComputeEngine from './pages/TestComputeEngine'
 import DevPipelineInspector from './pages/DevPipelineInspector'
+import WidgetPage from './pages/WidgetPage'
 
 function App() {
   return (
@@ -32,6 +33,8 @@ function App() {
       <AuthProvider>
         <ToastProvider>
           <Routes>
+            {/* Widget：公開頁面，不需登入，在 Layout 外 */}
+            <Route path="/widget/:token" element={<WidgetPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/change-password-expired" element={<ChangePasswordExpiredPage />} />
