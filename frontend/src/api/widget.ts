@@ -39,6 +39,10 @@ export async function getWidgetInfo(token: string): Promise<WidgetInfo> {
   return widgetFetch<WidgetInfo>(`/${token}/info`)
 }
 
+export function checkWidgetSession(token: string, sessionId: string): Promise<{ valid: boolean }> {
+  return widgetFetch<{ valid: boolean }>(`/${token}/session/${sessionId}`)
+}
+
 export async function createWidgetSession(
   token: string,
   data: {

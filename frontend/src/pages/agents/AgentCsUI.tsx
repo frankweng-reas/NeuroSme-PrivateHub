@@ -38,8 +38,15 @@ import AgentChat, { type Message, type ResponseMeta } from '@/components/AgentCh
 import AgentHeader from '@/components/AgentHeader'
 import ConfirmModal from '@/components/ConfirmModal'
 import ErrorModal from '@/components/ErrorModal'
+import HelpModal from '@/components/HelpModal'
 import LLMModelSelect from '@/components/LLMModelSelect'
 import type { Agent, UserRole } from '@/types'
+import {
+  listWidgetSessions,
+  getWidgetSessionMessages,
+  type WidgetSessionItem,
+  type WidgetSessionDetail,
+} from '@/api/widget_admin'
 
 interface AgentCsUIProps {
   agent: Agent
@@ -114,8 +121,17 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
   const [settingsWidgetTitle, setSettingsWidgetTitle] = useState('')
   const [settingsWidgetColor, setSettingsWidgetColor] = useState('#1A3A52')
   const [settingsWidgetLang, setSettingsWidgetLang] = useState('zh-TW')
+  const [settingsWidgetLogoUrl, setSettingsWidgetLogoUrl] = useState('')
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [tokenGenerating, setTokenGenerating] = useState(false)
+  const [showHelpModal, setShowHelpModal] = useState(false)
+
+  // ── 右欄 Tab：'chat' | 'history' ─────────────────────────────────────────
+  const [rightTab, setRightTab] = useState<'chat' | 'history'>('chat')
+  const [wSessions, setWSessions] = useState<WidgetSessionItem[]>([])
+  const [wSessionsLoading, setWSessionsLoading] = useState(false)
+  const [wDetail, setWDetail] = useState<WidgetSessionDetail | null>(null)
+  const [wDetailLoading, setWDetailLoading] = useState(false)
 
   const loadKbs = useCallback(() => {
     setKbsLoading(true)
@@ -195,6 +211,7 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
         widget_title: settingsWidgetTitle,
         widget_color: settingsWidgetColor,
         widget_lang: settingsWidgetLang,
+        widget_logo_url: settingsWidgetLogoUrl || undefined,
       })
       setKbs((prev) => prev.map((kb) => kb.id === updated.id ? updated : kb))
       setSettingsKb(updated)
@@ -243,6 +260,8 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
   const [docsLoading, setDocsLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadDocType, setUploadDocType] = useState<string>('article')
+  const [uploadModalOpen, setUploadModalOpen] = useState(false)
   const [deleteDocTarget, setDeleteDocTarget] = useState<KmDocument | null>(null)
   const [deleteDocLoading, setDeleteDocLoading] = useState(false)
 
@@ -274,10 +293,19 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
       if (!files?.length) return
       const file = files[0]
       e.target.value = ''
+
+      // 依檔名自動偵測文件類型
+      const lower = file.name.toLowerCase()
+      let detectedType = uploadDocType
+      if (/faq|q[&＆]a|問答/.test(lower)) detectedType = 'faq'
+      else if (/spec|規格|technical|datasheet/.test(lower)) detectedType = 'spec'
+      else if (/policy|政策|條款|terms|contract/.test(lower)) detectedType = 'policy'
+      if (detectedType !== uploadDocType) setUploadDocType(detectedType)
+
       setUploading(true)
       setUploadProgress(0)
       try {
-        const doc = await uploadKmDocument(file, 'public', (pct) => setUploadProgress(pct), [], selectedKbId)
+        const doc = await uploadKmDocument(file, 'public', (pct) => setUploadProgress(pct), [], selectedKbId, detectedType)
         setDocs((prev) => [doc, ...prev])
         // 更新 KB doc count
         setKbs((prev) => prev.map((kb) =>
@@ -286,6 +314,7 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
             : kb
         ))
         showToast(doc.status === 'ready' ? `「${doc.filename}」上傳完成` : `「${doc.filename}」上傳成功，處理中…`)
+        setUploadModalOpen(false)
       } catch (err) {
         const msg = err instanceof Error ? err.message : '上傳失敗'
         setErrorModal({ title: '上傳失敗', message: msg })
@@ -294,7 +323,7 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
         setUploadProgress(0)
       }
     },
-    [selectedKbId]
+    [selectedKbId, uploadDocType]
   )
 
   const handleDeleteDoc = useCallback(async () => {
@@ -436,6 +465,17 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
   const selectedKb = kbs.find((kb) => kb.id === selectedKbId) ?? null
   const readyCount = docs.filter((d) => d.status === 'ready').length
 
+  // 切換到 history tab 時載入 sessions
+  useEffect(() => {
+    if (rightTab !== 'history' || !selectedKb) return
+    setWSessionsLoading(true)
+    setWDetail(null)
+    listWidgetSessions(selectedKb.id)
+      .then(setWSessions)
+      .catch(() => setWSessions([]))
+      .finally(() => setWSessionsLoading(false))
+  }, [rightTab, selectedKb])
+
   return (
     <div className="relative flex h-full flex-col p-4 text-[18px]">
       {/* Toast */}
@@ -447,6 +487,107 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
           role={toast.type === 'error' ? 'alert' : 'status'}
         >
           {toast.msg}
+        </div>
+      )}
+
+      {/* ── 上傳檔案 Modal ──────────────────────────────────────────────────── */}
+      {uploadModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl ring-1 ring-gray-200">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+              <div className="flex items-center gap-2">
+                <Upload className="h-4 w-4 text-sky-500" />
+                <span className="text-lg font-semibold text-gray-800">上傳檔案</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => !uploading && setUploadModalOpen(false)}
+                disabled={uploading}
+                className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 disabled:opacity-40"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="px-6 py-6 space-y-6">
+              {/* 文件類型 Radio */}
+              <div>
+                <p className="mb-1 text-base font-semibold text-gray-700">文件類型</p>
+                <p className="mb-3 text-sm text-gray-400">智能文檔處理可提昇搜尋準確度，請選擇適合類型</p>
+                <div className="grid grid-cols-2 gap-3">
+                  {([
+                    { value: 'article', emoji: '📄', label: '一般文章', sub: '說明文件、公告' },
+                    { value: 'faq',     emoji: '💬', label: 'FAQ 問答集', sub: '常見問題、Q&A' },
+                    { value: 'spec',    emoji: '🔧', label: '技術規格', sub: '參數表、Datasheet' },
+                    { value: 'policy',  emoji: '📋', label: '政策 / 條款', sub: '合約、規章' },
+                  ] as const).map(({ value, emoji, label, sub }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      disabled={uploading}
+                      onClick={() => setUploadDocType(value)}
+                      className={`flex items-start gap-3 rounded-xl border-2 px-4 py-3 text-left transition-all disabled:opacity-60 ${
+                        uploadDocType === value
+                          ? 'border-sky-400 bg-sky-50 ring-2 ring-sky-200'
+                          : 'border-gray-200 bg-gray-50 hover:border-sky-200 hover:bg-sky-50/50'
+                      }`}
+                    >
+                      <span className="mt-0.5 text-2xl leading-none">{emoji}</span>
+                      <div>
+                        <p className={`text-base font-medium ${uploadDocType === value ? 'text-sky-700' : 'text-gray-800'}`}>{label}</p>
+                        <p className="text-sm text-gray-400">{sub}</p>
+                      </div>
+                      {uploadDocType === value && (
+                        <Check className="ml-auto mt-0.5 h-4 w-4 shrink-0 text-sky-500" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 進度條 */}
+              {uploading && (
+                <div className="overflow-hidden rounded-full bg-gray-100">
+                  <div
+                    className="h-2 rounded-full bg-sky-400 transition-all"
+                    style={{ width: `${uploadProgress > 0 ? uploadProgress : 100}%` }}
+                  />
+                </div>
+              )}
+
+              {/* 隱藏 input */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,.txt,.md,.markdown"
+                className="hidden"
+                onChange={handleFileChange}
+              />
+
+              {/* 上傳按鈕 */}
+              <button
+                type="button"
+                disabled={uploading}
+                onClick={() => fileInputRef.current?.click()}
+                className="flex w-full items-center justify-center gap-2 rounded-xl py-6 text-base font-medium text-white transition-opacity hover:opacity-90 active:opacity-80 disabled:opacity-50"
+                style={{ backgroundColor: HEADER_COLOR }}
+              >
+                {uploading ? (
+                  <>
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    上傳中 {uploadProgress > 0 ? `${uploadProgress}%` : '…'}
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-5 w-5" />
+                    點擊選擇檔案（PDF / TXT / MD）
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -493,14 +634,39 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
       />
 
       {/* ── KB 設定 Modal ─────────────────────────────────────────────────── */}
-      {settingsKb && (
+      {settingsKb && (() => {
+        const embedCode = (origin: string, token: string, color: string) => [
+          `<!-- NeuroSme Widget -->`,
+          `<button id="ns-btn" onclick="nsTgl()"`,
+          `  style="position:fixed;bottom:24px;right:24px;z-index:10000;`,
+          `         width:56px;height:56px;border-radius:50%;border:none;`,
+          `         background:${color};color:#fff;font-size:26px;`,
+          `         cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.2)">💬</button>`,
+          `<iframe id="ns-ifr" width="400" height="600" frameborder="0"`,
+          `  style="display:none;position:fixed;bottom:88px;right:24px;z-index:9999;`,
+          `         border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,.18)"></iframe>`,
+          `<script>`,
+          `function nsTgl() {`,
+          `  var f = document.getElementById('ns-ifr');`,
+          `  var b = document.getElementById('ns-btn');`,
+          `  var o = f.style.display !== 'none';`,
+          `  if (!o && !f.src) {`,
+          `    var l = document.documentElement.lang || navigator.language || 'zh-TW';`,
+          `    f.src = '${origin}/widget/${token}?embed=1&lang=' + encodeURIComponent(l);`,
+          `  }`,
+          `  f.style.display = o ? 'none' : 'block';`,
+          `  b.innerHTML = o ? '💬' : '✕';`,
+          `}`,
+          `<\/script>`,
+        ].join('\n')
+        return (
         <div
           className="fixed inset-0 z-[60] flex items-center justify-center bg-black/45 p-4"
           role="presentation"
           onMouseDown={(e) => { if (e.target === e.currentTarget) setSettingsKb(null) }}
         >
           <div
-            className="flex w-full max-w-md flex-col rounded-xl border border-gray-200 bg-white shadow-xl max-h-[90vh]"
+            className="flex w-full max-w-5xl flex-col rounded-xl border border-gray-200 bg-white shadow-xl max-h-[90vh]"
             role="dialog"
             aria-labelledby="kb-settings-title"
             aria-modal="true"
@@ -542,7 +708,7 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
                 <textarea
                   value={settingsPrompt}
                   onChange={(e) => setSettingsPrompt(e.target.value)}
-                  rows={5}
+                  rows={8}
                   placeholder="你是 XX 公司的客服助手，請根據知識庫文件回答問題…"
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base text-gray-800 placeholder-gray-300 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
                 />
@@ -550,6 +716,52 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
               {/* ── Widget 設定 ── */}
               <div className="border-t border-gray-100 pt-4">
                 <p className="mb-3 text-base font-semibold text-gray-700">Widget 設定</p>
+                {/* Logo 上傳 */}
+                <div className="mb-3">
+                  <label className="mb-1 block text-base font-medium text-gray-700">Logo</label>
+                  <div className="flex items-center gap-4">
+                    {settingsWidgetLogoUrl ? (
+                      <img
+                        src={settingsWidgetLogoUrl}
+                        alt="logo preview"
+                        className="h-12 w-12 rounded-lg border border-gray-200 object-contain p-0.5"
+                      />
+                    ) : (
+                      <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-dashed border-gray-300 bg-gray-50 text-gray-400">
+                        <span className="text-xs">無</span>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <label className="cursor-pointer rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-base text-gray-700 hover:bg-gray-50">
+                        選擇圖片
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0]
+                            if (!file) return
+                            const reader = new FileReader()
+                            reader.onload = (ev) => {
+                              setSettingsWidgetLogoUrl(ev.target?.result as string ?? '')
+                            }
+                            reader.readAsDataURL(file)
+                          }}
+                        />
+                      </label>
+                      {settingsWidgetLogoUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setSettingsWidgetLogoUrl('')}
+                          className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-base text-red-500 hover:bg-red-50"
+                        >
+                          移除
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-sm text-gray-400">建議 PNG／SVG，正方形，&lt;200 KB</p>
+                  </div>
+                </div>
                 <div className="mb-3">
                   <label className="mb-1 block text-base font-medium text-gray-700">顯示名稱</label>
                   <input
@@ -578,7 +790,7 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
                       />
                     </div>
                   </div>
-                  <div className="w-32">
+                  <div className="w-40">
                     <label className="mb-1 block text-base font-medium text-gray-700">語言</label>
                     <select
                       value={settingsWidgetLang}
@@ -593,18 +805,21 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
                   </div>
                 </div>
                 <div>
-                  <label className="mb-1 block text-base font-medium text-gray-700">Widget Token</label>
+                  <label className="mb-1 block text-base font-medium text-gray-700">Widget 連結</label>
                   {settingsKb?.public_token ? (
                     <div className="space-y-2">
                       <div className="flex items-center gap-2">
-                        <code className="flex-1 truncate rounded-lg bg-gray-100 px-3 py-2 text-base font-mono text-gray-700">
-                          {settingsKb.public_token}
-                        </code>
+                        <input
+                          readOnly
+                          value={`${window.location.origin}/widget/${settingsKb.public_token}`}
+                          className="flex-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-base font-mono text-gray-700 focus:outline-none"
+                          onClick={(e) => (e.target as HTMLInputElement).select()}
+                        />
                         <button
                           type="button"
                           onClick={() => {
-                            navigator.clipboard.writeText(settingsKb.public_token ?? '')
-                            showToast('Token 已複製')
+                            navigator.clipboard.writeText(`${window.location.origin}/widget/${settingsKb.public_token}`)
+                            showToast('連結已複製')
                           }}
                           className="shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-base text-gray-700 hover:bg-gray-50"
                         >
@@ -615,20 +830,44 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
                           onClick={() => void handleGenerateToken()}
                           disabled={tokenGenerating}
                           className="shrink-0 rounded-lg border border-red-200 px-3 py-2 text-base text-red-600 hover:bg-red-50 disabled:opacity-50"
-                          title="重設 Token（舊 embed 連結將失效）"
+                          title="重設 Token（舊連結將失效）"
                         >
                           重設
                         </button>
                       </div>
                       <div>
-                        <p className="mb-1 text-base text-gray-500">Embed Code（iframe）</p>
+                        <div className="mb-1 flex items-center justify-between">
+                          <p className="text-base text-gray-500">Embed Code（貼入網頁 &lt;body&gt; 尾端）</p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const code = embedCode(
+                                window.location.origin,
+                                settingsKb.public_token ?? '',
+                                settingsWidgetColor || '#1A3A52'
+                              )
+                              navigator.clipboard.writeText(code)
+                              showToast('Embed Code 已複製')
+                            }}
+                            className="rounded-lg border border-gray-300 px-3 py-1.5 text-base text-gray-700 hover:bg-gray-50"
+                          >
+                            複製
+                          </button>
+                        </div>
                         <textarea
                           readOnly
-                          rows={3}
-                          value={`<iframe\n  src="${window.location.origin}/widget/${settingsKb.public_token}?embed=1"\n  width="400" height="600"\n  frameborder="0"\n/>`}
+                          rows={12}
+                          value={embedCode(
+                            window.location.origin,
+                            settingsKb.public_token ?? '',
+                            settingsWidgetColor || '#1A3A52'
+                          )}
                           className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-base font-mono text-gray-600 focus:outline-none"
                           onClick={(e) => (e.target as HTMLTextAreaElement).select()}
                         />
+                        <p className="mt-1.5 text-base text-gray-400">
+                          語言優先序：網站 <code>lang</code> 屬性 › KB 設定語言 › 繁體中文
+                        </p>
                       </div>
                     </div>
                   ) : (
@@ -665,9 +904,10 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
             </div>
           </div>
         </div>
-      )}
+        )
+      })()}
 
-      <AgentHeader agent={agent} headerBackgroundColor={HEADER_COLOR} />
+      <AgentHeader agent={agent} headerBackgroundColor={HEADER_COLOR} onOnlineHelpClick={() => setShowHelpModal(true)} />
 
       <div className="mt-4 flex min-h-0 flex-1 gap-3 overflow-hidden">
 
@@ -857,6 +1097,7 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
                                 setSettingsWidgetTitle(kb.widget_title ?? '')
                                 setSettingsWidgetColor(kb.widget_color ?? '#1A3A52')
                                 setSettingsWidgetLang(kb.widget_lang ?? 'zh-TW')
+                                setSettingsWidgetLogoUrl(kb.widget_logo_url ?? '')
                                 setKbMenuId(null)
                               }}
                               className="flex w-full items-center gap-2 px-3 py-2 text-left text-base text-white/80 transition-colors hover:bg-white/10 hover:text-white"
@@ -971,14 +1212,6 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
           {/* Upload Area */}
           {canManage && selectedKbId && (
             <div className="shrink-0 border-t border-gray-100 p-3">
-              {uploading && uploadProgress > 0 && (
-                <div className="mb-2 overflow-hidden rounded-full bg-gray-100">
-                  <div
-                    className="h-1.5 rounded-full bg-sky-400 transition-all"
-                    style={{ width: `${uploadProgress}%` }}
-                  />
-                </div>
-              )}
               <input
                 ref={fileInputRef}
                 type="file"
@@ -988,61 +1221,91 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
               />
               <button
                 type="button"
-                disabled={uploading}
-                onClick={() => fileInputRef.current?.click()}
-                className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-gray-200 bg-gray-50 py-2.5 text-base text-gray-500 transition-colors hover:border-sky-300 hover:bg-sky-50 hover:text-sky-600 disabled:opacity-60"
+                onClick={() => setUploadModalOpen(true)}
+                className="flex w-full items-center justify-center gap-2 rounded-lg py-2.5 text-base font-medium text-white transition-opacity hover:opacity-90 active:opacity-80"
+                style={{ backgroundColor: HEADER_COLOR }}
               >
-                {uploading ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    上傳中 {uploadProgress > 0 ? `${uploadProgress}%` : '…'}
-                  </>
-                ) : (
-                  <>
-                    <Upload className="h-4 w-4" />
-                    上傳文件（PDF / TXT / MD）
-                  </>
-                )}
+                <Upload className="h-4 w-4" />
+                上傳檔案
               </button>
             </div>
           )}
         </div>
 
-        {/* ══ 右欄：Chatbot ══════════════════════════════════════════════════ */}
+        {/* ══ 右欄：Chatbot / 訪客對話 ══════════════════════════════════════ */}
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-gray-200/80 bg-white shadow-md ring-1 ring-gray-200/50">
-          {/* Chat 頂部 KB + model 資訊列 + refresh */}
-          <div className="flex shrink-0 items-center gap-2 border-b border-gray-100 bg-gray-50/70 px-4 py-2">
-            {selectedKb ? (
-              <>
-                <span className="text-base font-medium text-gray-600 truncate">{selectedKb.name}</span>
-                {selectedKb.model_name ? (
-                  <>
-                    <span className="text-gray-300">·</span>
-                    <span className="shrink-0 rounded-full bg-sky-100 px-2 py-0.5 text-base text-sky-700">
-                      {selectedKb.model_name}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-gray-300">·</span>
-                    <span className="shrink-0 text-base text-gray-400">系統預設模型</span>
-                  </>
-                )}
-              </>
-            ) : (
-              <span className="text-base text-gray-400">請選擇知識庫</span>
-            )}
+          {/* Tab 切換 */}
+          <div className="flex shrink-0 items-center gap-1 border-b border-gray-100 bg-gray-50/70 px-4 py-2">
             <button
               type="button"
-              onClick={() => messages.length > 0 && setShowClearConfirm(true)}
-              disabled={isLoading || messages.length === 0}
-              className="ml-auto rounded-lg border border-gray-300 bg-white p-2 text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
-              aria-label="清除對話"
+              onClick={() => setRightTab('chat')}
+              className={`rounded-lg px-3 py-1 text-base font-medium transition-colors ${rightTab === 'chat' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
             >
-              <RefreshCw className="h-5 w-5" />
+              內部對話
             </button>
+            <button
+              type="button"
+              onClick={() => setRightTab('history')}
+              className={`rounded-lg px-3 py-1 text-base font-medium transition-colors ${rightTab === 'history' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              訪客對話
+            </button>
+            {rightTab === 'chat' && (
+              <>
+                <span className="mx-1 text-gray-200">|</span>
+                {selectedKb ? (
+                  <>
+                    <span className="text-base font-medium text-gray-600 truncate">{selectedKb.name}</span>
+                    {selectedKb.model_name ? (
+                      <>
+                        <span className="text-gray-300">·</span>
+                        <span className="shrink-0 rounded-full bg-sky-100 px-2 py-0.5 text-base text-sky-700">
+                          {selectedKb.model_name}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-gray-300">·</span>
+                        <span className="shrink-0 text-base text-gray-400">系統預設模型</span>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-base text-gray-400">請選擇知識庫</span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => messages.length > 0 && setShowClearConfirm(true)}
+                  disabled={isLoading || messages.length === 0}
+                  className="ml-auto rounded-lg border border-gray-300 bg-white p-2 text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+                  aria-label="清除對話"
+                >
+                  <RefreshCw className="h-5 w-5" />
+                </button>
+              </>
+            )}
+            {rightTab === 'history' && selectedKb && (
+              <button
+                type="button"
+                onClick={() => {
+                  setWSessionsLoading(true)
+                  setWDetail(null)
+                  listWidgetSessions(selectedKb.id)
+                    .then(setWSessions)
+                    .catch(() => setWSessions([]))
+                    .finally(() => setWSessionsLoading(false))
+                }}
+                className="ml-auto rounded-lg border border-gray-300 bg-white p-2 text-gray-700 transition-colors hover:bg-gray-50"
+                aria-label="重新整理"
+              >
+                <RefreshCw className="h-5 w-5" />
+              </button>
+            )}
           </div>
-          <AgentChat
+
+          {/* ── 內部對話 ── */}
+          {rightTab === 'chat' && (
+            <AgentChat
             messages={messages}
             onSubmit={handleSendMessage}
             isLoading={isLoading}
@@ -1059,9 +1322,97 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
             showChart={false}
             showPdf={false}
           />
+          )}
+
+          {/* ── 訪客對話 ── */}
+          {rightTab === 'history' && (
+            <div className="flex min-h-0 flex-1 overflow-hidden">
+              {/* session 列表 */}
+              <div className="w-64 shrink-0 overflow-y-auto border-r border-gray-100">
+                {!selectedKb ? (
+                  <p className="p-4 text-base text-gray-400">請先選擇知識庫</p>
+                ) : wSessionsLoading ? (
+                  <div className="flex items-center justify-center py-12">
+                    <Loader2 className="h-6 w-6 animate-spin text-gray-300" />
+                  </div>
+                ) : wSessions.length === 0 ? (
+                  <p className="p-4 text-base text-gray-400">尚無訪客對話紀錄</p>
+                ) : (
+                  <ul>
+                    {wSessions.map((s) => (
+                      <li key={s.session_id}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setWDetailLoading(true)
+                            getWidgetSessionMessages(s.session_id)
+                              .then(setWDetail)
+                              .catch(() => setWDetail(null))
+                              .finally(() => setWDetailLoading(false))
+                          }}
+                          className={`w-full px-4 py-3 text-left transition-colors hover:bg-gray-50 ${wDetail?.session_id === s.session_id ? 'bg-sky-50' : ''}`}
+                        >
+                          <p className="truncate text-base font-medium text-gray-700">
+                            {s.visitor_name || '匿名訪客'}
+                          </p>
+                          {s.visitor_email && (
+                            <p className="truncate text-sm text-gray-400">{s.visitor_email}</p>
+                          )}
+                          <p className="mt-0.5 text-sm text-gray-400">
+                            {s.message_count} 則 · {new Date(s.last_active_at).toLocaleDateString('zh-TW')}
+                          </p>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {/* 對話內容 */}
+              <div className="flex min-w-0 flex-1 flex-col overflow-y-auto p-4">
+                {wDetailLoading ? (
+                  <div className="flex items-center justify-center py-12">
+                    <Loader2 className="h-6 w-6 animate-spin text-gray-300" />
+                  </div>
+                ) : !wDetail ? (
+                  <p className="text-base text-gray-400">← 點選左側訪客查看對話</p>
+                ) : (
+                  <>
+                    <div className="mb-4 rounded-xl border border-gray-100 bg-gray-50 p-3 text-sm text-gray-600">
+                      <p><span className="font-medium">訪客：</span>{wDetail.visitor_name || '匿名'}</p>
+                      {wDetail.visitor_email && <p><span className="font-medium">Email：</span>{wDetail.visitor_email}</p>}
+                      {wDetail.visitor_phone && <p><span className="font-medium">電話：</span>{wDetail.visitor_phone}</p>}
+                      <p><span className="font-medium">開始時間：</span>{new Date(wDetail.created_at).toLocaleString('zh-TW')}</p>
+                    </div>
+                    <ul className="space-y-3">
+                      {wDetail.messages.map((m) => (
+                        <li key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                          <div
+                            className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-base leading-relaxed whitespace-pre-wrap ${
+                              m.role === 'user'
+                                ? 'bg-sky-600 text-white'
+                                : 'bg-gray-100 text-gray-800'
+                            }`}
+                          >
+                            {m.content}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
       </div>
+      <HelpModal
+        open={showHelpModal}
+        onClose={() => setShowHelpModal(false)}
+        url="/help-cs-agent.md"
+        title="客服助理使用說明"
+      />
     </div>
   )
 }

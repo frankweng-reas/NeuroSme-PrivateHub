@@ -37,6 +37,8 @@ class KmDocument(Base):
     error_message = Column(Text, nullable=True)
     chunk_count = Column(Integer, nullable=True)
     tags = Column(JSON, nullable=True)
+    # article | policy | spec | faq（影響 chunking 策略與 top_k）
+    doc_type = Column(String(32), nullable=False, server_default="article")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 

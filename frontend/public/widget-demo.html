@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Widget Demo</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 0;
+      padding: 48px 64px;
+      background: #f5f5f5;
+      color: #333;
+    }
+    h1 { color: #1A3A52; margin-bottom: 8px; }
+    p  { color: #555; line-height: 1.7; max-width: 640px; }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 24px 32px;
+      max-width: 640px;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.08);
+      margin-top: 24px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>NeuroSme Widget Demo</h1>
+  <p>點擊右下角的 💬 按鈕開啟 AI 客服 Widget，點 ✕ 關閉。</p>
+
+  <div class="card">
+    <h2 style="margin-top:0;color:#1A3A52;">關於本 Demo</h2>
+    <p>Widget 以 <code>iframe</code> 嵌入，預設隱藏，點擊氣泡按鈕切換開關。<br/>
+    語言自動偵測頁面 <code>lang</code> 屬性，此頁為 <code>zh-TW</code>。</p>
+  </div>
+
+<!-- NeuroSme Widget -->
+<button id="ns-btn" onclick="nsTgl()"
+  style="position:fixed;bottom:24px;right:24px;z-index:10000;
+         width:56px;height:56px;border-radius:50%;border:none;
+         background:#1A3A52;color:#fff;font-size:26px;
+         cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.2)">💬</button>
+<iframe id="ns-ifr" width="400" height="600" frameborder="0"
+  style="display:none;position:fixed;bottom:88px;right:24px;z-index:9999;
+         border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,.18)"></iframe>
+<script>
+function nsTgl() {
+  var f = document.getElementById('ns-ifr');
+  var b = document.getElementById('ns-btn');
+  var o = f.style.display !== 'none';
+  if (!o && !f.src) {
+    var l = document.documentElement.lang || navigator.language || 'zh-TW';
+    f.src = 'https://ee.neurosme.ai/widget/901039442256462da34c3ffc1bfa6732?embed=1&lang=' + encodeURIComponent(l);
+  }
+  f.style.display = o ? 'none' : 'block';
+  b.innerHTML = o ? '💬' : '✕';
+}
+</script>
+
+</body>
+</html>

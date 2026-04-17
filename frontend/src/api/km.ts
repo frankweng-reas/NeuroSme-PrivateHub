@@ -12,6 +12,7 @@ export interface KmDocument {
   chunk_count: number | null
   tags: string[]
   knowledge_base_id: number | null
+  doc_type: string
   created_at: string
 }
 
@@ -79,9 +80,12 @@ export async function deleteKnowledgeBase(id: number): Promise<void> {
   return apiFetch<void>(`/km/knowledge-bases/${id}`, { method: 'DELETE' })
 }
 
-export async function listKmDocuments(scope?: 'private' | 'public'): Promise<KmDocument[]> {
-  const params = scope ? `?scope=${scope}` : ''
-  return apiFetch<KmDocument[]>(`/km/documents${params}`)
+export async function listKmDocuments(scope?: 'private' | 'public', noKb?: boolean): Promise<KmDocument[]> {
+  const params = new URLSearchParams()
+  if (scope) params.set('scope', scope)
+  if (noKb) params.set('no_kb', 'true')
+  const qs = params.toString()
+  return apiFetch<KmDocument[]>(`/km/documents${qs ? `?${qs}` : ''}`)
 }
 
 export async function listKbDocuments(kbId: number): Promise<KmDocument[]> {
@@ -97,7 +101,8 @@ export async function uploadKmDocument(
   scope: 'private' | 'public',
   onProgress?: (percent: number) => void,
   tags?: string[],
-  knowledgeBaseId?: number
+  knowledgeBaseId?: number,
+  docType?: string,
 ): Promise<KmDocument> {
   const form = new FormData()
   form.append('file', file)
@@ -107,6 +112,9 @@ export async function uploadKmDocument(
   }
   if (knowledgeBaseId != null) {
     form.append('knowledge_base_id', String(knowledgeBaseId))
+  }
+  if (docType) {
+    form.append('doc_type', docType)
   }
 
   // 使用 XMLHttpRequest 支援進度回報

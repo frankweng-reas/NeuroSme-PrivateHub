@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models.km_knowledge_base import KmKnowledgeBase
+from app.models.widget_message import WidgetMessage
 from app.models.widget_session import WidgetSession
 from app.services.km_service import format_km_context, km_retrieve_sync
 from app.services.llm_service import _get_llm_params, _get_provider_name
@@ -83,6 +84,17 @@ def widget_info(token: str, db: Session = Depends(get_db)):
     )
 
 
+@router.get("/{token}/session/{session_id}")
+def check_session(token: str, session_id: str, db: Session = Depends(get_db)):
+    """驗證 session 是否仍有效（前端用於判斷是否清除本地 session）"""
+    kb = _get_kb_by_token(token, db)
+    session = db.query(WidgetSession).filter(
+        WidgetSession.id == session_id,
+        WidgetSession.kb_id == kb.id,
+    ).first()
+    return {"valid": session is not None}
+
+
 @router.post("/{token}/session", response_model=SessionResponse, status_code=201)
 def create_or_update_session(
     token: str,
@@ -131,26 +143,35 @@ async def widget_chat(
     """Widget 對話（SSE streaming）"""
     kb = _get_kb_by_token(token, db)
 
-    if not kb.model_name:
+    # 先把所有需要的 kb 屬性提取為 local 變數，避免 commit 後 ORM expire 問題
+    kb_id: int = kb.id
+    kb_tenant_id: str = kb.tenant_id
+    kb_model_name: str = (kb.model_name or "").strip()
+    kb_system_prompt: str | None = (kb.system_prompt or "").strip() or None
+
+    if not kb_model_name:
         raise HTTPException(
             status_code=400,
             detail="此知識庫尚未設定模型，請聯繫管理員",
         )
 
-    # 更新 session last_active_at
-    session = db.query(WidgetSession).filter(WidgetSession.id == body.session_id).first()
-    if session:
-        session.last_active_at = datetime.now(timezone.utc)
-        db.commit()
+    litellm_model, api_key, api_base = _get_llm_params(
+        kb_model_name, db=db, tenant_id=kb_tenant_id
+    )
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{_get_provider_name(kb_model_name)} API Key 未設定",
+        )
 
-    # RAG 取參考資料
+    # RAG 取參考資料（與 chat.py 相同做法：直接同步呼叫）
     context_text = ""
     try:
         chunks = km_retrieve_sync(
             query=body.content,
-            tenant_id=kb.tenant_id,
+            tenant_id=kb_tenant_id,
             db=db,
-            knowledge_base_id=kb.id,
+            knowledge_base_id=kb_id,
             skip_scope_check=True,
         )
         if chunks:
@@ -162,9 +183,8 @@ async def widget_chat(
     msgs: list[dict] = []
     system_parts: list[str] = []
 
-    # KB 自訂 system prompt 優先，否則用預設 CS prompt 檔
-    if kb.system_prompt:
-        system_parts.append(kb.system_prompt)
+    if kb_system_prompt:
+        system_parts.append(kb_system_prompt)
     else:
         file_prompt = _load_system_prompt_from_file("cs")
         if file_prompt:
@@ -176,20 +196,23 @@ async def widget_chat(
     if system_parts:
         msgs.append({"role": "system", "content": "\n\n".join(system_parts)})
 
-    for m in body.messages:
+    # 只保留最近 6 則歷史（3 來回），避免 token 無限增長（local model 尤重要）
+    MAX_HISTORY = 6
+    history = body.messages[-MAX_HISTORY:] if len(body.messages) > MAX_HISTORY else body.messages
+    for m in history:
         msgs.append({"role": m["role"], "content": m["content"]})
 
     msgs.append({"role": "user", "content": body.content})
 
-    # LLM params
-    litellm_model, api_key, api_base = _get_llm_params(
-        kb.model_name, db=db, tenant_id=kb.tenant_id
-    )
-    if not api_key:
-        raise HTTPException(
-            status_code=503,
-            detail=f"{_get_provider_name(kb.model_name)} API Key 未設定",
-        )
+    # session + user 訊息一次寫入
+    session = db.query(WidgetSession).filter(WidgetSession.id == body.session_id).first()
+    if session:
+        session.last_active_at = datetime.now(timezone.utc)
+    db.add(WidgetMessage(session_id=body.session_id, role="user", content=body.content))
+    db.commit()
+
+    is_local_model = kb_model_name.startswith("local/")
+    session_id = body.session_id
 
     async def generate() -> AsyncIterator[str]:
         try:
@@ -201,6 +224,9 @@ async def widget_chat(
                 "temperature": 0.3,
             }
             apply_api_base(kwargs, api_base)
+            # Ollama thinking models（local/）預設啟用 thinking，需停用
+            if is_local_model:
+                kwargs["think"] = False
 
             response = await litellm.acompletion(**kwargs)
             full_text = ""
@@ -211,6 +237,14 @@ async def widget_chat(
                     yield f"data: {json.dumps({'event': 'delta', 'text': delta}, ensure_ascii=False)}\n\n"
 
             yield f"data: {json.dumps({'event': 'done', 'content': full_text}, ensure_ascii=False)}\n\n"
+
+            # 儲存 assistant 訊息
+            if full_text:
+                try:
+                    db.add(WidgetMessage(session_id=session_id, role="assistant", content=full_text))
+                    db.commit()
+                except Exception as save_err:
+                    logger.warning("儲存 assistant 訊息失敗: %s", save_err)
         except Exception as e:
             logger.error("Widget chat 錯誤: %s", e)
             yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"

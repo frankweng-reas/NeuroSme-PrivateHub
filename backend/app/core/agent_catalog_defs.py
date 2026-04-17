@@ -18,16 +18,7 @@ class AgentDef(TypedDict):
 
 
 BUILTIN_AGENTS: list[AgentDef] = [
-    {
-        "group_id": "production",
-        "group_name": "生產管理",
-        "agent_id": "order",
-        "agent_name": "Order Agent",
-        "icon_name": None,
-        "sort_id": "15",
-        "backend_router": None,
-        "frontend_key": None,
-    },
+
     {
         "group_id": "sales",
         "group_name": "銷售管理",
@@ -40,7 +31,7 @@ BUILTIN_AGENTS: list[AgentDef] = [
     },
     {
         "group_id": "sales",
-        "group_name": "銷售管理",
+        "group_name": "分析",
         "agent_id": "business",
         "agent_name": "Business Insight Agent",
         "icon_name": "ChartNoAxesCombined",
@@ -89,16 +80,6 @@ BUILTIN_AGENTS: list[AgentDef] = [
         "frontend_key": "agent-scheduling",
     },
     {
-        "group_id": "rd",
-        "group_name": "研發管理",
-        "agent_id": "workorder",
-        "agent_name": "Work Order Agent",
-        "icon_name": None,
-        "sort_id": "41",
-        "backend_router": None,
-        "frontend_key": None,
-    },
-    {
         "group_id": "financial",
         "group_name": "財務管理",
         "agent_id": "invoice",
@@ -110,7 +91,7 @@ BUILTIN_AGENTS: list[AgentDef] = [
     },
     {
         "group_id": "production",
-        "group_name": "生產管理",
+        "group_name": "生產力",
         "agent_id": "chat",
         "agent_name": "Chat Agent",
         "icon_name": "Brain",

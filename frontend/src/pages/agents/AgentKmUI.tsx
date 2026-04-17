@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BookOpen,
+  Check,
   ChevronRight,
   ChevronsRight,
   Globe,
@@ -15,6 +16,7 @@ import {
   RefreshCw,
   Trash2,
   Upload,
+  X,
 } from 'lucide-react'
 import { Group, Panel, PanelImperativeHandle, Separator } from 'react-resizable-panels'
 import { chatCompletionsStream } from '@/api/chat'
@@ -28,6 +30,7 @@ import AISettingsPanelAdvanced from '@/components/AISettingsPanelAdvanced'
 import AISettingsPanelBasic from '@/components/AISettingsPanelBasic'
 import ConfirmModal from '@/components/ConfirmModal'
 import ErrorModal from '@/components/ErrorModal'
+import HelpModal from '@/components/HelpModal'
 import { DETAIL_OPTIONS, LANGUAGE_OPTIONS, ROLE_OPTIONS } from '@/constants/aiOptions'
 import type { Agent, UserRole } from '@/types'
 
@@ -100,6 +103,8 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadScope, setUploadScope] = useState<'private' | 'public'>('private')
+  const [uploadDocType, setUploadDocType] = useState<string>('article')
+  const [uploadModalOpen, setUploadModalOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<KmDocument | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
 
@@ -120,6 +125,7 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
   const [isLoading, setIsLoading] = useState(false)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
   const [threadId, setThreadId] = useState<string | null>(null)
+  const [showHelpModal, setShowHelpModal] = useState(false)
 
   // 進入頁面時自動建立 thread（用於後端儲存對話紀錄）
   useEffect(() => {
@@ -155,7 +161,7 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
   // ── 載入文件 ──────────────────────────────────────────────────────────────
   const loadDocs = useCallback(() => {
     setDocsLoading(true)
-    listKmDocuments()
+    listKmDocuments(undefined, true)
       .then((data) => {
         setDocs(data)
         // 個人文件 default check，公共文件 default uncheck
@@ -183,10 +189,18 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
       const file = files[0]
       e.target.value = ''
 
+      // 依檔名自動偵測文件類型
+      const lower = file.name.toLowerCase()
+      let detectedType = uploadDocType
+      if (/faq|q[&＆]a|問答/.test(lower)) detectedType = 'faq'
+      else if (/spec|規格|technical|datasheet/.test(lower)) detectedType = 'spec'
+      else if (/policy|政策|條款|terms|contract/.test(lower)) detectedType = 'policy'
+      if (detectedType !== uploadDocType) setUploadDocType(detectedType)
+
       setUploading(true)
       setUploadProgress(0)
       try {
-        const doc = await uploadKmDocument(file, uploadScope, (pct) => setUploadProgress(pct))
+        const doc = await uploadKmDocument(file, uploadScope, (pct) => setUploadProgress(pct), [], undefined, detectedType)
         setDocs((prev) => [doc, ...prev])
         if (doc.scope === 'private') {
           setSelectedDocIds((prev) => new Set([...prev, doc.id]))
@@ -201,6 +215,7 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
         } else {
           showToast(`「${doc.filename}」上傳成功，處理中…`)
         }
+        setUploadModalOpen(false)
       } catch (err) {
         const msg = err instanceof Error ? err.message : '上傳失敗'
         setErrorModal({ title: '上傳失敗', message: msg })
@@ -209,7 +224,7 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
         setUploadProgress(0)
       }
     },
-    [uploadScope, showToast]
+    [uploadScope, uploadDocType, showToast]
   )
 
   // ── 刪除 ──────────────────────────────────────────────────────────────────
@@ -385,6 +400,128 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
         onCancel={() => setShowClearConfirm(false)}
       />
 
+      {/* ── 上傳檔案 Modal ──────────────────────────────────────────────────── */}
+      {uploadModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl ring-1 ring-gray-200">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+              <div className="flex items-center gap-2">
+                <Upload className="h-4 w-4 text-sky-500" />
+                <span className="text-lg font-semibold text-gray-800">上傳檔案</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => !uploading && setUploadModalOpen(false)}
+                disabled={uploading}
+                className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 disabled:opacity-40"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="px-6 py-6 space-y-6">
+              {/* 上傳範圍 Scope toggle（只有 admin/manager 可見） */}
+              {canUploadPublic && (
+                <div>
+                  <p className="mb-2 text-base font-semibold text-gray-700">上傳範圍</p>
+                  <div className="flex gap-3">
+                    {([
+                      { value: 'private' as const, icon: <Lock className="h-4 w-4" />, label: '個人文件', sub: '僅自己可見' },
+                      { value: 'public'  as const, icon: <Globe className="h-4 w-4" />, label: '公共文件', sub: '所有人可查詢' },
+                    ]).map(({ value, icon, label, sub }) => (
+                      <button
+                        key={value}
+                        type="button"
+                        disabled={uploading}
+                        onClick={() => setUploadScope(value)}
+                        className={`flex flex-1 items-center gap-3 rounded-xl border-2 px-4 py-3 text-left transition-all disabled:opacity-60 ${
+                          uploadScope === value
+                            ? 'border-sky-400 bg-sky-50 ring-2 ring-sky-200'
+                            : 'border-gray-200 bg-gray-50 hover:border-sky-200 hover:bg-sky-50/50'
+                        }`}
+                      >
+                        <span className={uploadScope === value ? 'text-sky-500' : 'text-gray-400'}>{icon}</span>
+                        <div>
+                          <p className={`text-base font-medium ${uploadScope === value ? 'text-sky-700' : 'text-gray-800'}`}>{label}</p>
+                          <p className="text-sm text-gray-400">{sub}</p>
+                        </div>
+                        {uploadScope === value && <Check className="ml-auto h-4 w-4 shrink-0 text-sky-500" />}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 文件類型 Radio */}
+              <div>
+                <p className="mb-1 text-base font-semibold text-gray-700">文件類型</p>
+                <p className="mb-3 text-sm text-gray-400">智能文檔處理可提昇搜尋準確度，請選擇適合類型</p>
+                <div className="grid grid-cols-2 gap-3">
+                  {([
+                    { value: 'article', emoji: '📄', label: '一般文章', sub: '說明文件、公告' },
+                    { value: 'faq',     emoji: '💬', label: 'FAQ 問答集', sub: '常見問題、Q&A' },
+                    { value: 'spec',    emoji: '🔧', label: '技術規格', sub: '參數表、Datasheet' },
+                    { value: 'policy',  emoji: '📋', label: '政策 / 條款', sub: '合約、規章' },
+                  ] as const).map(({ value, emoji, label, sub }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      disabled={uploading}
+                      onClick={() => setUploadDocType(value)}
+                      className={`flex items-start gap-3 rounded-xl border-2 px-4 py-3 text-left transition-all disabled:opacity-60 ${
+                        uploadDocType === value
+                          ? 'border-sky-400 bg-sky-50 ring-2 ring-sky-200'
+                          : 'border-gray-200 bg-gray-50 hover:border-sky-200 hover:bg-sky-50/50'
+                      }`}
+                    >
+                      <span className="mt-0.5 text-2xl leading-none">{emoji}</span>
+                      <div>
+                        <p className={`text-base font-medium ${uploadDocType === value ? 'text-sky-700' : 'text-gray-800'}`}>{label}</p>
+                        <p className="text-sm text-gray-400">{sub}</p>
+                      </div>
+                      {uploadDocType === value && <Check className="ml-auto mt-0.5 h-4 w-4 shrink-0 text-sky-500" />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 進度條 */}
+              {uploading && (
+                <div className="overflow-hidden rounded-full bg-gray-100">
+                  <div
+                    className="h-2 rounded-full bg-sky-400 transition-all"
+                    style={{ width: `${uploadProgress > 0 ? uploadProgress : 100}%` }}
+                  />
+                </div>
+              )}
+
+              {/* 上傳按鈕 */}
+              <button
+                type="button"
+                disabled={uploading}
+                onClick={() => fileInputRef.current?.click()}
+                className="flex w-full items-center justify-center gap-2 rounded-xl py-6 text-base font-medium text-white transition-opacity hover:opacity-90 active:opacity-80 disabled:opacity-50"
+                style={{ backgroundColor: HEADER_COLOR }}
+              >
+                {uploading ? (
+                  <>
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    上傳中 {uploadProgress > 0 ? `${uploadProgress}%` : '…'}
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-5 w-5" />
+                    點擊選擇檔案（PDF / TXT / MD）
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <ErrorModal
         open={errorModal !== null}
         title={errorModal?.title}
@@ -402,7 +539,7 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
         onCancel={() => !deleteLoading && setDeleteTarget(null)}
       />
 
-      <AgentHeader agent={agent} headerBackgroundColor={HEADER_COLOR} />
+      <AgentHeader agent={agent} headerBackgroundColor={HEADER_COLOR} onOnlineHelpClick={() => setShowHelpModal(true)} />
 
       <div className="mt-4 flex min-h-0 flex-1 gap-4 overflow-hidden">
         {/* ── 左側：知識庫文件管理 ─────────────────────────────────────────── */}
@@ -549,36 +686,6 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
 
               {/* Upload Controls */}
               <div className="shrink-0 border-t border-white/20 p-3">
-                {/* Scope toggle：只有 admin/manager 可見 */}
-                {canUploadPublic && (
-                  <div className="mb-2 flex items-center gap-2 rounded-lg bg-white/10 p-1">
-                    <button
-                      type="button"
-                      onClick={() => setUploadScope('private')}
-                      className={`flex flex-1 items-center justify-center gap-1 rounded-md py-1 text-sm transition-colors ${
-                        uploadScope === 'private'
-                          ? 'bg-white/20 text-white font-medium'
-                          : 'text-white/60 hover:text-white/80'
-                      }`}
-                    >
-                      <Lock className="h-3 w-3" />
-                      我的
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setUploadScope('public')}
-                      className={`flex flex-1 items-center justify-center gap-1 rounded-md py-1 text-sm transition-colors ${
-                        uploadScope === 'public'
-                          ? 'bg-white/20 text-white font-medium'
-                          : 'text-white/60 hover:text-white/80'
-                      }`}
-                    >
-                      <Globe className="h-3 w-3" />
-                      公共
-                    </button>
-                  </div>
-                )}
-
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -586,26 +693,15 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
                   className="hidden"
                   onChange={handleFileChange}
                 />
-
                 <button
                   type="button"
-                  disabled={uploading}
-                  onClick={() => fileInputRef.current?.click()}
-                  className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-white/15 py-2 text-sm font-medium text-white transition-colors hover:bg-white/25 disabled:opacity-60"
+                  onClick={() => setUploadModalOpen(true)}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg py-2.5 text-base font-medium text-white transition-opacity hover:opacity-90 active:opacity-80"
+                  style={{ backgroundColor: HEADER_COLOR }}
                 >
-                  {uploading ? (
-                    <>
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      上傳中 {uploadProgress > 0 ? `${uploadProgress}%` : '…'}
-                    </>
-                  ) : (
-                    <>
-                      <Upload className="h-3.5 w-3.5" />
-                      上傳文件（PDF / TXT / MD）
-                    </>
-                  )}
+                  <Upload className="h-4 w-4" />
+                  上傳檔案
                 </button>
-
                 <button
                   type="button"
                   onClick={loadDocs}
@@ -703,6 +799,12 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
           </Panel>
         </Group>
       </div>
+      <HelpModal
+        open={showHelpModal}
+        onClose={() => setShowHelpModal(false)}
+        url="/help-km-agent.md"
+        title="知識管理助理使用說明"
+      />
     </div>
   )
 }

@@ -32,6 +32,7 @@ class KmDocumentResponse(BaseModel):
     chunk_count: int | None
     tags: list[str] | None
     knowledge_base_id: int | None
+    doc_type: str
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -49,6 +50,7 @@ def _to_response(doc: KmDocument) -> KmDocumentResponse:
         chunk_count=doc.chunk_count,
         tags=doc.tags or [],
         knowledge_base_id=doc.knowledge_base_id,
+        doc_type=doc.doc_type,
         created_at=doc.created_at.isoformat() if doc.created_at else "",
     )
 
@@ -92,17 +94,23 @@ async def upload_km_document(
     scope: Annotated[str, Form(description="'private' 個人 | 'public' 租戶共用（admin）")] = "private",
     tags: Annotated[str, Form(description="JSON 陣列字串，如 '[\"HR\",\"IT\"]'，可選")] = "[]",
     knowledge_base_id: Annotated[int | None, Form(description="知識庫 ID，可選")] = None,
+    doc_type: Annotated[str, Form(description="文件類型：article | policy | spec | faq")] = "article",
     db: Session = Depends(get_db),
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):
     """上傳文件到知識庫。完成後同步進行 chunking + embedding。"""
     import json as _json
+    from app.services.km_service import DOC_TYPES
 
     # scope 驗證
     if scope not in ("private", "public"):
         raise HTTPException(status_code=400, detail="scope 只能是 'private' 或 'public'")
     if scope == "public" and current.role not in ("admin", "super_admin", "manager"):
         raise HTTPException(status_code=403, detail="只有管理員可以上傳到公共知識庫")
+
+    # doc_type 驗證
+    if doc_type not in DOC_TYPES:
+        raise HTTPException(status_code=400, detail=f"doc_type 必須是 {sorted(DOC_TYPES)} 之一")
 
     # tags 解析
     try:
@@ -147,6 +155,7 @@ async def upload_km_document(
         status="pending",
         tags=parsed_tags if parsed_tags else None,
         knowledge_base_id=knowledge_base_id,
+        doc_type=doc_type,
     )
     db.add(doc)
     db.commit()
@@ -160,6 +169,7 @@ async def upload_km_document(
         filename=filename,
         db=db,
         tenant_id=current.tenant_id,
+        doc_type=doc_type,
     )
 
     db.refresh(doc)
@@ -170,6 +180,7 @@ async def upload_km_document(
 def list_km_documents(
     scope: str | None = Query(None, description="過濾：'private' | 'public' | 不傳=全部"),
     knowledge_base_id: int | None = Query(None, description="依知識庫 ID 過濾"),
+    no_kb: bool = Query(False, description="True=只列出未歸屬知識庫的文件（Knowledge Agent 用）"),
     db: Session = Depends(get_db),
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):
@@ -189,6 +200,8 @@ def list_km_documents(
 
     if knowledge_base_id is not None:
         query = query.filter(KmDocument.knowledge_base_id == knowledge_base_id)
+    elif no_kb:
+        query = query.filter(KmDocument.knowledge_base_id == None)  # noqa: E711
 
     docs = query.order_by(KmDocument.created_at.desc()).all()
     return [_to_response(d) for d in docs]

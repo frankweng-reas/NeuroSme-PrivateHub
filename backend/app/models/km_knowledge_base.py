@@ -19,7 +19,7 @@ class KmKnowledgeBase(Base):
     # Widget 設定
     public_token = Column(String(64), nullable=True, unique=True, index=True)
     widget_title = Column(String(100), nullable=True)
-    widget_logo_url = Column(String(500), nullable=True)
+    widget_logo_url = Column(Text, nullable=True)
     widget_color = Column(String(20), nullable=True, default="#1A3A52")
     widget_lang = Column(String(10), nullable=True, default="zh-TW")
 

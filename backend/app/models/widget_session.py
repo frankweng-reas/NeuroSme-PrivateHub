@@ -16,3 +16,4 @@ class WidgetSession(Base):
     last_active_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     knowledge_base = relationship("KmKnowledgeBase", back_populates="widget_sessions")
+    messages = relationship("WidgetMessage", back_populates="session", order_by="WidgetMessage.created_at", cascade="all, delete-orphan")

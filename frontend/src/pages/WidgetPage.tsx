@@ -9,6 +9,7 @@ import { useParams, useSearchParams } from 'react-router-dom'
 import { I18nextProvider, useTranslation } from 'react-i18next'
 import { Loader2, MessageCircle, RotateCcw } from 'lucide-react'
 import {
+  checkWidgetSession,
   createWidgetSession,
   getWidgetInfo,
   widgetChatStream,
@@ -54,7 +55,7 @@ function genSessionId() {
 
 // ── 內層元件（需要 i18n context）────────────────────────────────────────────
 
-function WidgetInner({ token, isEmbed }: { token: string; isEmbed: boolean }) {
+function WidgetInner({ token, isEmbed, langOverride }: { token: string; isEmbed: boolean; langOverride: string }) {
   const { t } = useTranslation('widget')
 
   const [info, setInfo] = useState<WidgetInfo | null>(null)
@@ -74,10 +75,21 @@ function WidgetInner({ token, isEmbed }: { token: string; isEmbed: boolean }) {
   useEffect(() => {
     if (!token) { setLoadError('載入失敗，請確認連結是否正確'); return }
     getWidgetInfo(token)
-      .then((data) => {
+      .then(async (data) => {
         setInfo(data)
         const stored = loadSession(token)
         if (stored) {
+          // 驗證 session 是否仍在後端存在（避免 DB 重設後用舊 session 卡住）
+          try {
+            const { valid } = await checkWidgetSession(token, stored.sessionId)
+            if (!valid) {
+              clearSession(token)
+              setPhase('welcome')
+              return
+            }
+          } catch {
+            // 驗證失敗時保守處理：仍使用本地 session
+          }
           setSessionId(stored.sessionId)
           setVisitorName(stored.visitorName)
           setVisitorEmail(stored.visitorEmail)
@@ -94,10 +106,11 @@ function WidgetInner({ token, isEmbed }: { token: string; isEmbed: boolean }) {
       })
   }, [token])  // 只依賴 token，避免 t 變動（語言切換）重新執行並覆蓋 messages
 
-  // ── 依 KB 設定切換語言（分開，避免觸發重新載入）────────────────────────────
+  // ── 依語言優先序切換（?lang= > KB 設定 > zh-TW）────────────────────────────
   useEffect(() => {
-    if (info?.lang) widgetI18n.changeLanguage(info.lang)
-  }, [info?.lang])
+    const lang = langOverride || info?.lang || 'zh-TW'
+    widgetI18n.changeLanguage(lang)
+  }, [langOverride, info?.lang])
 
   // ── 提交訪客資訊 ─────────────────────────────────────────────────────────────
   async function handleStartChat(e: React.FormEvent) {
@@ -323,10 +336,11 @@ export default function WidgetPage() {
   const { token = '' } = useParams<{ token: string }>()
   const [searchParams] = useSearchParams()
   const isEmbed = searchParams.get('embed') === '1'
+  const langOverride = searchParams.get('lang') ?? ''
 
   return (
     <I18nextProvider i18n={widgetI18n}>
-      <WidgetInner token={token} isEmbed={isEmbed} />
+      <WidgetInner token={token} isEmbed={isEmbed} langOverride={langOverride} />
     </I18nextProvider>
   )
 }

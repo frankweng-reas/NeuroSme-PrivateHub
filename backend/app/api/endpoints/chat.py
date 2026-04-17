@@ -656,6 +656,15 @@ async def chat_completions_stream(
             return
 
         full = "".join(parts)
+        # Ollama streaming 不回傳 usage → 字元數估算（monitoring 用，非計費）
+        if usage_out is None and prepared.model.startswith("local/"):
+            prompt_chars = sum(len(str(m.get("content", ""))) for m in prepared.messages)
+            completion_chars = len(full)
+            usage_out = UsageMeta(
+                prompt_tokens=prompt_chars // 3,
+                completion_tokens=completion_chars // 3,
+                total_tokens=(prompt_chars + completion_chars) // 3,
+            )
         rid_str = persist_ok(usage_out, finish_reason)
         done_payload = {
             "event": "done",

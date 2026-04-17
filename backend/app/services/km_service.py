@@ -23,6 +23,21 @@ EMBEDDING_DIM = 1536
 CHUNK_SIZE = 1500
 CHUNK_OVERLAP = 200
 
+# 各文件類型的 chunking 策略與檢索 top_k
+# chunk_size 越小 → top_k 越大（總 context 字元數約 3000–6000）
+CHUNK_STRATEGIES: dict[str, dict] = {
+    "faq":     {"chunk_size": 300,  "overlap": 50,  "top_k": 12},
+    "spec":    {"chunk_size": 400,  "overlap": 50,  "top_k": 10},
+    "policy":  {"chunk_size": 800,  "overlap": 150, "top_k": 6},
+    "article": {"chunk_size": 1500, "overlap": 200, "top_k": 4},
+}
+DOC_TYPES = frozenset(CHUNK_STRATEGIES.keys())
+
+
+def _strategy(doc_type: str) -> dict:
+    """取得文件類型對應策略，未知類型 fallback 到 article。"""
+    return CHUNK_STRATEGIES.get(doc_type, CHUNK_STRATEGIES["article"])
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 文字擷取
@@ -68,17 +83,11 @@ def _extract_pdf(file_bytes: bytes) -> str:
 # Chunking
 # ──────────────────────────────────────────────────────────────────────────────
 
+import re as _re
 
-def chunk_text(
-    text: str,
-    chunk_size: int = CHUNK_SIZE,
-    overlap: int = CHUNK_OVERLAP,
-) -> list[str]:
-    """以字元為單位切分文字（滑動視窗，有重疊）。"""
-    text = text.strip()
-    if not text:
-        return []
 
+def _chunk_sliding(text: str, chunk_size: int, overlap: int) -> list[str]:
+    """滑動視窗切分（基礎實作）。"""
     chunks: list[str] = []
     start = 0
     while start < len(text):
@@ -89,8 +98,68 @@ def chunk_text(
         if end >= len(text):
             break
         start = end - overlap
-
     return chunks
+
+
+def _chunk_faq(text: str) -> list[str]:
+    """FAQ 專用切割：每個 Q&A 對成一個 chunk。
+
+    三層 fallback：
+      1a. 偵測明確的 Q&A pattern（Q:/A:, 問:/答:, 數字編號）
+      1b. 偵測 ●/○ bullet 格式（問題=●, 答案=○ 縮排）
+      2.  按雙換行段落切
+      3.  fallback：滑動視窗（chunk_size=300）
+    """
+    # Layer 1a：Q&A 前綴 pattern（Q:, 問:, 1. 等）
+    qa_pattern = _re.compile(
+        r'(?:^|\n)(?=\s*(?:Q[：:】]|問[：:]|\d+[.、)）]\s))',
+        _re.MULTILINE,
+    )
+    parts = [p.strip() for p in qa_pattern.split(text) if p.strip()]
+    if len(parts) >= 2:
+        logger.debug("FAQ chunking：Q&A pattern，%d 對", len(parts))
+        return parts
+
+    # Layer 1b：● 問題 / ○ 答案 的 bullet 格式
+    # 以 ● 作為 chunk 邊界，每個 ● 問題 + 其後的 ○ 答案 = 一個 chunk
+    bullet_pattern = _re.compile(r'(?:^|\n)(?=\s*[●•]\s)', _re.MULTILINE)
+    bullet_parts = [p.strip() for p in bullet_pattern.split(text) if p.strip()]
+    if len(bullet_parts) >= 2:
+        logger.debug("FAQ chunking：● bullet 格式，%d 對", len(bullet_parts))
+        return bullet_parts
+
+    # Layer 2：按段落切（雙換行）
+    paragraphs = [p.strip() for p in _re.split(r'\n{2,}', text) if p.strip()]
+    if len(paragraphs) >= 2:
+        logger.debug("FAQ chunking：段落模式，%d 段", len(paragraphs))
+        return paragraphs
+
+    # Layer 3：滑動視窗 fallback
+    logger.debug("FAQ chunking：fallback 滑動視窗")
+    return _chunk_sliding(text, chunk_size=300, overlap=50)
+
+
+def chunk_text(
+    text: str,
+    doc_type: str = "article",
+    chunk_size: int | None = None,
+    overlap: int | None = None,
+) -> list[str]:
+    """文件切分入口：依 doc_type 選擇切分策略。
+    - faq：Q&A 感知切割（每對獨立 chunk）
+    - 其他：依 CHUNK_STRATEGIES 的 chunk_size/overlap 滑動視窗
+    """
+    text = text.strip()
+    if not text:
+        return []
+
+    if doc_type == "faq":
+        return _chunk_faq(text)
+
+    s = _strategy(doc_type)
+    size = chunk_size if chunk_size is not None else s["chunk_size"]
+    ov = overlap if overlap is not None else s["overlap"]
+    return _chunk_sliding(text, chunk_size=size, overlap=ov)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -126,9 +195,11 @@ def process_document(
     filename: str,
     db: Session,
     tenant_id: str,
+    doc_type: str = "article",
 ) -> None:
     """完整管線：文字擷取 → 切分 → Embedding → 寫入 km_chunks。
     同步執行（於上傳請求中直接處理，適合初期小量文件場景）。
+    doc_type 決定 chunk_size / overlap（見 CHUNK_STRATEGIES）。
     """
     doc = db.get(KmDocument, doc_id)
     if not doc:
@@ -146,8 +217,8 @@ def process_document(
             db.commit()
             return
 
-        # 2. 切分 chunks
-        chunks = chunk_text(text)
+        # 2. 依文件類型切分 chunks
+        chunks = chunk_text(text, doc_type=doc_type)
         if not chunks:
             doc.status = "error"
             doc.error_message = "文字切分失敗"
@@ -212,13 +283,14 @@ def km_retrieve_sync(
     db: Session,
     tenant_id: str,
     user_id: int = 0,
-    top_k: int = 8,
+    top_k: int | None = None,
     selected_doc_ids: list[int] | None = None,
     knowledge_base_id: int | None = None,
     skip_scope_check: bool = False,
 ) -> list[KmChunk]:
     """同步向量檢索：query → embedding → cosine similarity 找 top-K chunks。
 
+    top_k：若未指定，依 KB 內文件的 doc_type 自動決定（取最大 top_k 以保守覆蓋）。
     存取範圍：
       - scope='public'（任何 tenant 使用者可見）
       - scope='private' 且 owner_user_id = user_id（個人私有）
@@ -230,6 +302,26 @@ def km_retrieve_sync(
     if not api_key:
         logger.warning("KM 檢索失敗：tenant_id=%s 無 OpenAI API Key", tenant_id)
         return []
+
+    # 動態決定 top_k：依 KB 內文件類型取最大值（混合類型保守取多）
+    if top_k is None:
+        try:
+            q_types = db.query(KmDocument.doc_type).filter(
+                KmDocument.tenant_id == tenant_id,
+                KmDocument.status == "ready",
+            )
+            if knowledge_base_id is not None:
+                q_types = q_types.filter(KmDocument.knowledge_base_id == knowledge_base_id)
+            elif selected_doc_ids:
+                q_types = q_types.filter(KmDocument.id.in_(selected_doc_ids))
+            doc_types = [row[0] for row in q_types.distinct().all()]
+            top_k = max(
+                (_strategy(dt)["top_k"] for dt in doc_types),
+                default=8,
+            )
+        except Exception:
+            top_k = 8
+        logger.debug("km_retrieve top_k=%d (doc_types=%s)", top_k, doc_types if doc_types else "unknown")
 
     try:
         embeddings = embed_texts_sync([query], api_key)
