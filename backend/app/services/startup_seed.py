@@ -4,7 +4,6 @@
   1. seed_agent_catalog   — upsert 產品內建 agents（所有環境）
   2. seed_default_tenant  — 若 tenants 為空，建立預設 tenant（所有環境）
   3. seed_default_admin   — 若 users 為空，建立預設 admin 帳號（所有環境）
-  4. seed_tenant_agents   — 依 ONPREM_ENABLED_AGENTS 同步授權（on-prem 才設定）
 """
 import logging
 import secrets

@@ -16,7 +16,6 @@ from app.services.startup_seed import (
     seed_agent_catalog,
     seed_default_admin,
     seed_default_tenant,
-    seed_tenant_agents,
 )
 from app.services.stored_files_store import get_stored_files_base_dir
 
@@ -41,13 +40,6 @@ async def lifespan(app: FastAPI):
         seed_agent_catalog(db)
         seed_default_tenant(db)
         seed_default_admin(db)
-        if settings.ONPREM_ENABLED_AGENTS.strip():
-            enabled = [
-                aid.strip()
-                for aid in settings.ONPREM_ENABLED_AGENTS.split(",")
-                if aid.strip()
-            ]
-            seed_tenant_agents(db, enabled)
 
     yield
     await session.close()
