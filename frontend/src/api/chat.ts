@@ -9,7 +9,7 @@ export interface ChatMessage {
 export interface ChatRequest {
   agent_id?: string // chat.py 必填；chat_dev 不填
   project_id?: string // quotation_parse 時可填，改從 qtn_sources 取參考資料
-  prompt_type?: string // chat_agent → system_prompt_chat_agent.md；空或 analysis → system_prompt_analysis.md；quotation_parse → …
+  prompt_type?: string // chat_agent / knowledge / cs / quotation_parse / quotation_share → 對應後端 config/*.md
   schema_id?: string // dev-test-compute-tool：覆寫專案 schema
   /** 若有值，後端會寫入 chat_llm_requests 並在回應帶回 llm_request_id */
   chat_thread_id?: string

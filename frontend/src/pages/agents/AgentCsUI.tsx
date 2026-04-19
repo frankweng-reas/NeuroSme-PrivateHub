@@ -61,13 +61,6 @@ function formatBytes(bytes: number | null): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
-function StatusDot({ status }: { status: KmDocument['status'] }) {
-  if (status === 'ready') return <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400" />
-  if (status === 'processing' || status === 'pending')
-    return <Loader2 className="h-3 w-3 shrink-0 animate-spin text-amber-400" />
-  return <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red-400" />
-}
-
 function StatusBadge({ status }: { status: KmDocument['status'] }) {
   if (status === 'ready')
     return <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-base text-emerald-700">就緒</span>

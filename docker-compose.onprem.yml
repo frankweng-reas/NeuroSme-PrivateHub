@@ -8,7 +8,7 @@
 # 客戶 IT 操作指南：
 #   啟動：  docker compose -f docker-compose.onprem.yml up -d
 #   升級：  （步驟與首次安裝相同，詳見 QUICKSTART.md）
-#   備份：  ./neurosme_data/  ./localauth_data/  兩個目錄定期備份即可
+#   備份：  ~/neurosme-data/  目錄定期備份即可（Mac / Linux 皆適用）
 #
 # ⚠ 禁止修改本檔案內的 secrets（已由 REAS 預先設定）
 
@@ -49,22 +49,22 @@ services:
       # 例："http://localhost", "http://localhost:80", "https://erp.acme.com"
       EXPOSE_COMPUTE_ERROR_DETAIL: "false"
     volumes:
-      - ./neurosme_data/stored_files:/app/data/stored_files
-      - ./neurosme_data/duckdb:/app/data/duckdb
+      - ${HOME}/neurosme-data/stored_files:/app/data/stored_files
+      - ${HOME}/neurosme-data/duckdb:/app/data/duckdb
     depends_on:
       neurosme-db:
         condition: service_healthy
 
   # ── NeuroSme 資料庫 ──────────────────────────────────────────
   neurosme-db:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: neurosme
       POSTGRES_PASSWORD: a3f8e2c1d74b96054e1f2c3d4a5b6c7d
       POSTGRES_DB: neurosme
     volumes:
-      - ./neurosme_data/postgres:/var/lib/postgresql/data
+      - ${HOME}/neurosme-data/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U neurosme"]
       interval: 5s
@@ -101,7 +101,7 @@ services:
       POSTGRES_PASSWORD: ccb7e57879127b441728934b2fa56dc3db1d40ceae05084c
       POSTGRES_DB: localauth
     volumes:
-      - ./localauth_data:/var/lib/postgresql/data
+      - ${HOME}/neurosme-data/localauth:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U localauth"]
       interval: 5s

@@ -7,4 +7,5 @@ __pycache__/
 data/
 tests/
 *.md
+!config/*.md
 .pytest_cache/

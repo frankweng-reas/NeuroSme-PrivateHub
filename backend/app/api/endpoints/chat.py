@@ -23,6 +23,7 @@ from app.services.chat_service import (
     _build_messages,
     _get_selected_source_files_content,
     _inject_user_message_images_into_messages,
+    _merge_system_into_first_user,
     _parse_optional_chat_thread_id,
 )
 from app.services.llm_service import (
@@ -52,7 +53,7 @@ class ChatRequest(BaseModel):
     # chat.py 本身的 /completions 與 /completions-stream 不使用這兩個欄位。
     project_id: str = ""
     schema_id: str = ""
-    prompt_type: str = ""  # chat_agent → system_prompt_chat_agent.md；空或 analysis → system_prompt_analysis.md
+    prompt_type: str = ""  # chat_agent / knowledge / cs / quotation_parse / quotation_share → 對應 config/*.md
     system_prompt: str = ""
     user_prompt: str = ""
     data: str = ""  # Chat Agent 等：前端可傳純文字參考（如本頁上傳檔），與後端組出之資料合併後一併受長度上限檢查
@@ -196,7 +197,10 @@ def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> Ch
     trace_raw = (req.trace_id or "").strip() or None
     thread_uuid = _parse_optional_chat_thread_id(db, current, tenant_id, aid, req.chat_thread_id)
 
-    pt = (req.prompt_type or "").strip()
+    # 若前端未帶 prompt_type，以 aid 作為 fallback（確保 Chat Agent 等一對一對應的 agent 永遠載到對應 system prompt）
+    pt = (req.prompt_type or "").strip() or aid
+    if pt != (req.prompt_type or "").strip():
+        req = req.model_copy(update={"prompt_type": pt})
 
     # KM Agent & Chat Service Agent：RAG 向量檢索，不使用 source_files
     kb_model_name: str | None = None

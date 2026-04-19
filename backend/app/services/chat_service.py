@@ -26,19 +26,23 @@ from app.services.stored_files_store import absolute_blob_path
 logger = logging.getLogger(__name__)
 
 _PROMPT_TYPE_FILES: dict[str, str] = {
-    "chat_agent": "system_prompt_chat_agent.md",
-    "analysis": "system_prompt_analysis.md",
-    "knowledge": "system_prompt_km_agent.md",
-    "cs": "system_prompt_cs_agent.md",
+    "chat_agent":      "system_prompt_chat_agent.md",
+    "chat":            "system_prompt_chat_agent.md",  # aid 直接對應，前端未帶 prompt_type 時的 fallback
+    "knowledge":       "system_prompt_km_agent.md",
+    "cs":              "system_prompt_cs_agent.md",
+    "quotation_parse": "system_prompt_quotation_1_parse.md",
+    "quotation_share": "system_prompt_quotation_4_share.md",
 }
 
 
 def _load_system_prompt_from_file(prompt_type: str = "") -> str:
     """依 prompt_type 讀取對應的 config/*.md，改檔即生效無需重啟"""
-    key = (prompt_type or "").strip() or "analysis"
-    filename = _PROMPT_TYPE_FILES.get(key, _PROMPT_TYPE_FILES["analysis"])
-    base = Path(__file__).resolve().parents[3]  # backend/ 或 Docker 的 /app
-    for root in (base.parent / "config", base / "config"):
+    key = (prompt_type or "").strip()
+    filename = _PROMPT_TYPE_FILES.get(key)
+    if not filename:
+        return ""
+    base = Path(__file__).resolve().parents[2]  # backend/ 或 Docker 的 /app
+    for root in (base / "config",):
         path = root / filename
         if path.exists():
             try:
@@ -47,6 +51,22 @@ def _load_system_prompt_from_file(prompt_type: str = "") -> str:
                 logger.debug("%s 讀取失敗: %s", filename, e)
                 return ""
     return ""
+
+
+def _merge_system_into_first_user(messages: list[dict]) -> list[dict]:
+    """Gemma 等不支援 system role 的模型（Ollama）workaround：
+    將 system 內容 prepend 到第一則 user message，確保人設被模型讀到。
+    若無 system message 或無 user message，原樣回傳。
+    """
+    if not messages or messages[0].get("role") != "system":
+        return messages
+    system_content = messages[0]["content"]
+    result = [dict(m) for m in messages[1:]]
+    for i, m in enumerate(result):
+        if m.get("role") == "user":
+            result[i]["content"] = f"{system_content}\n\n{m['content']}"
+            return result
+    return result
 
 
 def _build_messages(req, data: str = "", kb_system_prompt: str | None = None) -> list[dict]:

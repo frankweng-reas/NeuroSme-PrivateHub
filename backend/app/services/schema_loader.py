@@ -24,8 +24,8 @@ def _get_schemas_dir() -> Path | None:
         if p.exists():
             return p
     candidates = [
-        Path(__file__).resolve().parents[3] / "config" / "schemas",
-        Path(__file__).resolve().parents[2] / ".." / "config" / "schemas",
+        Path(__file__).resolve().parents[2] / "config" / "schemas",  # backend/config/schemas
+        Path(__file__).resolve().parents[3] / "config" / "schemas",  # 舊路徑相容
         Path.cwd().parent / "config" / "schemas",
         Path.cwd() / "config" / "schemas",
     ]
@@ -113,10 +113,10 @@ def _find_schema_path() -> Path | None:
         if custom.exists():
             return custom
     candidates = [
-        # 從 backend/app/services 往上到專案根目錄
+        # backend/config/schemas（標準路徑，從 backend/app/services 往上兩層）
+        Path(__file__).resolve().parents[2] / "config" / "schemas" / _SCHEMA_FILENAME,
+        # 舊路徑相容（從 backend/app/services 往上三層，即 NeuroSme2.0/）
         Path(__file__).resolve().parents[3] / "config" / "schemas" / _SCHEMA_FILENAME,
-        # 從 backend 目錄的父層（專案根）
-        Path(__file__).resolve().parents[2] / ".." / "config" / "schemas" / _SCHEMA_FILENAME,
         # 從 cwd（若從 backend/ 執行 uvicorn）
         Path.cwd().parent / "config" / "schemas" / _SCHEMA_FILENAME,
         # 從 cwd（若從專案根執行）
@@ -263,7 +263,7 @@ def load_bi_sales_schema() -> list[dict[str, Any]]:
     """載入 bi_sales_table.yaml，回傳欄位定義列表（支援新格式 type|attr|aliases）"""
     path = _find_schema_path()
     if not path:
-        logger.warning("bi_sales_table.yaml 找不到，嘗試路徑: %s", Path(__file__).resolve().parents[3] / "config" / "schemas" / _SCHEMA_FILENAME)
+        logger.warning("bi_sales_table.yaml 找不到，嘗試路徑: %s", Path(__file__).resolve().parents[2] / "config" / "schemas" / _SCHEMA_FILENAME)
         return []
     try:
         with open(path, encoding="utf-8") as f:

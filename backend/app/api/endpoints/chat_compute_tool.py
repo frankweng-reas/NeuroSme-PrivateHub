@@ -178,9 +178,9 @@ _PROMPT_FILES = {
 
 
 def _load_prompt(prompt_key: str) -> str:
-    base = Path(__file__).resolve().parents[3]
+    base = Path(__file__).resolve().parents[3]  # backend/ 或 Docker 的 /app
     filename = _PROMPT_FILES.get(prompt_key, "")
-    for root in (base.parent / "config", base / "config"):
+    for root in (base / "config",):
         path = root / filename
         if path.exists():
             try:

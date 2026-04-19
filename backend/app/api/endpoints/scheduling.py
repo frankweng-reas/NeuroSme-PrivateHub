@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 def _load_scheduling_extract_prompt() -> str:
     """讀取排班萃取 system prompt"""
-    base = Path(__file__).resolve().parents[3]
-    for root in (base.parent / "config", base / "config"):
+    base = Path(__file__).resolve().parents[3]  # backend/ 或 Docker 的 /app
+    for root in (base / "config",):
         path = root / "system_prompt_scheduling_extract.md"
         if path.exists():
             try:
