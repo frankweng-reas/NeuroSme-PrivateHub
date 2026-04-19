@@ -92,6 +92,16 @@ BUILTIN_AGENTS: list[AgentDef] = [
     {
         "group_id": "production",
         "group_name": "生產力",
+        "agent_id": "writing",
+        "agent_name": "Writing Agent",
+        "icon_name": "FileText",
+        "sort_id": "15",
+        "backend_router": None,
+        "frontend_key": "agent-writing",
+    },
+    {
+        "group_id": "production",
+        "group_name": "生產力",
         "agent_id": "chat",
         "agent_name": "Chat Agent",
         "icon_name": "Brain",

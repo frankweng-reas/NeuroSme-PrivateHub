@@ -44,38 +44,49 @@ export default function Layout() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [userMenuOpen])
 
+  const emailInitial = ((authUser?.email ?? user?.email ?? '') || 'U')[0].toUpperCase()
+
   return (
-    <div className="flex h-screen flex-col bg-gradient-to-b from-stone-200 to-stone-300">
+    <div
+      className="flex h-screen flex-col"
+      style={{
+        backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Cpath d='M 40 0 L 0 0 0 40' fill='none' stroke='rgba(24,51,61,0.18)' stroke-width='1'/%3E%3C/svg%3E"), linear-gradient(160deg, #e2e8ea 0%, #edf1f2 100%)`,
+      }}
+    >
       {/* Header - 在 agent 頁面隱藏 */}
       {!hideHeader && (
       <header
-        className="flex-shrink-0 border-b border-gray-300/50 shadow-md"
-        style={{ backgroundColor: '#4b5563' }}
+        className="flex-shrink-0 border-b border-black/10 shadow-sm"
+        style={{ backgroundColor: '#18333D' }}
       >
         <div className="container mx-auto px-4">
-          <div className="flex h-32 items-center justify-between">
+          <div className="flex h-20 items-center justify-between">
             {/* 應用名稱 - 點擊回到首頁 */}
-            <Link to="/" className="flex flex-col items-center hover:opacity-90">
+            <Link to="/" className="flex items-center hover:opacity-90">
               <h1
-                className="text-4xl font-bold text-white"
+                className="text-2xl font-bold text-white"
                 style={{
-                  letterSpacing: '-1px',
+                  letterSpacing: '-0.5px',
                   fontFamily: "'Inter', 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif",
                   fontStyle: 'italic',
                 }}
               >
                 <span style={{ fontWeight: 700 }}>Neuro</span>
                 <span style={{ fontWeight: 700 }}>Sme</span>
+                <span style={{ fontWeight: 300, fontStyle: 'normal', fontSize: '0.8em', opacity: 0.7 }}>{' \u00a0| On-Premise'}</span>
+                <span style={{ fontWeight: 300, fontStyle: 'normal', fontSize: '0.65em', opacity: 0.5, marginLeft: '0.6em', letterSpacing: '0.02em' }}>
+                  {import.meta.env.VITE_APP_VERSION ?? 'dev'}
+                </span>
               </h1>
             </Link>
 
             {/* 右側：管理工具、用戶資訊 */}
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
               {(user?.role === 'admin' || user?.role === 'super_admin') && (
                 <button
                   type="button"
                   onClick={() => navigate('/admin')}
-                  className="rounded-3xl border border-white/30 bg-white/10 px-6 py-2 text-sm font-medium text-white transition-opacity hover:bg-white/20"
+                  className="rounded-full border border-white/30 bg-white/10 px-5 py-2 text-base font-medium text-white transition-colors hover:bg-white/20"
                   style={{
                     fontFamily: "'Inter', 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif",
                   }}
@@ -87,10 +98,10 @@ export default function Layout() {
                 <button
                   type="button"
                   onClick={() => setUserMenuOpen((o) => !o)}
-                  className="flex h-10 w-10 items-center justify-center rounded-full border border-white/30 bg-white/20 transition-opacity hover:bg-white/30"
+                  className="flex h-10 w-10 items-center justify-center rounded-full border border-white/30 bg-white/20 transition-colors hover:bg-white/30"
                   aria-label="使用者選單"
                 >
-                  <span className="text-sm font-semibold text-white">U</span>
+                  <span className="text-base font-semibold text-white">{emailInitial}</span>
                 </button>
                 {userMenuOpen && (
                   <div
