@@ -3,11 +3,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { marked } from 'marked'
-import { ChevronRight, ClipboardCopy, FileText, Mail, RotateCcw, Sparkles, Undo2 } from 'lucide-react'
+import { ChevronRight, ClipboardCopy, FileText, Mail, Bold, Italic, List, ListOrdered, Heading2, Pencil, RotateCcw, Sparkles, Undo2 } from 'lucide-react'
 import AgentHeader from '@/components/AgentHeader'
 import LLMModelSelect from '@/components/LLMModelSelect'
 import ErrorModal from '@/components/ErrorModal'
 import { chatCompletionsStream } from '@/api/chat'
+import { createChatThread } from '@/api/chatThreads'
 import type { Agent } from '@/types'
 
 const HEADER_COLOR = '#1C3939'
@@ -246,6 +247,14 @@ function buildPrompt(docType: DocTypeDef, values: Record<string, string>, profil
   return lines.join('\n')
 }
 
+function buildRewritePrompt(fullText: string, selectedText: string, instruction: string): string {
+  const markedDoc = fullText.replace(
+    selectedText,
+    `[REWRITE_START]\n${selectedText}\n[REWRITE_END]`
+  )
+  return `改寫指令：${instruction}\n\n完整文件如下，請只改寫標記範圍內的段落：\n\n${markedDoc}`
+}
+
 function markdownToHtml(text: string): string {
   try {
     const html = marked.parse(text, { async: false }) as string
@@ -287,9 +296,20 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
   const [isStreaming, setIsStreaming] = useState(false)
   const [errorModal, setErrorModal] = useState<{ title: string; message: string } | null>(null)
   const [copyFeedback, setCopyFeedback] = useState(false)
+  const [rewriteInput, setRewriteInput] = useState('')
+  const [showRewriteInput, setShowRewriteInput] = useState(false)
+  const [isRewriting, setIsRewriting] = useState(false)
+  const [hasSelection, setHasSelection] = useState(false)
+  const [threadId, setThreadId] = useState<string | null>(null)
+  const [lastMeta, setLastMeta] = useState<{
+    model: string
+    usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null
+  } | null>(null)
 
   const fullTextRef = useRef('')
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // 儲存重寫時的選取範圍，避免串流過程中選取遺失
+  const rewriteRangeRef = useRef<{ from: number; to: number } | null>(null)
 
   const editor = useEditor({
     extensions: [StarterKit],
@@ -299,6 +319,10 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
         class: 'outline-none min-h-full px-8 py-6 prose prose-gray max-w-none text-base leading-relaxed',
       },
     },
+    onSelectionUpdate: ({ editor: e }) => {
+      const { from, to } = e.state.selection
+      setHasSelection(from !== to)
+    },
   })
 
   // 清理 interval
@@ -307,6 +331,13 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
       if (intervalRef.current) clearInterval(intervalRef.current)
     }
   }, [])
+
+  // 進頁面時建立 chat thread（用於後端 monitoring）
+  useEffect(() => {
+    createChatThread({ agent_id: agent.id, title: null })
+      .then((t) => setThreadId(t.id))
+      .catch(() => {})
+  }, [agent.id])
 
   const persistModel = useCallback((m: string) => {
     setModel(m)
@@ -370,6 +401,7 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
           model,
           messages: [],
           content: prompt,
+          chat_thread_id: threadId ?? '',
         },
         {
           onDelta: (chunk) => {
@@ -380,6 +412,7 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
             if (done.content && editor) {
               editor.commands.setContent(markdownToHtml(done.content), false)
             }
+            setLastMeta({ model: done.model ?? model, usage: done.usage ?? null })
             setIsStreaming(false)
           },
           onError: (msg) => {
@@ -395,7 +428,7 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
       const msg = e instanceof Error ? e.message : '發生未知錯誤'
       setErrorModal({ title: '生成失敗', message: msg })
     }
-  }, [agent.id, currentDocType, editor, fieldValues, isStreaming, model, stopStreaming])
+  }, [agent.id, currentDocType, editor, fieldValues, isStreaming, model, profile, stopStreaming, threadId])
 
   const handleCopy = useCallback(async () => {
     if (!editor) return
@@ -414,6 +447,67 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
     editor.commands.setContent('<p></p>')
     fullTextRef.current = ''
   }, [editor, isStreaming])
+
+  const handleRewrite = useCallback(async (instruction: string) => {
+    if (!editor || isRewriting || isStreaming) return
+    const { from, to } = editor.state.selection
+    if (from === to) return
+
+    const selectedText = editor.state.doc.textBetween(from, to, '\n')
+    const fullText = editor.getText()
+    if (!selectedText.trim()) return
+
+    rewriteRangeRef.current = { from, to }
+    setIsRewriting(true)
+    setShowRewriteInput(false)
+    setRewriteInput('')
+
+    const prompt = buildRewritePrompt(fullText, selectedText, instruction)
+    let rewrittenText = ''
+
+    try {
+      await chatCompletionsStream(
+        {
+          agent_id: agent.id,
+          prompt_type: 'writing_rewrite',
+          system_prompt: '',
+          user_prompt: '',
+          data: '',
+          model,
+          messages: [],
+          content: prompt,
+          chat_thread_id: threadId ?? '',
+        },
+        {
+          onDelta: (chunk) => {
+            rewrittenText += chunk
+          },
+          onDone: () => {
+            if (rewriteRangeRef.current && editor && rewrittenText) {
+              const { from: f, to: t } = rewriteRangeRef.current
+              editor.chain()
+                .setTextSelection({ from: f, to: t })
+                .deleteSelection()
+                .insertContent(rewrittenText)
+                .run()
+            }
+            rewriteRangeRef.current = null
+            setIsRewriting(false)
+          },
+          onError: (msg) => {
+            rewriteRangeRef.current = null
+            setIsRewriting(false)
+            setErrorModal({ title: '改寫失敗', message: msg ?? '發生未知錯誤' })
+          },
+        }
+      )
+    } catch (e) {
+      rewriteRangeRef.current = null
+      setIsRewriting(false)
+      const msg = e instanceof Error ? e.message : '發生未知錯誤'
+      setErrorModal({ title: '改寫失敗', message: msg })
+    }
+  }, [agent.id, editor, isRewriting, isStreaming, model, threadId])
 
   const hasContent = editor && editor.getText().trim().length > 0
 
@@ -621,13 +715,18 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
 
         {/* ── 右側：編輯器 ─────────────────────────────────────────────────── */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-gray-200/80 bg-white shadow-md ring-1 ring-gray-200/50">
-          {/* 編輯器 Toolbar */}
+          {/* 編輯器 Toolbar — 第一排：狀態 + 模型 + 操作 */}
           <div className="flex shrink-0 items-center justify-between border-b border-gray-200 bg-gray-50 px-4 py-2.5">
             <span className="text-base font-medium text-gray-600">
               {isStreaming ? (
                 <span className="flex items-center gap-2 text-amber-600">
                   <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
                   生成中…
+                </span>
+              ) : isRewriting ? (
+                <span className="flex items-center gap-2 text-blue-600">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+                  改寫中…
                 </span>
               ) : hasContent ? (
                 '草稿（可直接編輯）'
@@ -642,15 +741,6 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
                 compact
                 labelPosition="inline"
               />
-              <button
-                type="button"
-                onClick={() => editor?.commands.undo()}
-                disabled={!editor?.can().undo()}
-                className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-base text-gray-600 transition-colors hover:bg-gray-50 disabled:opacity-30"
-                title="復原"
-              >
-                <Undo2 className="h-4 w-4" />
-              </button>
               {hasContent && (
                 <>
                   <button
@@ -676,6 +766,132 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
             </div>
           </div>
 
+          {/* 編輯器 Toolbar — 第二排：格式按鈕（有內容時顯示） */}
+          {hasContent && (
+            <div className="flex shrink-0 items-center gap-1 border-y border-amber-200 bg-gradient-to-b from-amber-100 to-amber-50 px-4 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-1px_0_rgba(0,0,0,0.06),0_2px_4px_rgba(0,0,0,0.08)]">
+              {[
+                {
+                  icon: <Bold className="h-4 w-4" />,
+                  title: '粗體',
+                  action: () => editor?.chain().focus().toggleBold().run(),
+                  active: editor?.isActive('bold'),
+                },
+                {
+                  icon: <Italic className="h-4 w-4" />,
+                  title: '斜體',
+                  action: () => editor?.chain().focus().toggleItalic().run(),
+                  active: editor?.isActive('italic'),
+                },
+                {
+                  icon: <Heading2 className="h-4 w-4" />,
+                  title: '標題',
+                  action: () => editor?.chain().focus().toggleHeading({ level: 2 }).run(),
+                  active: editor?.isActive('heading', { level: 2 }),
+                },
+                {
+                  icon: <List className="h-4 w-4" />,
+                  title: '條列清單',
+                  action: () => editor?.chain().focus().toggleBulletList().run(),
+                  active: editor?.isActive('bulletList'),
+                },
+                {
+                  icon: <ListOrdered className="h-4 w-4" />,
+                  title: '數字清單',
+                  action: () => editor?.chain().focus().toggleOrderedList().run(),
+                  active: editor?.isActive('orderedList'),
+                },
+              ].map(({ icon, title, action, active }) => (
+                <button
+                  key={title}
+                  type="button"
+                  onClick={action}
+                  disabled={isStreaming || isRewriting}
+                  title={title}
+                  className={`rounded-lg p-2 transition-colors disabled:opacity-30 ${
+                    active ? 'bg-white text-amber-800 shadow-sm' : 'text-amber-600 hover:bg-white/70 hover:text-amber-800'
+                  }`}
+                >
+                  {icon}
+                </button>
+              ))}
+              <div className="mx-1 h-4 w-px bg-amber-300" />
+              <button
+                type="button"
+                onClick={() => editor?.commands.undo()}
+                disabled={!editor?.can().undo()}
+                title="復原"
+                className="rounded-lg p-2 text-amber-600 transition-colors hover:bg-white/70 hover:text-amber-800 disabled:opacity-30"
+              >
+                <Undo2 className="h-4 w-4" />
+              </button>
+
+              {/* AI 改寫按鈕：有選取時才顯示 */}
+              {hasSelection && !isStreaming && (
+                <>
+                  <div className="mx-1 h-4 w-px bg-amber-300" />
+                  {[
+                    { label: '重寫', instruction: '重新改寫這段，保持語意但換一種表達方式' },
+                    { label: '縮短', instruction: '將這段縮短，保留核心意思' },
+                    { label: '正式化', instruction: '將這段改為更正式的語氣' },
+                    { label: '友善化', instruction: '將這段改為更親切友善的語氣' },
+                  ].map(({ label, instruction }) => (
+                    <button
+                      key={label}
+                      type="button"
+                      onClick={() => handleRewrite(instruction)}
+                      disabled={isRewriting}
+                      className="rounded-lg px-2.5 py-1 text-sm font-medium text-amber-700 transition-colors hover:bg-white/70 hover:text-amber-900 disabled:opacity-40"
+                    >
+                      {label}
+                    </button>
+                  ))}
+                  <div className="mx-1 h-4 w-px bg-amber-300" />
+                  {showRewriteInput ? (
+                    <form
+                      className="flex items-center gap-1"
+                      onSubmit={(e) => {
+                        e.preventDefault()
+                        if (rewriteInput.trim()) handleRewrite(rewriteInput.trim())
+                      }}
+                    >
+                      <input
+                        autoFocus
+                        type="text"
+                        value={rewriteInput}
+                        onChange={(e) => setRewriteInput(e.target.value)}
+                        placeholder="輸入改寫指令…"
+                        className="w-40 rounded-lg border border-amber-300 bg-white px-2 py-1 text-sm focus:border-amber-500 focus:outline-none"
+                      />
+                      <button
+                        type="submit"
+                        disabled={!rewriteInput.trim() || isRewriting}
+                        className="rounded-lg px-2 py-1 text-sm font-medium text-amber-700 hover:bg-white/70 disabled:opacity-40"
+                      >
+                        送出
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setShowRewriteInput(false); setRewriteInput('') }}
+                        className="rounded-lg px-1.5 py-1 text-sm text-amber-500 hover:bg-white/70"
+                      >
+                        ✕
+                      </button>
+                    </form>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowRewriteInput(true)}
+                      className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-sm font-medium text-amber-700 transition-colors hover:bg-white/70"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                      自訂
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
           {/* TipTap 編輯器區域 */}
           <div className="min-h-0 flex-1 overflow-y-auto">
             {!hasContent && !isStreaming ? (
@@ -687,6 +903,18 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
               <EditorContent editor={editor} className="h-full" />
             )}
           </div>
+
+          {/* 底部 Meta 資訊列 */}
+          {lastMeta && (
+            <div className="shrink-0 border-t border-amber-200 bg-gradient-to-b from-amber-100 to-amber-50 px-4 py-1.5 text-xs text-amber-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-1px_0_rgba(0,0,0,0.06)]">
+              <span className="font-medium text-gray-500">{lastMeta.model}</span>
+              {lastMeta.usage && (
+                <span>
+                  {' '}· prompt: {lastMeta.usage.prompt_tokens} · completion: {lastMeta.usage.completion_tokens} · total: {lastMeta.usage.total_tokens}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

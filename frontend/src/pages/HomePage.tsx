@@ -13,7 +13,7 @@ const AGENT_DESCRIPTIONS: Record<string, string> = {
   writing:   'AI 輔助撰寫商業文書，一鍵生成草稿',
   knowledge: '根據企業知識庫文件精準回答問題',
   cs:        '基於知識庫，提供精準客服問答',
-  business:  '銷售數據分析與商業洞察報告',
+  business:  '數據分析與商業洞察報告',
   quotation: '自動化報價流程管理',
   customer:  '客戶行為分析與洞察',
   scheduling:'排班與行程規劃輔助',
@@ -126,9 +126,9 @@ export default function HomePage() {
                             <AgentIcon iconName={agent.icon_name} className={`h-6 w-6 ${colors.iconColor}`} />
                           </div>
                           <div className="min-w-0 flex-1">
-                            <h3 className="truncate text-lg font-semibold text-gray-900">{agent.agent_name}</h3>
+                            <h3 className="truncate text-xl font-semibold text-gray-900">{agent.agent_name}</h3>
                             {description && (
-                              <p className="mt-1 text-base leading-snug text-gray-500">{description}</p>
+                              <p className="mt-1 text-lg leading-snug text-gray-500">{description}</p>
                             )}
                           </div>
                         </div>

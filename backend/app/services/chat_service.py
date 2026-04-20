@@ -30,6 +30,7 @@ _PROMPT_TYPE_FILES: dict[str, str] = {
     "chat":            "system_prompt_chat_agent.md",  # aid 直接對應，前端未帶 prompt_type 時的 fallback
     "knowledge":       "system_prompt_km_agent.md",
     "writing":         "system_prompt_writing_agent.md",
+    "writing_rewrite": "system_prompt_writing_rewrite.md",
     "cs":              "system_prompt_cs_agent.md",
     "quotation_parse": "system_prompt_quotation_1_parse.md",
     "quotation_share": "system_prompt_quotation_4_share.md",
