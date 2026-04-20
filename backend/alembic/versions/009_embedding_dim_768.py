@@ -31,7 +31,7 @@ def upgrade():
     # 5. km_documents 狀態重設為 pending，讓使用者知道需要重新上傳
     op.execute("UPDATE km_documents SET status = 'pending', error_message = "
                "'Embedding 維度已升級（768 維），請重新上傳文件以建立索引。' "
-               "WHERE status = 'done'")
+               "WHERE status = 'ready'")
 
 
 def downgrade():

@@ -6,9 +6,8 @@
 #   localauth → localauth-db (postgres)
 #
 # 客戶 IT 操作指南：
-#   啟動前：先編輯 Caddyfile，填入您的 domain 並選擇 TLS 模式
-#   啟動：  docker compose -f docker-compose.onprem.yml up -d
-#   升級：  （步驟與首次安裝相同，詳見 QUICKSTART.md）
+#   啟動：  bash start.sh（互動式設定 domain/IP 並自動啟動）
+#   升級：  解壓新版後執行 bash start.sh（資料不受影響）
 #   備份：  ~/neurosme-data/  目錄定期備份即可（Mac / Linux 皆適用）
 #
 # ⚠ 禁止修改本檔案內的 secrets（已由 REAS 預先設定）
