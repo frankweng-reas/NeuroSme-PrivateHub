@@ -1,6 +1,7 @@
-"""Models 匯出：Base, Tenant, User, …, ChatThread, ChatMessage, ChatLlmRequest, StoredFile, Notebook, …"""
+"""Models 匯出：Base, Tenant, TenantConfig, User, …, ChatThread, ChatMessage, ChatLlmRequest, StoredFile, Notebook, …"""
 from app.core.database import Base
 from app.models.tenant import Tenant
+from app.models.tenant_config import TenantConfig
 from app.models.user import User
 from app.models.agent_catalog import AgentCatalog
 from app.models.tenant_agent import TenantAgent
@@ -35,4 +36,5 @@ __all__ = [
     "Notebook", "StoredFile", "ChatMessageAttachment", "NotebookSource",
     "ActivationCode",
     "KmDocument", "KmChunk", "KmKnowledgeBase", "WidgetSession", "WidgetMessage",
+    "TenantConfig",
 ]

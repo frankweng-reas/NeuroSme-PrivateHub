@@ -8,6 +8,10 @@
 import base64
 import logging
 from pathlib import Path
+
+# 每次 LLM 呼叫保留的最大歷史輪數（1 輪 = 1 user + 1 assistant）
+# 超過此數量的舊對話會被捨棄，避免 context 過長造成費用暴增或超出 token limit
+MAX_HISTORY_TURNS = 10  # 保留最近 10 輪（20 則訊息）
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -35,6 +39,7 @@ _PROMPT_TYPE_FILES: dict[str, str] = {
     "quotation_parse": "system_prompt_quotation_1_parse.md",
     "quotation_share": "system_prompt_quotation_4_share.md",
     "marketing":       "system_prompt_marketing_agent.md",
+    "marketing_chat":  "system_prompt_marketing_chat.md",
 }
 
 
@@ -92,7 +97,7 @@ def _build_messages(req, data: str = "", kb_system_prompt: str | None = None) ->
         system_parts.append(f"以下為參考資料：\n\n{data.strip()}")
     if system_parts:
         msgs.append({"role": "system", "content": "\n\n".join(system_parts)})
-    for m in req.messages:
+    for m in req.messages[-MAX_HISTORY_TURNS * 2:]:
         msgs.append({"role": m.role, "content": m.content})
     user_content = req.content
     if req.user_prompt.strip():

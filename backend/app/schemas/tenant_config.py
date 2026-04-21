@@ -1,0 +1,33 @@
+"""TenantConfig Pydantic schemas"""
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+class TenantConfigResponse(BaseModel):
+    """GET 回傳：目前租戶設定"""
+    tenant_id: str
+    default_llm_provider: Optional[str]
+    default_llm_model: Optional[str]
+    embedding_provider: str
+    embedding_model: str
+    embedding_locked_at: Optional[datetime]
+    embedding_version: int
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DefaultLLMUpdate(BaseModel):
+    """PATCH /llm-configs/default-model 用：更新預設 LLM"""
+    provider: str = Field(..., description="LLM provider：openai | gemini | twcc | local")
+    model: str = Field(..., description="模型字串，例：gemini/gemini-2.5-flash")
+
+
+class EmbeddingMigrateRequest(BaseModel):
+    """POST /llm-configs/embedding-config/migrate 用：遷移 embedding model"""
+    provider: str = Field(..., description="新 embedding provider：gemini | openai | local")
+    model: str = Field(..., description="新 embedding model，例：text-embedding-004")
+    confirm: bool = Field(..., description="必須傳 true 以確認此操作將清空所有向量索引")

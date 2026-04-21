@@ -3,12 +3,17 @@ import time
 import aiohttp
 import litellm
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from typing import Optional
 
 from app.core.database import get_db
 from app.core.encryption import decrypt_api_key, encrypt_api_key, mask_api_key
 from app.core.security import get_current_user
 from app.models.llm_provider_config import LLMProviderConfig
+from app.models.tenant_config import TenantConfig
+from app.models.km_document import KmDocument
+from app.models.km_chunk import KmChunk
 from app.models.user import User
 from app.schemas.llm_config import (
     LLMModelOption,
@@ -16,6 +21,11 @@ from app.schemas.llm_config import (
     LLMProviderConfigResponse,
     LLMProviderConfigUpdate,
     VALID_PROVIDERS,
+)
+from app.schemas.tenant_config import (
+    DefaultLLMUpdate,
+    EmbeddingMigrateRequest,
+    TenantConfigResponse,
 )
 from app.services.llm_utils import (
     apply_api_base,
@@ -240,8 +250,6 @@ def update_llm_config(
         cfg.api_key_encrypted = encrypt_api_key(body.api_key)
     if body.api_base_url is not None:
         cfg.api_base_url = body.api_base_url
-    if body.default_model is not None:
-        cfg.default_model = body.default_model
     if body.available_models is not None:
         cfg.available_models = body.available_models
     if body.is_active is not None:
@@ -281,13 +289,20 @@ _TWCC_MODEL_MAP: dict[str, str] = {
 _TEST_MESSAGES = [{"role": "user", "content": "Reply with exactly one word: OK"}]
 
 
+class TestLLMBody(BaseModel):
+    model: Optional[str] = None
+
+
 @router.post("/{config_id}/test")
 async def test_llm_config(
     config_id: int,
+    body: TestLLMBody = TestLLMBody(),
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    """測試 LLM provider 連通性（使用最短測試 prompt，計算回應時間）"""
+    """測試 LLM provider 連通性（使用最短測試 prompt，計算回應時間）。
+    body.model 可指定測試用的 model；未傳時使用 provider 預設測試 model。
+    """
     tenant_id = _require_tenant_admin(db, current)
     cfg = _get_config_for_tenant(db, config_id, tenant_id)
 
@@ -302,8 +317,8 @@ async def test_llm_config(
         except ValueError as e:
             raise HTTPException(status_code=500, detail=f"API Key 解密失敗：{e}") from e
 
-    # 決定測試用 model
-    model = cfg.default_model or _TEST_DEFAULT_MODELS.get(cfg.provider, "gpt-4o-mini")
+    # 決定測試用 model：優先使用呼叫端傳入的 model，否則用 provider 預設
+    model = (body.model or "").strip() or _TEST_DEFAULT_MODELS.get(cfg.provider, "gpt-4o-mini")
 
     t0 = time.monotonic()
     try:
@@ -376,3 +391,178 @@ async def test_llm_config(
     except Exception as e:
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         return {"ok": False, "elapsed_ms": elapsed_ms, "error": str(e)[:300]}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tenant-level 預設 LLM 設定
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _get_or_create_tenant_config(db: Session, tenant_id: str) -> TenantConfig:
+    """取得或自動建立 tenant_configs 列（應由 migration 補建，此為防禦性備援）。"""
+    tc = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
+    if not tc:
+        tc = TenantConfig(
+            tenant_id=tenant_id,
+            embedding_provider="openai",
+            embedding_model="text-embedding-3-small",
+        )
+        db.add(tc)
+        db.commit()
+        db.refresh(tc)
+    return tc
+
+
+@router.get("/tenant-config", response_model=TenantConfigResponse)
+def get_tenant_config(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """取得目前租戶的 LLM 預設與 Embedding 設定（admin / super_admin）"""
+    tenant_id = _require_tenant_admin(db, current)
+    tc = _get_or_create_tenant_config(db, tenant_id)
+    return tc
+
+
+@router.patch("/tenant-config/default-model", response_model=TenantConfigResponse)
+def update_default_llm_model(
+    body: DefaultLLMUpdate,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """更新租戶預設 LLM（provider + model）。可隨時更改，不影響向量索引。"""
+    tenant_id = _require_tenant_admin(db, current)
+
+    if body.provider not in VALID_PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"不支援的 provider，有效值：{sorted(VALID_PROVIDERS)}")
+
+    # 確認此 provider 已有啟用中的設定
+    provider_cfg = (
+        db.query(LLMProviderConfig)
+        .filter(
+            LLMProviderConfig.tenant_id == tenant_id,
+            LLMProviderConfig.provider == body.provider,
+            LLMProviderConfig.is_active.is_(True),
+        )
+        .first()
+    )
+    if not provider_cfg:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider '{body.provider}' 尚未設定或已停用，請先在 LLM 設定中新增並啟用。",
+        )
+
+    tc = _get_or_create_tenant_config(db, tenant_id)
+    tc.default_llm_provider = body.provider
+    tc.default_llm_model = body.model
+    db.commit()
+    db.refresh(tc)
+    return tc
+
+
+@router.post("/tenant-config/embedding/migrate", response_model=TenantConfigResponse)
+def migrate_embedding_config(
+    body: EmbeddingMigrateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """
+    遷移 Embedding model：清空向量索引、更新鎖定設定、version +1。
+    此操作不可逆，需傳 confirm=true。原始文件不刪除，需重新上傳以 re-embed。
+    """
+    tenant_id = _require_tenant_admin(db, current)
+
+    if not body.confirm:
+        raise HTTPException(status_code=400, detail="必須傳 confirm=true 以確認此操作。")
+
+    if body.provider not in VALID_PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"不支援的 provider，有效值：{sorted(VALID_PROVIDERS)}")
+
+    # 確認新 provider 已有有效設定
+    provider_cfg = (
+        db.query(LLMProviderConfig)
+        .filter(
+            LLMProviderConfig.tenant_id == tenant_id,
+            LLMProviderConfig.provider == body.provider,
+            LLMProviderConfig.is_active.is_(True),
+        )
+        .first()
+    )
+    if not provider_cfg and body.provider != "local":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider '{body.provider}' 尚未設定或已停用，請先設定 API Key。",
+        )
+
+    # 清空向量索引（刪除該 tenant 所有 km_chunks）
+    doc_ids = db.query(KmDocument.id).filter(KmDocument.tenant_id == tenant_id).subquery()
+    deleted = db.query(KmChunk).filter(KmChunk.document_id.in_(doc_ids)).delete(synchronize_session=False)
+
+    # 將文件狀態重設為 pending，提示使用者重新上傳
+    db.query(KmDocument).filter(
+        KmDocument.tenant_id == tenant_id,
+        KmDocument.status == "ready",
+    ).update(
+        {
+            "status": "pending",
+            "error_message": f"Embedding model 已遷移至 {body.provider}/{body.model}，請重新上傳文件以建立索引。",
+        },
+        synchronize_session=False,
+    )
+
+    # 更新 tenant_configs
+    from datetime import datetime, timezone
+    tc = _get_or_create_tenant_config(db, tenant_id)
+    tc.embedding_provider = body.provider
+    tc.embedding_model = body.model
+    tc.embedding_locked_at = None   # 解鎖，待下次寫入時重新鎖定
+    tc.embedding_version = (tc.embedding_version or 1) + 1
+    db.commit()
+    db.refresh(tc)
+
+    import logging
+    logging.getLogger(__name__).info(
+        "Embedding 遷移完成：tenant=%s provider=%s model=%s 清除 chunks=%d",
+        tenant_id, body.provider, body.model, deleted,
+    )
+    return tc
+
+
+@router.post("/tenant-config/embedding/test")
+async def test_embedding_config(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """測試目前租戶的 embedding 設定是否可用（送一個短句驗證 API key 與 model 正確）。"""
+    import asyncio
+    tenant_id = _require_tenant_admin(db, current)
+
+    # 直接呼叫 km_service 的 _get_embed_params 取得已鎖定設定
+    from app.services.km_service import _get_embed_params, embed_texts_sync
+    params = _get_embed_params(db, tenant_id)
+    if not params:
+        raise HTTPException(
+            status_code=400,
+            detail="Embedding 設定不完整：請確認已設定對應 provider 的 API Key。",
+        )
+    embed_provider, embed_model, embed_key, embed_base = params
+
+    t0 = time.monotonic()
+    try:
+        # 在 executor 中執行同步的 embed_texts_sync，避免 blocking event loop
+        loop = asyncio.get_event_loop()
+        vectors = await loop.run_in_executor(
+            None,
+            lambda: embed_texts_sync(
+                ["測試連線 OK"],
+                model=embed_model,
+                api_key=embed_key,
+                provider=embed_provider,
+                api_base=embed_base,
+            ),
+        )
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        dim = len(vectors[0]) if vectors else 0
+        return {"ok": True, "elapsed_ms": elapsed_ms, "model": embed_model, "dimensions": dim}
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        return {"ok": False, "elapsed_ms": elapsed_ms, "model": embed_model, "error": str(e)[:300]}

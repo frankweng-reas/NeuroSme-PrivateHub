@@ -2,15 +2,14 @@
 
 設計：
   - 使用 pgvector 做向量搜尋（cosine similarity）
-  - Embedding model：自動依 tenant 已設定的 provider 選擇（Gemini > OpenAI > Local）
-    - Gemini  → text-embedding-004        (768 維)
-    - OpenAI  → text-embedding-3-small    (768 維，指定 dimensions)
-    - Local   → ollama/nomic-embed-text   (768 維)
+  - Embedding model：由 tenant_configs 鎖定（預設 Gemini text-embedding-004，768 維）
+    換模型需走遷移流程（清空向量索引、re-embed、version +1）
   - 支援 PDF（pypdf）、純文字/Markdown（UTF-8）
   - chunk_size=1500 字元，overlap=200 字元
 """
 import io
 import logging
+from datetime import datetime, timezone
 
 import litellm
 from sqlalchemy.orm import Session
@@ -18,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.models.km_chunk import KmChunk
 from app.models.km_document import KmDocument
 from app.models.llm_provider_config import LLMProviderConfig
-from app.services.llm_service import _get_llm_params
+from app.models.tenant_config import TenantConfig
 from app.core.encryption import decrypt_api_key
 
 logger = logging.getLogger(__name__)
@@ -27,18 +26,12 @@ EMBEDDING_DIM = 768
 CHUNK_SIZE = 1500
 CHUNK_OVERLAP = 200
 
-# Embedding model 對應各 provider
-_EMBED_MODELS = {
-    "gemini": "gemini/text-embedding-004",
-    "openai": "text-embedding-3-small",
-    "local":  "ollama/nomic-embed-text",
-}
-
+# Embedding model litellm 前綴對應（provider → litellm model 字串前綴）
 # 各文件類型的 chunking 策略與檢索 top_k
 # chunk_size 越小 → top_k 越大（總 context 字元數約 3000–6000）
 CHUNK_STRATEGIES: dict[str, dict] = {
     "faq":     {"chunk_size": 300,  "overlap": 50,  "top_k": 12},
-    "spec":    {"chunk_size": 400,  "overlap": 50,  "top_k": 10},
+    "spec":    {"chunk_size": 800,  "overlap": 100, "top_k": 8},
     "policy":  {"chunk_size": 800,  "overlap": 150, "top_k": 6},
     "article": {"chunk_size": 1500, "overlap": 200, "top_k": 4},
 }
@@ -75,6 +68,83 @@ def extract_text(file_bytes: bytes, content_type: str | None, filename: str) -> 
 
 
 def _extract_pdf(file_bytes: bytes) -> str:
+    """從 PDF 擷取純文字。
+    策略：pdfplumber（主）→ pypdf（備援）。
+    pdfplumber 對表格式、多欄 PDF（如 Apple 規格書）提取能力較強。
+    提取後會清洗掉 URL、頁碼、時間戳記等雜訊行。
+    """
+    text = _extract_pdf_pdfplumber(file_bytes)
+    if len(text.strip()) < 100:
+        text_pypdf = _extract_pdf_pypdf(file_bytes)
+        if len(text_pypdf) > len(text):
+            text = text_pypdf
+    return _clean_pdf_text(text)
+
+
+def _clean_pdf_text(text: str) -> str:
+    """清洗 PDF 提取文字：移除 URL、頁碼行、時間戳記等雜訊。"""
+    import re
+
+    clean_lines: list[str] = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            clean_lines.append("")
+            continue
+        # 過濾純 URL 行
+        if re.match(r"^https?://\S+$", s):
+            continue
+        # 過濾 URL + 頁碼行（如：https://support.apple.com/... 4/11）
+        if re.match(r"^https?://\S+\s+\d+/\d+$", s):
+            continue
+        # 過濾「日期 時間 標題 URL」混合行（如：2026/4/17 下午3:23 iPhone 17 Pro - 技術規格...）
+        if re.match(r"^\d{4}/\d{1,2}/\d{1,2}\s", s):
+            continue
+        # 過濾頁碼行（如：1/11、2/11）
+        if re.match(r"^\d+/\d+$", s):
+            continue
+        clean_lines.append(line)
+
+    # 壓縮連續空白行為單一空行
+    result = re.sub(r"\n{3,}", "\n\n", "\n".join(clean_lines))
+    return result.strip()
+
+
+def _extract_pdf_pdfplumber(file_bytes: bytes) -> str:
+    try:
+        import pdfplumber  # type: ignore[import-untyped]
+
+        parts: list[str] = []
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for page in pdf.pages:
+                page_parts: list[str] = []
+
+                # 1. 先提取頁面純文字
+                plain = page.extract_text(x_tolerance=2, y_tolerance=3)
+                if plain:
+                    page_parts.append(plain.strip())
+
+                # 2. 提取表格（規格書的核心資料通常在表格裡）
+                tables = page.extract_tables()
+                for table in tables:
+                    rows: list[str] = []
+                    for row in table:
+                        cells = [str(c).strip() for c in row if c and str(c).strip()]
+                        if cells:
+                            rows.append("  ".join(cells))
+                    if rows:
+                        page_parts.append("\n".join(rows))
+
+                if page_parts:
+                    parts.append("\n".join(page_parts))
+
+        return "\n\n".join(parts)
+    except Exception as e:
+        logger.warning("pdfplumber 擷取失敗: %s", e)
+        return ""
+
+
+def _extract_pdf_pypdf(file_bytes: bytes) -> str:
     try:
         from pypdf import PdfReader  # type: ignore[import-untyped]
 
@@ -86,7 +156,7 @@ def _extract_pdf(file_bytes: bytes) -> str:
                 parts.append(text.strip())
         return "\n\n".join(parts)
     except Exception as e:
-        logger.warning("PDF 擷取失敗: %s", e)
+        logger.warning("pypdf 擷取失敗: %s", e)
         return ""
 
 
@@ -178,54 +248,100 @@ def chunk_text(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _get_embed_params(db: Session, tenant_id: str) -> tuple[str, str | None, str | None] | None:
+def _get_embed_params(db: Session, tenant_id: str) -> tuple[str, str, str | None, str | None] | None:
     """
-    自動偵測 tenant 已設定的 provider，依優先順序回傳 (model, api_key, api_base)。
-    優先順序：Gemini > OpenAI > Local
-    找不到任何設定時回傳 None。
+    從 tenant_configs 讀取鎖定的 embedding 設定，
+    再從 llm_provider_configs 取對應 provider 的 API key。
+    回傳 (provider, model, api_key, api_base) 或 None（設定不存在）。
+    model 直接使用 tenant_configs.embedding_model，不自動加前綴。
     """
-    def _db_cfg(provider: str):
-        return (
-            db.query(LLMProviderConfig)
-            .filter(
-                LLMProviderConfig.tenant_id == tenant_id,
-                LLMProviderConfig.provider == provider,
-                LLMProviderConfig.is_active.is_(True),
-            )
-            .order_by(LLMProviderConfig.id)
-            .first()
+    tc = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
+    if not tc:
+        return None
+
+    provider = tc.embedding_provider
+    model_name = tc.embedding_model  # 直接使用，不加前綴
+
+    # 取對應 provider 的 API key
+    provider_cfg = (
+        db.query(LLMProviderConfig)
+        .filter(
+            LLMProviderConfig.tenant_id == tenant_id,
+            LLMProviderConfig.provider == provider,
+            LLMProviderConfig.is_active.is_(True),
         )
+        .order_by(LLMProviderConfig.id)
+        .first()
+    )
 
-    def _key(cfg) -> str | None:
-        if not cfg or not cfg.api_key_encrypted:
-            return None
-        try:
-            return decrypt_api_key(cfg.api_key_encrypted)
-        except ValueError:
-            return None
+    api_key: str | None = None
+    api_base: str | None = None
 
-    for provider in ("gemini", "openai", "local"):
-        cfg = _db_cfg(provider)
-        if not cfg:
-            continue
-        key = _key(cfg)
-        model = _EMBED_MODELS[provider]
+    if provider_cfg:
+        api_base = provider_cfg.api_base_url or None
+        if provider_cfg.api_key_encrypted:
+            try:
+                api_key = decrypt_api_key(provider_cfg.api_key_encrypted)
+            except ValueError:
+                api_key = None
         if provider == "local":
-            # Local 不需要 API key，用 placeholder；api_base 從設定取
-            return model, key or "local", cfg.api_base_url or None
-        if key:
-            return model, key, None
+            api_key = api_key or "local"
 
-    return None
+    if provider != "local" and not api_key:
+        return None
+
+    return provider, model_name, api_key, api_base
 
 
-def embed_texts_sync(texts: list[str], model: str, api_key: str, api_base: str | None = None) -> list[list[float]]:
-    """同步呼叫 LiteLLM embedding，回傳向量清單。"""
+def _lock_embedding_config(db: Session, tenant_id: str) -> None:
+    """第一次寫入 embedding 向量時鎖定 tenant 的 embedding 設定（冪等）。"""
+    db.query(TenantConfig).filter(
+        TenantConfig.tenant_id == tenant_id,
+        TenantConfig.embedding_locked_at.is_(None),
+    ).update(
+        {"embedding_locked_at": datetime.now(timezone.utc)},
+        synchronize_session=False,
+    )
+    db.commit()
+
+
+
+
+def embed_texts_sync(
+    texts: list[str],
+    model: str,
+    api_key: str,
+    provider: str = "openai",
+    api_base: str | None = None,
+    task_type: str = "retrieval_document",
+) -> list[list[float]]:
+    """同步呼叫 embedding API，回傳向量清單。
+    provider 決定路由：
+      - gemini → google-generativeai SDK（繞過 LiteLLM）
+      - openai → LiteLLM
+      - local  → LiteLLM + ollama api_base
+    model 直接使用設定值，不自動加前綴。
+    task_type：retrieval_document（上傳文件）或 retrieval_query（搜尋查詢）
+    """
+    if provider == "gemini":
+        import google.genai as genai  # type: ignore[import-untyped]
+        from google.genai import types as genai_types  # type: ignore[import-untyped]
+
+        client = genai.Client(api_key=api_key)
+        response = client.models.embed_content(
+            model=model,
+            contents=texts,
+            config=genai_types.EmbedContentConfig(
+                task_type=task_type,
+                output_dimensionality=EMBEDDING_DIM,
+            ),
+        )
+        return [e.values for e in response.embeddings]
+
     kwargs: dict = dict(model=model, input=texts, api_key=api_key)
     if api_base:
         kwargs["api_base"] = api_base
-    # OpenAI text-embedding-3-small 支援指定輸出維度（MRL），統一輸出 768
-    if model == "text-embedding-3-small":
+    if provider == "openai" and "text-embedding-3-small" in model:
         kwargs["dimensions"] = EMBEDDING_DIM
     response = litellm.embedding(**kwargs)
     return [item["embedding"] for item in response.data]
@@ -273,25 +389,25 @@ def process_document(
             db.commit()
             return
 
-        # 3. 自動偵測 Embedding provider（Gemini > OpenAI > Local）
+        # 3. 讀取 tenant 鎖定的 Embedding 設定
         embed_params = _get_embed_params(db, tenant_id)
         if not embed_params:
             doc.status = "error"
-            doc.error_message = "未設定任何 LLM Provider，無法產生 Embedding。請在管理介面設定 Gemini、OpenAI 或 Local provider。"
+            doc.error_message = "未設定 Embedding Provider 或 API Key，無法產生 Embedding。請在管理介面設定 Gemini、OpenAI 或 Local provider。"
             db.commit()
             return
-        embed_model, embed_key, embed_base = embed_params
-        logger.info("KM embed 使用 model=%s (doc_id=%d)", embed_model, doc_id)
+        embed_provider, embed_model, embed_key, embed_base = embed_params
+        logger.info("KM embed 使用 provider=%s model=%s (doc_id=%d)", embed_provider, embed_model, doc_id)
 
         # 4. 批次 Embedding（每批 100 筆）
         all_embeddings: list[list[float]] = []
         batch_size = 100
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i : i + batch_size]
-            embeddings = embed_texts_sync(batch, model=embed_model, api_key=embed_key, api_base=embed_base)
+            embeddings = embed_texts_sync(batch, model=embed_model, api_key=embed_key, provider=embed_provider, api_base=embed_base)
             all_embeddings.extend(embeddings)
 
-        # 5. 寫入 km_chunks
+        # 5. 寫入 km_chunks，並鎖定 embedding config
         for idx, (chunk_content, embedding) in enumerate(zip(chunks, all_embeddings)):
             km_chunk = KmChunk(
                 document_id=doc_id,
@@ -301,6 +417,8 @@ def process_document(
                 metadata_={"filename": filename, "chunk_index": idx},
             )
             db.add(km_chunk)
+
+        _lock_embedding_config(db, tenant_id)
 
         doc.status = "ready"
         doc.chunk_count = len(chunks)
@@ -352,7 +470,7 @@ def km_retrieve_sync(
     if not embed_params:
         logger.warning("KM 檢索失敗：tenant_id=%s 無可用 Embedding provider", tenant_id)
         return []
-    embed_model, embed_key, embed_base = embed_params
+    embed_provider, embed_model, embed_key, embed_base = embed_params
 
     # 動態決定 top_k：依 KB 內文件類型取最大值（混合類型保守取多）
     if top_k is None:
@@ -375,7 +493,14 @@ def km_retrieve_sync(
         logger.debug("km_retrieve top_k=%d (doc_types=%s)", top_k, doc_types if doc_types else "unknown")
 
     try:
-        embeddings = embed_texts_sync([query], model=embed_model, api_key=embed_key, api_base=embed_base)
+        embeddings = embed_texts_sync(
+            [query],
+            model=embed_model,
+            api_key=embed_key,
+            provider=embed_provider,
+            api_base=embed_base,
+            task_type="retrieval_query",
+        )
         query_embedding = embeddings[0]
     except Exception as e:
         logger.warning("KM embedding 失敗: %s", e)

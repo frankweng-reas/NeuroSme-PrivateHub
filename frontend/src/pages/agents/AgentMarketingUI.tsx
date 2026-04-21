@@ -1,5 +1,6 @@
 /** Marketing Agent UI：品牌設定 + 文案類型表單 + TipTap 編輯器
- *  風格對齊 AgentWritingUI：深色左側面板 + 右側白色編輯器 + amber toolbar
+ *  風格對齊 AgentWritingUI：深色左側面板 + 右側白色編輯器 + green toolbar
+ *  支援「表單模式」與「對話模式」切換
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
@@ -18,6 +19,9 @@ import {
   RotateCcw,
   Undo2,
   Pencil,
+  MessageSquare,
+  Lightbulb,
+  X,
 } from 'lucide-react'
 import AgentHeader from '@/components/AgentHeader'
 import LLMModelSelect from '@/components/LLMModelSelect'
@@ -148,6 +152,57 @@ function markdownToHtml(text: string): string {
   }
 }
 
+// ── 額外要求範例 ──────────────────────────────────────────────────────────────
+
+interface ExtraExample {
+  label: string
+  text: string
+}
+interface ExampleGroup {
+  group: string
+  items: ExtraExample[]
+}
+
+const EXTRA_EXAMPLES: ExampleGroup[] = [
+  {
+    group: '字數控制',
+    items: [
+      { label: '短版 50 字以內', text: '字數控制在 50 字以內，精簡有力' },
+      { label: '中版 150 字', text: '字數約 150 字，適合圖文說明' },
+      { label: '長版 300 字', text: '字數約 300 字，詳細介紹產品優勢' },
+    ],
+  },
+  {
+    group: '語氣風格',
+    items: [
+      { label: '幽默輕鬆', text: '語氣幽默輕鬆，帶點玩笑感' },
+      { label: '年輕活潑', text: '用年輕人的語氣，活潑有活力' },
+      { label: '專業正式', text: '語氣專業正式，適合企業客戶' },
+      { label: '親切溫暖', text: '語氣親切溫暖，像朋友推薦' },
+      { label: '緊迫感', text: '加入限時優惠的緊迫感，促使立即行動' },
+    ],
+  },
+  {
+    group: '格式要求',
+    items: [
+      { label: '加 emoji', text: '適當加入 emoji 讓內容更生動' },
+      { label: '加 hashtag', text: '結尾加 5 個相關 hashtag' },
+      { label: '英文版本', text: '用英文撰寫' },
+      { label: '中英雙語', text: '同時提供中文版和英文版' },
+      { label: '條列式重點', text: '用條列方式呈現重點，每點一行' },
+    ],
+  },
+  {
+    group: '內容方向',
+    items: [
+      { label: '痛點切入', text: '從目標客群的痛點切入，再帶出解決方案' },
+      { label: '社會認同', text: '加入數字或客戶評價來建立信任感' },
+      { label: '限時優惠', text: '強調限時、限量，製造稀缺感' },
+      { label: '故事感', text: '用小故事或情境帶入，增加代入感' },
+    ],
+  },
+]
+
 // ── 主元件 ────────────────────────────────────────────────────────────────────
 
 export default function AgentMarketingUI({ agent }: { agent: Agent }) {
@@ -169,6 +224,7 @@ export default function AgentMarketingUI({ agent }: { agent: Agent }) {
     } catch { return true }
   })
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [showExtraExamples, setShowExtraExamples] = useState(false)
   const [selectedType, setSelectedType] = useState<DocTypeId>('social_post')
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({})
   const [isStreaming, setIsStreaming] = useState(false)
@@ -359,8 +415,7 @@ export default function AgentMarketingUI({ agent }: { agent: Agent }) {
 
   const hasContent = editor && editor.getText().trim().length > 0
 
-  const inputCls = 'w-full rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-white placeholder:text-white/30 focus:border-green-400 focus:outline-none focus:ring-1 focus:ring-green-400'
-  const selectCls = `${inputCls} [&>option]:bg-[${HEADER_COLOR}] [&>option]:text-white`
+  const inputCls = 'w-full rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-base text-white placeholder:text-white/30 focus:border-green-400 focus:outline-none focus:ring-1 focus:ring-green-400'
 
   return (
     <div className="relative flex h-full flex-col p-4 text-[18px]">
@@ -420,124 +475,188 @@ export default function AgentMarketingUI({ agent }: { agent: Agent }) {
             <div className="flex min-h-0 flex-1 flex-col overflow-y-auto text-lg">
               <div className="flex-1 space-y-5 px-4 py-4">
 
-                {/* 品牌設定 */}
-                <div className="rounded-lg border border-white/20 bg-white/5">
-                  <button
-                    type="button"
-                    onClick={() => setBrandOpen((o) => !o)}
-                    className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left text-base font-medium text-white/80 transition-colors hover:bg-white/10"
-                  >
-                    <span className="flex items-center gap-2">
-                      <span>🏷️</span>
-                      品牌設定
-                      {brand.company && (
-                        <span className="text-sm text-white/50 font-normal">（已填）</span>
-                      )}
-                    </span>
-                    <span className="text-white/50">{brandOpen ? '▲' : '▼'}</span>
-                  </button>
-                  {brandOpen && (
-                    <div className="space-y-3 px-3 pb-3">
-                      <div>
-                        <label className="mb-1 block text-base text-white/70">公司 / 品牌名稱</label>
-                        <input type="text" value={brand.company} onChange={(e) => persistBrand({ ...brand, company: e.target.value })} placeholder="例：NeuroSme" className={inputCls} />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-base text-white/70">產業</label>
-                        <input type="text" value={brand.industry} onChange={(e) => persistBrand({ ...brand, industry: e.target.value })} placeholder="例：科技 SaaS、餐飲、零售電商" className={inputCls} />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-base text-white/70">目標客群</label>
-                        <input type="text" value={brand.target} onChange={(e) => persistBrand({ ...brand, target: e.target.value })} placeholder="例：25-40 歲上班族、中小企業主" className={inputCls} />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-base text-white/70">品牌語氣</label>
-                        <select value={brand.voice} onChange={(e) => persistBrand({ ...brand, voice: e.target.value })} className={inputCls}>
-                          <option value="" className="bg-[#1a3a2a] text-white/60">— 未指定 —</option>
-                          {VOICE_OPTIONS.map((v) => (
-                            <option key={v} value={v} className="bg-[#1a3a2a] text-white">{v}</option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                {/* 還沒想好方向？引導去 Chat Agent */}
+                <a
+                  href={`/agent/${encodeURIComponent('default:chat')}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center justify-between rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 text-sm text-white/50 transition-colors hover:border-green-500/40 hover:bg-green-900/20 hover:text-white/80"
+                >
+                  <span className="flex items-center gap-2">
+                    <MessageSquare className="h-4 w-4 shrink-0" />
+                    還沒想好方向？先去 Chat Agent 發想
+                  </span>
+                  <span className="text-white/30">→</span>
+                </a>
 
-                {/* 文案類型 */}
-                <div>
-                  <label className="mb-1.5 block font-medium text-white/70">文案類型</label>
-                  <select
-                    value={selectedType}
-                    onChange={(e) => handleTypeChange(e.target.value as DocTypeId)}
-                    className={inputCls}
-                  >
-                    {DOC_TYPES.map((t) => (
-                      <option key={t.id} value={t.id} className="bg-[#1a3a2a] text-white">{t.label}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* 動態欄位 */}
-                <div className="space-y-4">
-                  <p className="font-medium text-white/70">填寫資訊</p>
-                  {currentDocType.fields.map((field) => (
-                    <div key={field.id}>
-                      <label className="mb-1 block text-white/80">{field.label}</label>
-                      {field.options ? (
-                        <select
-                          value={fieldValues[field.id] ?? field.options[0]}
-                          onChange={(e) => handleFieldChange(field.id, e.target.value)}
-                          className={inputCls}
-                        >
-                          {field.options.map((o) => (
-                            <option key={o} value={o} className="bg-[#1a3a2a] text-white">{o}</option>
-                          ))}
-                        </select>
-                      ) : field.multiline ? (
-                        <textarea
-                          rows={4}
-                          value={fieldValues[field.id] ?? ''}
-                          onChange={(e) => handleFieldChange(field.id, e.target.value)}
-                          placeholder={field.placeholder}
-                          className={`${inputCls} resize-none`}
-                        />
-                      ) : (
-                        <input
-                          type="text"
-                          value={fieldValues[field.id] ?? ''}
-                          onChange={(e) => handleFieldChange(field.id, e.target.value)}
-                          placeholder={field.placeholder}
-                          className={inputCls}
-                        />
+                    <div className="rounded-lg border border-white/20 bg-white/5">
+                      <button
+                        type="button"
+                        onClick={() => setBrandOpen((o) => !o)}
+                        className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left text-base font-medium text-white/80 transition-colors hover:bg-white/10"
+                      >
+                        <span className="flex items-center gap-2">
+                          <span>🏷️</span>
+                          品牌設定
+                          {brand.company && (
+                            <span className="text-sm text-white/50 font-normal">（已填）</span>
+                          )}
+                        </span>
+                        <span className="text-white/50">{brandOpen ? '▲' : '▼'}</span>
+                      </button>
+                      {brandOpen && (
+                        <div className="space-y-3 px-3 pb-3">
+                          <div>
+                            <label className="mb-1 block text-base text-white/70">公司 / 品牌名稱</label>
+                            <input type="text" value={brand.company} onChange={(e) => persistBrand({ ...brand, company: e.target.value })} placeholder="例：NeuroSme" className={inputCls} />
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-base text-white/70">產業</label>
+                            <input type="text" value={brand.industry} onChange={(e) => persistBrand({ ...brand, industry: e.target.value })} placeholder="例：科技 SaaS、餐飲、零售電商" className={inputCls} />
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-base text-white/70">目標客群</label>
+                            <input type="text" value={brand.target} onChange={(e) => persistBrand({ ...brand, target: e.target.value })} placeholder="例：25-40 歲上班族、中小企業主" className={inputCls} />
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-base text-white/70">品牌語氣</label>
+                            <select value={brand.voice} onChange={(e) => persistBrand({ ...brand, voice: e.target.value })} className={inputCls}>
+                              <option value="" className="bg-[#1a3a2a] text-white/60">— 未指定 —</option>
+                              {VOICE_OPTIONS.map((v) => (
+                                <option key={v} value={v} className="bg-[#1a3a2a] text-white">{v}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
                       )}
                     </div>
-                  ))}
-                </div>
+
+                    {/* 文案類型 */}
+                    <div>
+                      <label className="mb-1.5 block font-medium text-white/70">文案類型</label>
+                      <select
+                        value={selectedType}
+                        onChange={(e) => handleTypeChange(e.target.value as DocTypeId)}
+                        className={inputCls}
+                      >
+                        {DOC_TYPES.map((t) => (
+                          <option key={t.id} value={t.id} className="bg-[#1a3a2a] text-white">{t.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* 動態欄位 */}
+                    <div className="space-y-4">
+                      <p className="font-medium text-white/70">填寫資訊</p>
+                      {currentDocType.fields.map((field) => (
+                        <div key={field.id}>
+                          <label className="mb-1 block text-white/80">{field.label}</label>
+                          {field.options ? (
+                            <select
+                              value={fieldValues[field.id] ?? field.options[0]}
+                              onChange={(e) => handleFieldChange(field.id, e.target.value)}
+                              className={inputCls}
+                            >
+                              {field.options.map((o) => (
+                                <option key={o} value={o} className="bg-[#1a3a2a] text-white">{o}</option>
+                              ))}
+                            </select>
+                          ) : field.multiline ? (
+                            <textarea
+                              rows={4}
+                              value={fieldValues[field.id] ?? ''}
+                              onChange={(e) => handleFieldChange(field.id, e.target.value)}
+                              placeholder={field.placeholder}
+                              className={`${inputCls} resize-none`}
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              value={fieldValues[field.id] ?? ''}
+                              onChange={(e) => handleFieldChange(field.id, e.target.value)}
+                              placeholder={field.placeholder}
+                              className={inputCls}
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
               </div>
 
               {/* 生成按鈕區 */}
               <div className="shrink-0 border-t border-white/20 p-4">
-                <div className="mb-3">
-                  <label className="mb-1 block text-base text-white/70">對 AI 的額外要求（選填）</label>
-                  <textarea
-                    rows={3}
-                    value={fieldValues['__extra__'] ?? ''}
-                    onChange={(e) => handleFieldChange('__extra__', e.target.value)}
-                    placeholder="例：字數限 100 字、加表情符號、英文版本"
-                    className={`${inputCls} resize-none`}
-                  />
+                  <div className="mb-3">
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <label className="text-base text-white/70">額外要求（選填）</label>
+                      <button
+                        type="button"
+                        onClick={() => setShowExtraExamples((v) => !v)}
+                        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-white/50 transition-colors hover:bg-white/10 hover:text-white/80"
+                        title="查看範例"
+                      >
+                        <Lightbulb className="h-3.5 w-3.5" />
+                        範例
+                      </button>
+                    </div>
+
+                    {/* 範例彈窗 */}
+                    {showExtraExamples && (
+                      <div className="mb-2 rounded-xl border border-white/20 bg-[#0f2a1a] p-3 text-sm shadow-xl">
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className="text-xs font-medium text-white/60">點選範例加入文字框</span>
+                          <button
+                            type="button"
+                            onClick={() => setShowExtraExamples(false)}
+                            className="rounded p-0.5 text-white/40 hover:text-white/70"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                        <div className="space-y-3">
+                          {EXTRA_EXAMPLES.map((group) => (
+                            <div key={group.group}>
+                              <p className="mb-1.5 text-xs font-semibold text-green-400/80">{group.group}</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {group.items.map((item) => (
+                                  <button
+                                    key={item.label}
+                                    type="button"
+                                    onClick={() => {
+                                      const cur = fieldValues['__extra__'] ?? ''
+                                      const sep = cur.trim() ? '、' : ''
+                                      handleFieldChange('__extra__', cur.trim() + sep + item.text)
+                                    }}
+                                    className="rounded-full border border-white/20 px-2.5 py-1 text-xs text-white/70 transition-colors hover:border-green-500/60 hover:bg-green-900/40 hover:text-white"
+                                  >
+                                    {item.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <textarea
+                      rows={5}
+                      value={fieldValues['__extra__'] ?? ''}
+                      onChange={(e) => handleFieldChange('__extra__', e.target.value)}
+                      placeholder="例：字數限 100 字、語氣年輕活潑、加 emoji 和 hashtag"
+                      className={`${inputCls} resize-none leading-relaxed`}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isStreaming}
+                    onClick={handleGenerate}
+                    className="flex w-full items-center justify-center gap-2 rounded-lg py-3 text-lg font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                    style={{ backgroundColor: ACCENT_COLOR }}
+                  >
+                    <Sparkles className="h-5 w-5" />
+                    {isStreaming ? '生成中…' : '生成文案'}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  disabled={isStreaming}
-                  onClick={handleGenerate}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg py-3 text-lg font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-                  style={{ backgroundColor: ACCENT_COLOR }}
-                >
-                  <Sparkles className="h-5 w-5" />
-                  {isStreaming ? '生成中…' : '生成文案'}
-                </button>
-              </div>
             </div>
           )}
         </div>
@@ -679,7 +798,7 @@ export default function AgentMarketingUI({ agent }: { agent: Agent }) {
             {!hasContent && !isStreaming ? (
               <div className="flex h-full flex-col items-center justify-center gap-4 text-gray-400">
                 <Megaphone className="h-16 w-16 opacity-30" />
-                <p className="text-base">填寫左側表單，AI 將幫你生成文案</p>
+                  <p className="text-base">填寫左側表單，AI 將幫你生成文案</p>
               </div>
             ) : (
               <EditorContent editor={editor} className="h-full" />

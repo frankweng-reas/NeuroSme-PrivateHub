@@ -1,12 +1,69 @@
 import { apiFetch } from './client'
 import type { LLMProviderConfig } from '@/types'
 
+// ── Tenant Config ─────────────────────────────────────────────────────────────
+
+export interface TenantConfig {
+  tenant_id: string
+  default_llm_provider: string | null
+  default_llm_model: string | null
+  embedding_provider: string
+  embedding_model: string
+  embedding_locked_at: string | null
+  embedding_version: number
+  updated_at: string
+}
+
+export interface DefaultLLMUpdate {
+  provider: string
+  model: string
+}
+
+export interface EmbeddingMigrateRequest {
+  provider: string
+  model: string
+  confirm: boolean
+}
+
+export async function getTenantConfig(): Promise<TenantConfig> {
+  return apiFetch<TenantConfig>('/llm-configs/tenant-config')
+}
+
+export async function updateDefaultLLM(body: DefaultLLMUpdate): Promise<TenantConfig> {
+  return apiFetch<TenantConfig>('/llm-configs/tenant-config/default-model', {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function migrateEmbedding(body: EmbeddingMigrateRequest): Promise<TenantConfig> {
+  return apiFetch<TenantConfig>('/llm-configs/tenant-config/embedding/migrate', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export interface EmbeddingTestResult {
+  ok: boolean
+  elapsed_ms: number
+  model: string
+  dimensions?: number
+  error?: string
+}
+
+export async function testEmbedding(): Promise<EmbeddingTestResult> {
+  return apiFetch<EmbeddingTestResult>('/llm-configs/tenant-config/embedding/test', {
+    method: 'POST',
+  })
+}
+
+// ── Provider Configs ──────────────────────────────────────────────────────────
+
 export interface LLMProviderConfigCreate {
   provider: string
   label?: string | null
   api_key?: string | null
   api_base_url?: string | null
-  default_model?: string | null
   available_models?: string[] | null
   is_active?: boolean
 }
@@ -15,7 +72,6 @@ export interface LLMProviderConfigUpdate {
   label?: string | null
   api_key?: string | null
   api_base_url?: string | null
-  default_model?: string | null
   available_models?: string[] | null
   is_active?: boolean | null
 }
@@ -68,7 +124,10 @@ export interface LLMTestResult {
   error?: string
 }
 
-/** 測試 LLM provider 連通性 */
-export async function testLLMConfig(id: number): Promise<LLMTestResult> {
-  return apiFetch<LLMTestResult>(`/llm-configs/${id}/test`, { method: 'POST' })
+/** 測試 LLM provider 連通性（可指定 model） */
+export async function testLLMConfig(id: number, model?: string): Promise<LLMTestResult> {
+  return apiFetch<LLMTestResult>(`/llm-configs/${id}/test`, {
+    method: 'POST',
+    body: JSON.stringify({ model: model ?? null }),
+  })
 }

@@ -102,6 +102,8 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
   const [docsLoading, setDocsLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadCurrent, setUploadCurrent] = useState(0)
+  const [uploadTotal, setUploadTotal] = useState(0)
   const [uploadScope, setUploadScope] = useState<'private' | 'public'>('private')
   const [uploadDocType, setUploadDocType] = useState<string>('article')
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
@@ -186,43 +188,61 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files
       if (!files?.length) return
-      const file = files[0]
+      const fileList = Array.from(files)
       e.target.value = ''
 
-      // 依檔名自動偵測文件類型
-      const lower = file.name.toLowerCase()
-      let detectedType = uploadDocType
-      if (/faq|q[&＆]a|問答/.test(lower)) detectedType = 'faq'
-      else if (/spec|規格|technical|datasheet/.test(lower)) detectedType = 'spec'
-      else if (/policy|政策|條款|terms|contract/.test(lower)) detectedType = 'policy'
-      if (detectedType !== uploadDocType) setUploadDocType(detectedType)
-
       setUploading(true)
-      setUploadProgress(0)
-      try {
-        const doc = await uploadKmDocument(file, uploadScope, (pct) => setUploadProgress(pct), [], undefined, detectedType)
-        setDocs((prev) => [doc, ...prev])
-        if (doc.scope === 'private') {
-          setSelectedDocIds((prev) => new Set([...prev, doc.id]))
-        }
-        if (doc.status === 'ready') {
-          showToast(`「${doc.filename}」上傳完成，共 ${doc.chunk_count ?? 0} 段`)
-        } else if (doc.status === 'error') {
-          setErrorModal({
-            title: '文件處理失敗',
-            message: `「${doc.filename}」\n\n${doc.error_message ?? '未知錯誤'}`,
-          })
-        } else {
-          showToast(`「${doc.filename}」上傳成功，處理中…`)
-        }
-        setUploadModalOpen(false)
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : '上傳失敗'
-        setErrorModal({ title: '上傳失敗', message: msg })
-      } finally {
-        setUploading(false)
+      setUploadTotal(fileList.length)
+      setUploadCurrent(0)
+
+      let successCount = 0
+      let errorCount = 0
+
+      for (let i = 0; i < fileList.length; i++) {
+        const file = fileList[i]
+        setUploadCurrent(i + 1)
         setUploadProgress(0)
+
+        // 依檔名自動偵測文件類型
+        const lower = file.name.toLowerCase()
+        let detectedType = uploadDocType
+        if (/faq|q[&＆]a|問答/.test(lower)) detectedType = 'faq'
+        else if (/spec|規格|technical|datasheet/.test(lower)) detectedType = 'spec'
+        else if (/policy|政策|條款|terms|contract/.test(lower)) detectedType = 'policy'
+
+        try {
+          const doc = await uploadKmDocument(file, uploadScope, (pct) => setUploadProgress(pct), [], undefined, detectedType)
+          setDocs((prev) => [doc, ...prev])
+          if (doc.scope === 'private') {
+            setSelectedDocIds((prev) => new Set([...prev, doc.id]))
+          }
+          successCount++
+          if (doc.status === 'error') {
+            setErrorModal({
+              title: '文件處理失敗',
+              message: `「${doc.filename}」\n\n${doc.error_message ?? '未知錯誤'}`,
+            })
+          }
+        } catch (err) {
+          errorCount++
+          const msg = err instanceof Error ? err.message : '上傳失敗'
+          setErrorModal({ title: `「${file.name}」上傳失敗`, message: msg })
+        }
       }
+
+      setUploading(false)
+      setUploadProgress(0)
+      setUploadCurrent(0)
+      setUploadTotal(0)
+
+      if (fileList.length > 1) {
+        showToast(errorCount === 0
+          ? `${successCount} 個檔案上傳完成`
+          : `完成 ${successCount} 個，失敗 ${errorCount} 個`)
+      } else if (successCount === 1) {
+        showToast('上傳完成')
+      }
+      setUploadModalOpen(false)
     },
     [uploadScope, uploadDocType, showToast]
   )
@@ -489,11 +509,20 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
 
               {/* 進度條 */}
               {uploading && (
-                <div className="overflow-hidden rounded-full bg-gray-100">
-                  <div
-                    className="h-2 rounded-full bg-sky-400 transition-all"
-                    style={{ width: `${uploadProgress > 0 ? uploadProgress : 100}%` }}
-                  />
+                <div className="space-y-1">
+                  {uploadTotal > 1 && (
+                    <p className="text-sm text-gray-500 text-center">
+                      處理中 {uploadCurrent}/{uploadTotal}：{Array.from(Array(uploadTotal)).map((_, i) => (
+                        <span key={i} className={`inline-block mx-0.5 h-2 w-2 rounded-full ${i < uploadCurrent - 1 ? 'bg-sky-400' : i === uploadCurrent - 1 ? 'bg-sky-500' : 'bg-gray-200'}`} />
+                      ))}
+                    </p>
+                  )}
+                  <div className="overflow-hidden rounded-full bg-gray-100">
+                    <div
+                      className="h-2 rounded-full bg-sky-400 transition-all"
+                      style={{ width: `${uploadProgress > 0 ? uploadProgress : 100}%` }}
+                    />
+                  </div>
                 </div>
               )}
 
@@ -508,12 +537,14 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
                 {uploading ? (
                   <>
                     <Loader2 className="h-5 w-5 animate-spin" />
-                    上傳中 {uploadProgress > 0 ? `${uploadProgress}%` : '…'}
+                    {uploadTotal > 1
+                      ? `上傳中 (${uploadCurrent}/${uploadTotal}) ${uploadProgress > 0 ? `${uploadProgress}%` : '…'}`
+                      : `上傳中 ${uploadProgress > 0 ? `${uploadProgress}%` : '…'}`}
                   </>
                 ) : (
                   <>
                     <Upload className="h-5 w-5" />
-                    點擊選擇檔案（PDF / TXT / MD）
+                    點擊選擇檔案（可多選，PDF / TXT / MD）
                   </>
                 )}
               </button>
@@ -690,6 +721,7 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
                   ref={fileInputRef}
                   type="file"
                   accept=".pdf,.txt,.md,.markdown"
+                  multiple
                   className="hidden"
                   onChange={handleFileChange}
                 />

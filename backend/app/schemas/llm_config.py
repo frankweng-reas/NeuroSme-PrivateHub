@@ -29,7 +29,6 @@ class LLMProviderConfigUpdate(BaseModel):
     label: Optional[str] = None
     api_key: Optional[str] = Field(None, description="新 API Key 明文；傳 null 表示不更新")
     api_base_url: Optional[str] = None
-    default_model: Optional[str] = None
     available_models: Optional[List[str]] = None
     is_active: Optional[bool] = None
 

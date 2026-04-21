@@ -54,7 +54,6 @@ export interface LLMProviderConfig {
   label: string | null
   api_key_masked: string | null
   api_base_url: string | null
-  default_model: string | null
   available_models: string[] | null
   is_active: boolean
   created_at: string
