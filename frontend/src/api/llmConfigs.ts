@@ -11,6 +11,10 @@ export interface TenantConfig {
   embedding_model: string
   embedding_locked_at: string | null
   embedding_version: number
+  speech_provider: string | null
+  speech_base_url: string | null
+  speech_api_key_masked: string | null
+  speech_model: string | null
   updated_at: string
 }
 
@@ -115,6 +119,35 @@ export async function updateLLMConfig(id: number, body: LLMProviderConfigUpdate)
 /** 刪除 LLM provider 設定 */
 export async function deleteLLMConfig(id: number): Promise<void> {
   return apiFetch(`/llm-configs/${id}`, { method: 'DELETE' })
+}
+
+// ── Speech Config ──────────────────────────────────────────────────────────────
+
+export interface SpeechConfigUpdate {
+  provider?: string | null
+  base_url?: string | null
+  api_key?: string | null
+  model?: string | null
+}
+
+export interface SpeechTestResult {
+  ok: boolean
+  elapsed_ms?: number
+  base_url?: string
+  error?: string
+}
+
+export async function updateSpeechConfig(body: SpeechConfigUpdate): Promise<TenantConfig> {
+  return apiFetch<TenantConfig>('/llm-configs/tenant-config/speech', {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function testSpeechConfig(): Promise<SpeechTestResult> {
+  return apiFetch<SpeechTestResult>('/llm-configs/tenant-config/speech/test', {
+    method: 'POST',
+  })
 }
 
 export interface LLMTestResult {

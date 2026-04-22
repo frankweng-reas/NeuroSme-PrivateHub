@@ -1,5 +1,6 @@
 /** Admin：租戶 LLM 設定（admin / super_admin） */
 import { useCallback, useEffect, useState } from 'react'
+import { Mic } from 'lucide-react'
 import {
   KeyRound,
   Pencil,
@@ -25,18 +26,22 @@ import {
   testLLMConfig,
   updateDefaultLLM,
   updateLLMConfig,
+  updateSpeechConfig,
+  testSpeechConfig,
 } from '@/api/llmConfigs'
 import type {
   EmbeddingTestResult,
   LLMProviderConfigCreate,
   LLMProviderConfigUpdate,
   LLMTestResult,
+  SpeechTestResult,
   TenantConfig,
 } from '@/api/llmConfigs'
 import { getMe } from '@/api/users'
 import { ApiError } from '@/api/client'
 import { useToast } from '@/contexts/ToastContext'
 import type { LLMProviderConfig } from '@/types'
+import ConfirmModal from '@/components/ConfirmModal'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -124,6 +129,16 @@ export default function AdminLLMSettings() {
   // embedding test
   const [testingEmbedding, setTestingEmbedding] = useState(false)
   const [embeddingTestResult, setEmbeddingTestResult] = useState<EmbeddingTestResult | null>(null)
+
+  // speech config
+  const [showSpeechForm, setShowSpeechForm] = useState(false)
+  const [speechForm, setSpeechForm] = useState({ provider: 'local', base_url: '', api_key: '', model: '' })
+  const [savingSpeech, setSavingSpeech] = useState(false)
+  const [showSpeechApiKey, setShowSpeechApiKey] = useState(false)
+  const [testingSpeech, setTestingSpeech] = useState(false)
+  const [speechTestResult, setSpeechTestResult] = useState<SpeechTestResult | null>(null)
+  const [showDisableSpeechConfirm, setShowDisableSpeechConfirm] = useState(false)
+  const [disablingSpeech, setDisablingSpeech] = useState(false)
 
   // ── Load ──────────────────────────────────────────────────────────────────
 
@@ -329,6 +344,69 @@ export default function AdminLLMSettings() {
     }
   }
 
+  function openSpeechForm() {
+    setSpeechForm({
+      provider: tenantConfig?.speech_provider ?? 'local',
+      base_url: tenantConfig?.speech_base_url ?? '',
+      api_key: '',
+      model: tenantConfig?.speech_model ?? '',
+    })
+    setShowSpeechApiKey(false)
+    setSpeechTestResult(null)
+    setShowSpeechForm(true)
+  }
+
+  async function handleSaveSpeech() {
+    if (!speechForm.provider) { showToast('請選擇 Provider', 'error'); return }
+    if (speechForm.provider === 'local' && !speechForm.base_url.trim()) {
+      showToast('本機模型需填寫 Base URL', 'error'); return
+    }
+    setSavingSpeech(true)
+    try {
+      const tc = await updateSpeechConfig({
+        provider: speechForm.provider,
+        base_url: speechForm.base_url.trim() || null,
+        api_key: speechForm.api_key || undefined,   // undefined = 不變更
+        model: speechForm.model.trim() || null,
+      })
+      setTenantConfig(tc)
+      setShowSpeechForm(false)
+      showToast('語音設定已儲存', 'success')
+    } catch (err) {
+      showToast(err instanceof ApiError ? (err.detail ?? err.message) : '儲存失敗', 'error')
+    } finally {
+      setSavingSpeech(false)
+    }
+  }
+
+  async function handleTestSpeech() {
+    setTestingSpeech(true)
+    setSpeechTestResult(null)
+    try {
+      const result = await testSpeechConfig()
+      setSpeechTestResult(result)
+    } catch (err) {
+      const msg = err instanceof ApiError ? (err.detail ?? err.message) : '測試失敗'
+      setSpeechTestResult({ ok: false, error: msg })
+    } finally {
+      setTestingSpeech(false)
+    }
+  }
+
+  async function handleDisableSpeech() {
+    setDisablingSpeech(true)
+    try {
+      const tc = await updateSpeechConfig({ provider: '' })
+      setTenantConfig(tc)
+      showToast('語音功能已停用', 'success')
+    } catch (err) {
+      showToast(err instanceof ApiError ? (err.detail ?? err.message) : '停用失敗', 'error')
+    } finally {
+      setDisablingSpeech(false)
+      setShowDisableSpeechConfirm(false)
+    }
+  }
+
   const defaultModelsForProvider = providerOptions[form.provider] ?? []
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -437,7 +515,71 @@ export default function AdminLLMSettings() {
                       </div>
                     ) : (
                       <p className="text-base text-amber-500">尚未鎖定（第一次上傳文件後自動鎖定）</p>
+                  )}
+                </div>
+              )}
+              </div>
+
+              {/* 語音模型 */}
+              <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-base font-medium text-gray-500 uppercase tracking-wide">語音模型 (STT)</span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => void handleTestSpeech()}
+                      disabled={testingSpeech || !tenantConfig?.speech_base_url}
+                      className="flex items-center gap-1 rounded px-2 py-1 text-base text-gray-500 hover:text-blue-600 hover:bg-blue-50 disabled:opacity-50 transition-colors"
+                    >
+                      <Zap className={`h-3.5 w-3.5 ${testingSpeech ? 'animate-pulse' : ''}`} />
+                      {testingSpeech ? '測試中...' : '測試'}
+                    </button>
+                    {tenantConfig?.speech_provider && (
+                      <button
+                        onClick={() => setShowDisableSpeechConfirm(true)}
+                        className="flex items-center gap-1 rounded px-2 py-1 text-base text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                      >
+                        停用
+                      </button>
                     )}
+                    <button
+                      onClick={openSpeechForm}
+                      className="flex items-center gap-1 rounded px-2 py-1 text-base text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+                    >
+                      <Pencil className="h-3.5 w-3.5" /> 設定
+                    </button>
+                  </div>
+                </div>
+                {tenantConfig?.speech_provider ? (
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className={`rounded-full px-2.5 py-0.5 text-base font-semibold ${tenantConfig.speech_provider === 'openai' ? 'bg-green-100 text-green-800' : 'bg-purple-100 text-purple-800'}`}>
+                        {tenantConfig.speech_provider === 'openai' ? 'OpenAI Whisper' : '本機模型 (Local)'}
+                      </span>
+                    </div>
+                    {tenantConfig.speech_model && (
+                      <p className="font-mono text-gray-800 text-base">{tenantConfig.speech_model}</p>
+                    )}
+                    {tenantConfig.speech_base_url && (
+                      <p className="font-mono text-base text-gray-400 truncate">{tenantConfig.speech_base_url}</p>
+                    )}
+                    {tenantConfig.speech_api_key_masked && (
+                      <p className="text-base text-gray-400">API Key：{tenantConfig.speech_api_key_masked}</p>
+                    )}
+                    {speechTestResult && (
+                      <div className={`rounded-lg border px-3 py-2 text-base mt-1 ${speechTestResult.ok ? 'border-green-200 bg-green-50 text-green-800' : 'border-red-200 bg-red-50 text-red-800'}`}>
+                        {speechTestResult.ok
+                          ? `✅ 連通成功${speechTestResult.elapsed_ms ? ` · ${speechTestResult.elapsed_ms} ms` : ''}`
+                          : `❌ ${speechTestResult.error}`}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <p className="text-base text-gray-400 italic">尚未設定，點擊「設定」啟用語音輸入</p>
+                    <div className="flex items-center gap-1.5 text-base text-gray-400">
+                      <Mic className="h-3.5 w-3.5" />
+                      <span>支援本機 faster-whisper 或 OpenAI Whisper API</span>
+                    </div>
                   </div>
                 )}
               </div>
@@ -833,6 +975,124 @@ export default function AdminLLMSettings() {
           </div>
         </div>
       )}
+
+      {/* ── Modal：語音模型設定 ── */}
+      {showSpeechForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white shadow-2xl">
+            <ModalHeader title="語音模型設定 (STT)" onClose={() => setShowSpeechForm(false)} />
+            <div className="px-6 py-5 space-y-4">
+
+              <Field label="Provider" required>
+                <select
+                  value={speechForm.provider}
+                  onChange={(e) => setSpeechForm((f) => ({ ...f, provider: e.target.value, model: '' }))}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-gray-400"
+                >
+                  <option value="local">本機模型 (faster-whisper-server)</option>
+                  <option value="openai">OpenAI Whisper</option>
+                </select>
+              </Field>
+
+              {speechForm.provider === 'local' && (
+                <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-base text-blue-800 space-y-1">
+                  <p className="font-semibold">使用本機 faster-whisper-server：</p>
+                  <ul className="list-disc list-inside space-y-0.5 text-blue-700">
+                    <li>需先在 Ollama Server 啟動 <code className="bg-blue-100 px-1 rounded">faster-whisper-server</code> Docker container</li>
+                    <li>預設端口 <code className="bg-blue-100 px-1 rounded">8002</code>，無需 API Key</li>
+                    <li>推薦 model：<code className="bg-blue-100 px-1 rounded">Systran/faster-whisper-medium</code></li>
+                  </ul>
+                </div>
+              )}
+
+              {speechForm.provider === 'local' && (
+                <Field
+                  label="Base URL"
+                  required
+                  hint="例：http://192.168.1.10:8002"
+                >
+                  <input
+                    type="text"
+                    placeholder="http://192.168.1.10:8002"
+                    value={speechForm.base_url}
+                    onChange={(e) => setSpeechForm((f) => ({ ...f, base_url: e.target.value }))}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base font-mono focus:outline-none focus:ring-2 focus:ring-gray-400"
+                  />
+                </Field>
+              )}
+
+              {speechForm.provider === 'openai' && (
+                <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-base text-green-800">
+                  API Key 自動沿用「LLM Provider 設定」中的 OpenAI Key，無需重複填寫。
+                </div>
+              )}
+
+              {speechForm.provider === 'local' && (
+                <Field
+                  label={tenantConfig?.speech_api_key_masked ? 'API Key（留空表示不變更）' : 'API Key'}
+                  hint="本機服務通常不需要 API Key，可留空"
+                >
+                  <div className="relative">
+                    <input
+                      type={showSpeechApiKey ? 'text' : 'password'}
+                      placeholder={tenantConfig?.speech_api_key_masked ? '不填則保留原 Key' : '（可留空）'}
+                      value={speechForm.api_key}
+                      onChange={(e) => setSpeechForm((f) => ({ ...f, api_key: e.target.value }))}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 pr-10 text-base font-mono focus:outline-none focus:ring-2 focus:ring-gray-400"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSpeechApiKey((v) => !v)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      tabIndex={-1}
+                    >
+                      {showSpeechApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                </Field>
+              )}
+
+              <Field label="Model" hint="語音辨識模型名稱">
+                <input
+                  type="text"
+                  placeholder={speechForm.provider === 'local' ? 'Systran/faster-whisper-medium' : 'whisper-1'}
+                  value={speechForm.model}
+                  onChange={(e) => setSpeechForm((f) => ({ ...f, model: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base font-mono focus:outline-none focus:ring-2 focus:ring-gray-400"
+                />
+                <div className="flex flex-wrap gap-1 mt-1.5">
+                  {(speechForm.provider === 'local'
+                    ? ['Systran/faster-whisper-medium']
+                    : ['whisper-1']
+                  ).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setSpeechForm((f) => ({ ...f, model: m }))}
+                      className="rounded bg-gray-100 px-2 py-0.5 text-base text-gray-600 hover:bg-gray-200 transition-colors font-mono"
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+
+            </div>
+            <ModalFooter onCancel={() => setShowSpeechForm(false)} onConfirm={handleSaveSpeech} saving={savingSpeech} confirmLabel="儲存" />
+          </div>
+        </div>
+      )}
+
+      {/* ── Confirm：停用語音功能 ── */}
+      <ConfirmModal
+        open={showDisableSpeechConfirm}
+        title="停用語音功能"
+        message="確定要停用語音功能？停用後使用者將無法使用語音輸入，可隨時重新設定啟用。"
+        confirmText={disablingSpeech ? '停用中...' : '確認停用'}
+        variant="danger"
+        onConfirm={() => void handleDisableSpeech()}
+        onCancel={() => setShowDisableSpeechConfirm(false)}
+      />
 
       {/* ── Modal：刪除確認 ── */}
       {deleteTarget !== null && (

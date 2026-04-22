@@ -40,6 +40,7 @@ import ConfirmModal from '@/components/ConfirmModal'
 import ErrorModal from '@/components/ErrorModal'
 import HelpModal from '@/components/HelpModal'
 import LLMModelSelect from '@/components/LLMModelSelect'
+import VoiceInput from '@/components/VoiceInput'
 import type { Agent, UserRole } from '@/types'
 import {
   listWidgetSessions,
@@ -369,6 +370,7 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
   // ── 右欄：Chat ─────────────────────────────────────────────────────────────
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
+  const [voiceTranscript, setVoiceTranscript] = useState('')
   const [showClearConfirm, setShowClearConfirm] = useState(false)
   const [threadId, setThreadId] = useState<string | null>(null)
 
@@ -1358,6 +1360,17 @@ export default function AgentCsUI({ agent }: AgentCsUIProps) {
             onCopyError={() => showToast('複製失敗', 'error')}
             showChart={false}
             showPdf={false}
+            composerLeading={
+              <VoiceInput
+                onTranscript={(text) => {
+                  setVoiceTranscript(text)
+                  setTimeout(() => setVoiceTranscript(''), 50)
+                }}
+                onError={(msg) => showToast(msg, 'error')}
+                disabled={isLoading}
+              />
+            }
+            appendInputText={voiceTranscript}
           />
           )}
 

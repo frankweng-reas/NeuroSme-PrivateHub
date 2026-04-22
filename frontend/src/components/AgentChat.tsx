@@ -162,6 +162,10 @@ interface AgentChatProps {
   showCopy?: boolean
   showChart?: boolean
   showPdf?: boolean
+  /** 輸入框左側插槽（例：語音輸入按鈕） */
+  composerLeading?: React.ReactNode
+  /** 外部注入文字（每次值變化時 append 到輸入框並 focus） */
+  appendInputText?: string
 }
 
 export default function AgentChat({
@@ -186,6 +190,8 @@ export default function AgentChat({
   showCopy = true,
   showChart = true,
   showPdf = true,
+  composerLeading,
+  appendInputText,
 }: AgentChatProps) {
   const [input, setInput] = useState('')
   const [isAtBottom, setIsAtBottom] = useState(true)
@@ -240,6 +246,13 @@ export default function AgentChat({
     chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
     setIsAtBottom(true)
   }
+
+  // 外部注入文字（語音輸入等）
+  useEffect(() => {
+    if (!appendInputText) return
+    setInput((prev) => prev ? `${prev} ${appendInputText}` : appendInputText)
+    setTimeout(() => chatInputRef.current?.focus(), 0)
+  }, [appendInputText])
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -519,6 +532,7 @@ export default function AgentChat({
           </div>
         )}
         <form onSubmit={handleSubmit} className="flex gap-2">
+          {composerLeading}
           <input
             ref={chatInputRef}
             type="text"

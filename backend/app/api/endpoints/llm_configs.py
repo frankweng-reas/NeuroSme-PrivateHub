@@ -25,6 +25,7 @@ from app.schemas.llm_config import (
 from app.schemas.tenant_config import (
     DefaultLLMUpdate,
     EmbeddingMigrateRequest,
+    SpeechConfigUpdate,
     TenantConfigResponse,
 )
 from app.services.llm_utils import (
@@ -425,6 +426,24 @@ def _get_or_create_tenant_config(db: Session, tenant_id: str) -> TenantConfig:
     return tc
 
 
+def _tc_response(tc: TenantConfig) -> TenantConfigResponse:
+    """將 TenantConfig ORM 物件轉為 Response schema（含 speech_api_key_masked）。"""
+    return TenantConfigResponse(
+        tenant_id=tc.tenant_id,
+        default_llm_provider=tc.default_llm_provider,
+        default_llm_model=tc.default_llm_model,
+        embedding_provider=tc.embedding_provider,
+        embedding_model=tc.embedding_model,
+        embedding_locked_at=tc.embedding_locked_at,
+        embedding_version=tc.embedding_version,
+        speech_provider=tc.speech_provider,
+        speech_base_url=tc.speech_base_url,
+        speech_api_key_masked=tc.speech_api_key_masked,
+        speech_model=tc.speech_model,
+        updated_at=tc.updated_at,
+    )
+
+
 @router.get("/tenant-config", response_model=TenantConfigResponse)
 def get_tenant_config(
     db: Session = Depends(get_db),
@@ -433,7 +452,7 @@ def get_tenant_config(
     """取得目前租戶的 LLM 預設與 Embedding 設定（admin / super_admin）"""
     tenant_id = _require_tenant_admin(db, current)
     tc = _get_or_create_tenant_config(db, tenant_id)
-    return tc
+    return _tc_response(tc)
 
 
 @router.patch("/tenant-config/default-model", response_model=TenantConfigResponse)
@@ -469,7 +488,7 @@ def update_default_llm_model(
     tc.default_llm_model = body.model
     db.commit()
     db.refresh(tc)
-    return tc
+    return _tc_response(tc)
 
 
 @router.post("/tenant-config/embedding/migrate", response_model=TenantConfigResponse)
@@ -537,7 +556,7 @@ def migrate_embedding_config(
         "Embedding 遷移完成：tenant=%s provider=%s model=%s 清除 chunks=%d",
         tenant_id, body.provider, body.model, deleted,
     )
-    return tc
+    return _tc_response(tc)
 
 
 @router.post("/tenant-config/embedding/test")
@@ -579,3 +598,62 @@ async def test_embedding_config(
     except Exception as e:
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         return {"ok": False, "elapsed_ms": elapsed_ms, "model": embed_model, "error": str(e)[:300]}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 語音模型設定
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.patch("/tenant-config/speech", response_model=TenantConfigResponse)
+def update_speech_config(
+    body: SpeechConfigUpdate,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """更新租戶語音轉文字設定（provider / base_url / api_key / model）。"""
+    tenant_id = _require_tenant_admin(db, current)
+    tc = _get_or_create_tenant_config(db, tenant_id)
+
+    if body.provider is not None:
+        tc.speech_provider = body.provider or None
+    if body.base_url is not None:
+        tc.speech_base_url = body.base_url or None
+    if body.api_key is not None:
+        if body.api_key == "":
+            tc.speech_api_key_encrypted = None
+        else:
+            tc.speech_api_key_encrypted = encrypt_api_key(body.api_key)
+    if body.model is not None:
+        tc.speech_model = body.model or None
+
+    db.commit()
+    db.refresh(tc)
+    return _tc_response(tc)
+
+
+@router.post("/tenant-config/speech/test")
+async def test_speech_config(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """測試語音服務是否可連線（對 /health 端點發送 GET 請求）。"""
+    tenant_id = _require_tenant_admin(db, current)
+    tc = _get_or_create_tenant_config(db, tenant_id)
+
+    base_url = (tc.speech_base_url or "").rstrip("/")
+    if not base_url:
+        return {"ok": False, "error": "語音服務 Base URL 未設定"}
+
+    import httpx
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{base_url}/health")
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        if resp.status_code == 200:
+            return {"ok": True, "elapsed_ms": elapsed_ms, "base_url": base_url}
+        return {"ok": False, "elapsed_ms": elapsed_ms, "error": f"服務回應 HTTP {resp.status_code}"}
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        return {"ok": False, "elapsed_ms": elapsed_ms, "error": str(e)[:200]}
+

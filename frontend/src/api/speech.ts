@@ -8,6 +8,8 @@ export interface TranscribeResult {
 
 export interface SpeechStatus {
   enabled: boolean
+  provider?: string
+  model?: string
   base_url?: string
   reason?: string
 }

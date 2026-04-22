@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 import aiohttp
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 import litellm
 from litellm.llms.custom_httpx.aiohttp_handler import BaseLLMAIOHTTPHandler
@@ -71,6 +73,40 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
+
+# ── Public API 文件（僅顯示外部整合用的 API）─────────────────────────────────
+
+_PUBLIC_TAGS = {"ordering", "public-cs"}
+_PUBLIC_OPENAPI_URL = f"{settings.API_V1_STR}/public/openapi.json"
+
+
+@app.get(_PUBLIC_OPENAPI_URL, include_in_schema=False)
+async def public_openapi():
+    """過濾出 public tag 的路由，產生獨立的 OpenAPI spec"""
+    public_routes = [
+        r for r in app.routes
+        if bool(set(getattr(r, "tags", [])) & _PUBLIC_TAGS)
+    ]
+    return get_openapi(
+        title="NeuroSme Public API",
+        version=settings.VERSION,
+        description=(
+            "供外部應用整合使用的 API。\n\n"
+            "**認證方式**：在 Request Header 加入 `X-API-Key: <your_api_key>`\n\n"
+            "API Key 請由管理員在後台「API 金鑰管理」頁面建立。"
+        ),
+        routes=public_routes,
+    )
+
+
+@app.get(f"{settings.API_V1_STR}/public/docs", include_in_schema=False)
+async def public_swagger_ui_html():
+    """Public API Swagger UI（外部開發者文件）"""
+    return get_swagger_ui_html(
+        openapi_url=_PUBLIC_OPENAPI_URL,
+        title="NeuroSme Public API",
+        swagger_favicon_url="https://fastapi.tiangolo.com/img/favicon.png",
+    )
 
 
 @app.middleware("http")
