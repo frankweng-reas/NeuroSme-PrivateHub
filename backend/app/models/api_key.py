@@ -1,5 +1,5 @@
 """API Key ORM：對應 api_keys / api_key_usages 表"""
-from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, Column, Date, DateTime, Float, ForeignKey, Integer, String, func
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -30,5 +30,6 @@ class ApiKeyUsage(Base):
     request_count = Column(Integer, nullable=False, default=0)
     input_tokens = Column(Integer, nullable=False, default=0)
     output_tokens = Column(Integer, nullable=False, default=0)
+    audio_seconds = Column(Float, nullable=False, default=0.0)
 
     api_key = relationship("ApiKey", back_populates="usages")

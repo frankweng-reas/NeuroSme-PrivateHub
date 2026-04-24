@@ -18,6 +18,7 @@ export interface DailyUsage {
   request_count: number
   input_tokens: number
   output_tokens: number
+  audio_seconds: number
 }
 
 export interface ApiKeyUsageResponse {
@@ -26,6 +27,7 @@ export interface ApiKeyUsageResponse {
   total_requests: number
   total_input_tokens: number
   total_output_tokens: number
+  total_audio_seconds: number
 }
 
 export async function createApiKey(name: string): Promise<ApiKeyCreateResponse> {

@@ -53,10 +53,17 @@ const PROVIDER_LABELS: Record<string, string> = {
 }
 
 const PROVIDER_COLORS: Record<string, string> = {
-  openai: 'bg-green-100 text-green-800',
-  gemini: 'bg-blue-100 text-blue-800',
-  twcc: 'bg-orange-100 text-orange-800',
-  local: 'bg-purple-100 text-purple-800',
+  openai: 'bg-green-200 text-green-900',
+  gemini: 'bg-blue-200 text-blue-900',
+  twcc: 'bg-orange-200 text-orange-900',
+  local: 'bg-purple-200 text-purple-900',
+}
+
+const PROVIDER_CARD_COLORS: Record<string, string> = {
+  openai: 'border-green-100 bg-green-50/50',
+  gemini: 'border-blue-100 bg-blue-50/50',
+  twcc:   'border-orange-100 bg-orange-50/50',
+  local:  'border-purple-100 bg-purple-50/50',
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -446,10 +453,10 @@ export default function AdminLLMSettings() {
               預設 AI 設定
             </h3>
 
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
 
               {/* 預設 LLM */}
-              <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm space-y-3">
+              <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-5 shadow-sm space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-base font-medium text-gray-500 uppercase tracking-wide">預設 LLM</span>
                   <button
@@ -474,7 +481,7 @@ export default function AdminLLMSettings() {
               </div>
 
               {/* Embedding Model */}
-              <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm space-y-3">
+              <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-5 shadow-sm space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-base font-medium text-gray-500 uppercase tracking-wide">Embedding Model</span>
                   <div className="flex items-center gap-1">
@@ -521,7 +528,7 @@ export default function AdminLLMSettings() {
               </div>
 
               {/* 語音模型 */}
-              <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm space-y-3">
+              <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-5 shadow-sm space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-base font-medium text-gray-500 uppercase tracking-wide">語音模型 (STT)</span>
                   <div className="flex items-center gap-1">
@@ -565,13 +572,6 @@ export default function AdminLLMSettings() {
                     {tenantConfig.speech_api_key_masked && (
                       <p className="text-base text-gray-400">API Key：{tenantConfig.speech_api_key_masked}</p>
                     )}
-                    {speechTestResult && (
-                      <div className={`rounded-lg border px-3 py-2 text-base mt-1 ${speechTestResult.ok ? 'border-green-200 bg-green-50 text-green-800' : 'border-red-200 bg-red-50 text-red-800'}`}>
-                        {speechTestResult.ok
-                          ? `✅ 連通成功${speechTestResult.elapsed_ms ? ` · ${speechTestResult.elapsed_ms} ms` : ''}`
-                          : `❌ ${speechTestResult.error}`}
-                      </div>
-                    )}
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -613,7 +613,7 @@ export default function AdminLLMSettings() {
             )}
 
             <div className="space-y-3">
-              {configs.map((cfg) => {
+              {[...configs].sort((a, b) => (a.provider === 'local' ? -1 : b.provider === 'local' ? 1 : 0)).map((cfg) => {
                 const isExpanded = expandedIds.has(cfg.id)
                 const isToggling = togglingIds.has(cfg.id)
                 const colorClass = PROVIDER_COLORS[cfg.provider] ?? 'bg-gray-100 text-gray-800'
@@ -625,7 +625,7 @@ export default function AdminLLMSettings() {
                 return (
                   <div
                     key={cfg.id}
-                    className={`rounded-lg border bg-white shadow-sm overflow-hidden transition-opacity ${cfg.is_active ? 'border-gray-200' : 'border-gray-200 opacity-60'}`}
+                    className={`rounded-lg border shadow-sm overflow-hidden transition-opacity ${PROVIDER_CARD_COLORS[cfg.provider] ?? 'border-gray-200 bg-white'} ${cfg.is_active ? '' : 'opacity-60'}`}
                   >
                     {/* Card header */}
                     <div className="flex items-center justify-between px-5 py-4">
@@ -1139,6 +1139,34 @@ export default function AdminLLMSettings() {
               >
                 關閉
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal：語音測試結果 ── */}
+      {speechTestResult && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white shadow-2xl">
+            <ModalHeader title="語音模型測試結果" onClose={() => setSpeechTestResult(null)} />
+            <div className="px-6 py-5 space-y-4">
+              {tenantConfig?.speech_model && (
+                <p className="font-mono text-base text-gray-600 break-all">{tenantConfig.speech_model}</p>
+              )}
+              <div className={`rounded-lg border px-5 py-4 space-y-2 ${speechTestResult.ok ? 'border-green-200 bg-green-50 text-green-800' : 'border-red-200 bg-red-50 text-red-800'}`}>
+                <div className="flex items-center gap-3 text-lg font-semibold">
+                  <span>{speechTestResult.ok ? '✅ 連通成功' : '❌ 連通失敗'}</span>
+                  {speechTestResult.elapsed_ms && speechTestResult.elapsed_ms > 0 && (
+                    <span className="text-base font-normal opacity-70">{speechTestResult.elapsed_ms} ms</span>
+                  )}
+                </div>
+                {speechTestResult.error && (
+                  <div className="text-base font-mono break-all">{speechTestResult.error}</div>
+                )}
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-gray-100 flex justify-end">
+              <button onClick={() => setSpeechTestResult(null)} className="rounded-lg bg-gray-700 px-5 py-2 text-base font-medium text-white hover:bg-gray-600 transition-colors">關閉</button>
             </div>
           </div>
         </div>

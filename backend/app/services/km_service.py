@@ -345,13 +345,13 @@ def embed_texts_sync(
     if provider == "local":
         # Ollama embedding：LiteLLM 需要 ollama/ 前綴；api_base 不加 /v1
         litellm_model = model if model.startswith("ollama/") else f"ollama/{model}"
-        kwargs: dict = dict(model=litellm_model, input=texts, api_key=api_key or "local")
+        kwargs: dict = dict(model=litellm_model, input=texts, api_key=api_key or "local", timeout=15)
         if api_base:
             kwargs["api_base"] = api_base.rstrip("/")
         response = litellm.embedding(**kwargs)
         return [item["embedding"] for item in response.data]
 
-    kwargs = dict(model=model, input=texts, api_key=api_key)
+    kwargs = dict(model=model, input=texts, api_key=api_key, timeout=15)
     if api_base:
         kwargs["api_base"] = api_base
     if provider == "openai" and "text-embedding-3-small" in model:

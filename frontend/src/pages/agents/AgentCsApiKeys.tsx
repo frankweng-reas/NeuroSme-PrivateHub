@@ -356,11 +356,12 @@ export default function AgentCsApiKeys({ canManage, kbs, selectedKbId }: Props) 
           ) : (
             <div className="px-5 py-4 space-y-4">
               {/* 摘要卡片 */}
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-4 gap-3">
                 {[
                   { label: '總請求數', value: usageData.total_requests.toLocaleString() },
                   { label: '輸入 Tokens', value: usageData.total_input_tokens.toLocaleString() },
                   { label: '輸出 Tokens', value: usageData.total_output_tokens.toLocaleString() },
+                  { label: '語音秒數', value: `${usageData.total_audio_seconds.toFixed(1)} s` },
                 ].map(({ label, value }) => (
                   <div key={label} className="rounded-lg border border-gray-100 bg-gray-50 px-4 py-3 text-center">
                     <p className="text-2xl font-bold text-gray-800">{value}</p>
@@ -422,6 +423,31 @@ export default function AgentCsApiKeys({ canManage, kbs, selectedKbId }: Props) 
                   </LineChart>
                 </ResponsiveContainer>
               </div>
+
+              {/* 語音秒數折線圖（只有當天有語音用量才顯示） */}
+              {usageData.days.some((d) => d.audio_seconds > 0) && (
+                <div>
+                  <p className="mb-2 text-base font-medium text-gray-600">每日語音秒數</p>
+                  <ResponsiveContainer width="100%" height={180}>
+                    <LineChart data={usageData.days} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                      <XAxis
+                        dataKey="date"
+                        tickFormatter={formatDate}
+                        tick={{ fontSize: 11, fill: '#9ca3af' }}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} tickLine={false} axisLine={false} width={42} />
+                      <Tooltip
+                        formatter={(value) => [`${(value as number).toFixed(1)} s`, '語音秒數']}
+                        labelFormatter={(label) => new Date(String(label)).toLocaleDateString('zh-TW')}
+                      />
+                      <Line type="monotone" dataKey="audio_seconds" stroke="#a855f7" strokeWidth={2} dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </div>
           )}
         </div>

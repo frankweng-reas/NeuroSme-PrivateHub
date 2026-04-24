@@ -53,6 +53,7 @@ class DailyUsage(BaseModel):
     request_count: int
     input_tokens: int
     output_tokens: int
+    audio_seconds: float = 0.0
 
 
 class ApiKeyUsageResponse(BaseModel):
@@ -61,6 +62,7 @@ class ApiKeyUsageResponse(BaseModel):
     total_requests: int
     total_input_tokens: int
     total_output_tokens: int
+    total_audio_seconds: float
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -200,6 +202,7 @@ def get_api_key_usage(
             request_count=u.request_count,
             input_tokens=u.input_tokens,
             output_tokens=u.output_tokens,
+            audio_seconds=float(u.audio_seconds or 0.0),
         )
         for u in usages
     ]
@@ -210,4 +213,5 @@ def get_api_key_usage(
         total_requests=sum(d.request_count for d in days),
         total_input_tokens=sum(d.input_tokens for d in days),
         total_output_tokens=sum(d.output_tokens for d in days),
+        total_audio_seconds=sum(d.audio_seconds for d in days),
     )

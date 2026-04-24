@@ -58,6 +58,7 @@ export interface EmbeddingTestResult {
 export async function testEmbedding(): Promise<EmbeddingTestResult> {
   return apiFetch<EmbeddingTestResult>('/llm-configs/tenant-config/embedding/test', {
     method: 'POST',
+    timeout: 25_000,
   })
 }
 

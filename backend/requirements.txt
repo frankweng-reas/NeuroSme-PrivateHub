@@ -37,3 +37,4 @@ pgvector>=0.3.3
 
 # Rate Limiting（Public API）
 slowapi>=0.1.9
+pymupdf>=1.24.0
