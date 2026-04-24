@@ -20,6 +20,7 @@ const AGENT_DESCRIPTIONS: Record<string, string> = {
   scheduling:'排班與行程規劃輔助',
   interview: '面試流程與評核輔助',
   invoice:   '發票與財務單據管理',
+  ocr:       '上傳圖片或 PDF，自動抽取結構化欄位資料',
 }
 
 export default function HomePage() {

@@ -14,6 +14,7 @@ import {
   Headphones,
   FileText,
   Megaphone,
+  ScanText,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -33,6 +34,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   Headphones,
   FileText,
   Megaphone,
+  ScanText,
 }
 
 const DEFAULT_ICON = MessageCircle

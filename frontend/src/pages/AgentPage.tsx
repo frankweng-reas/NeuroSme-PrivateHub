@@ -13,6 +13,7 @@ import AgentQuotationUI from './agents/AgentQuotationUI'
 import AgentSchedulingUI from './agents/AgentSchedulingUI'
 import AgentWritingUI from './agents/AgentWritingUI'
 import AgentMarketingUI from './agents/AgentMarketingUI'
+import AgentOcrUI from './agents/AgentOcrUI'
 import AgentDefaultUI from './agents/AgentDefaultUI'
 
 function getAgentUI(agent: Agent) {
@@ -26,6 +27,7 @@ function getAgentUI(agent: Agent) {
   if (id.includes('customer')) return AgentCustomerUI
   if (id.includes('quotation')) return AgentQuotationUI
   if (id.includes('scheduling')) return AgentSchedulingUI
+  if (id === 'ocr') return AgentOcrUI
 
   return AgentDefaultUI
 }

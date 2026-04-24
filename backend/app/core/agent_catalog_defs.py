@@ -92,6 +92,16 @@ BUILTIN_AGENTS: list[AgentDef] = [
     {
         "group_id": "production",
         "group_name": "生產力",
+        "agent_id": "ocr",
+        "agent_name": "OCR Agent",
+        "icon_name": "ScanText",
+        "sort_id": "14",
+        "backend_router": None,
+        "frontend_key": "agent-ocr",
+    },
+    {
+        "group_id": "production",
+        "group_name": "生產力",
         "agent_id": "writing",
         "agent_name": "Writing Agent",
         "icon_name": "FileText",
