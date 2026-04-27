@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.core.encryption import decrypt_api_key
 from app.models.chat_llm_request import ChatLlmRequest
 from app.models.llm_provider_config import LLMProviderConfig
+from app.services.agent_usage import log_agent_usage
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,7 @@ def _persist_chat_llm_request(
     finish_reason: str | None,
     error_code: str | None,
     error_message: str | None,
+    agent_id: str = "chat",
 ) -> UUID:
     msg = (error_message or "").strip()[:8000] if error_message else None
     tid = (trace_id or "").strip()[:128] if trace_id else None
@@ -147,4 +149,16 @@ def _persist_chat_llm_request(
     )
     db.add(row)
     db.flush()
+    log_agent_usage(
+        db=db,
+        agent_type=agent_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        model=model or None,
+        prompt_tokens=usage.prompt_tokens if usage else None,
+        completion_tokens=usage.completion_tokens if usage else None,
+        total_tokens=usage.total_tokens if usage else None,
+        latency_ms=latency_ms,
+        status=status,
+    )
     return row.id

@@ -9,8 +9,13 @@
 """
 
 import logging
+import time
 
 import httpx
+import opencc as _opencc
+
+# 簡體 → 繁體轉換器（s2twp: 簡體轉台灣繁體+詞彙替換）
+_s2tw = _opencc.OpenCC("s2twp")
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -19,6 +24,7 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.tenant_config import TenantConfig
 from app.models.user import User
+from app.services.agent_usage import log_agent_usage
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -134,17 +140,19 @@ async def transcribe_audio(
         content_type,
     )
 
-    # 組建請求 headers
     headers: dict = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    # 呼叫 Whisper-compatible 端點（本機 faster-whisper-server 或 OpenAI）
     url = f"{base_url}/v1/audio/transcriptions"
     post_data: dict = {"model": model, "response_format": "verbose_json"}
     if language:
         post_data["language"] = language
+    # 引導 Whisper 輸出繁體中文（不加此提示預設輸出簡體）
+    post_data["initial_prompt"] = "以下是繁體中文的語音記錄。"
 
+    started_at = time.monotonic()
+    status = "success"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
@@ -155,19 +163,33 @@ async def transcribe_audio(
             )
         if resp.status_code != 200:
             logger.error("whisper server error %d: %s", resp.status_code, resp.text[:300])
+            status = "error"
             raise HTTPException(
                 status_code=502,
                 detail=f"語音轉文字服務異常（{resp.status_code}）",
             )
     except httpx.ConnectError as exc:
         logger.error("whisper server connect error: %s", exc)
+        status = "error"
         raise HTTPException(status_code=503, detail="無法連線至語音轉文字服務") from exc
     except httpx.TimeoutException as exc:
         logger.error("whisper server timeout: %s", exc)
+        status = "error"
         raise HTTPException(status_code=504, detail="語音轉文字服務逾時") from exc
+    finally:
+        log_agent_usage(
+            db=db,
+            agent_type="speech",
+            tenant_id=tenant_id,
+            user_id=current_user.id,
+            model=model,
+            latency_ms=int((time.monotonic() - started_at) * 1000),
+            status=status,
+        )
+        db.commit()
 
     data = resp.json()
-    text = (data.get("text") or "").strip()
+    text = _s2tw.convert((data.get("text") or "").strip())
     lang = data.get("language") or ""
     duration = float(data.get("duration") or 0.0)
 

@@ -188,6 +188,7 @@ class ChatCompletionPrepared:
     trace_raw: str | None
     user_id: int
     has_vision_user_content: bool
+    agent_id: str = "chat"
 
 
 def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> ChatCompletionPrepared:
@@ -212,6 +213,7 @@ def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> Ch
             req.content, db, tenant_id, current.id,
             selected_doc_ids=req.selected_doc_ids or [],
             knowledge_base_id=req.knowledge_base_id,
+            agent_id=aid,
         )
         data = format_km_context(chunks)
         if chunks:
@@ -303,6 +305,7 @@ def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> Ch
         trace_raw=trace_raw,
         user_id=current.id,
         has_vision_user_content=has_vision,
+        agent_id=aid,
     )
 
 
@@ -375,6 +378,7 @@ async def chat_completions(
                         finish_reason=None,
                         error_code="twcc_error",
                         error_message=str(e),
+                        agent_id=req.agent_id,
                     )
                     db.commit()
                 raise
@@ -394,6 +398,7 @@ async def chat_completions(
                     finish_reason=twcc_out.finish_reason,
                     error_code=None,
                     error_message=None,
+                    agent_id=req.agent_id,
                 )
                 db.commit()
                 rid_str = str(rid)
@@ -441,6 +446,7 @@ async def chat_completions(
                     finish_reason=None,
                     error_code="litellm_error",
                     error_message=str(e),
+                    agent_id=req.agent_id,
                 )
                 db.commit()
             logger.exception("chat_completions 發生錯誤")
@@ -462,6 +468,7 @@ async def chat_completions(
                 finish_reason=parsed.finish_reason,
                 error_code=None,
                 error_message=None,
+                agent_id=req.agent_id,
             )
             db.commit()
             rid_str = str(rid)
@@ -496,6 +503,14 @@ async def chat_completions_stream(
     except HTTPException:
         raise
 
+    # _prepare_chat_completion 中 km_retrieve_sync 會 flush embedding usage log，
+    # 但 event_gen() 之後改用新 SessionLocal，原始 db session 不再 commit，
+    # 故在此立即 commit 確保 embedding log 持久化。
+    try:
+        db.commit()
+    except Exception:
+        pass
+
     async def event_gen():
         from app.core.database import SessionLocal
 
@@ -524,6 +539,7 @@ async def chat_completions_stream(
                     finish_reason=None,
                     error_code=code,
                     error_message=msg[:8000],
+                    agent_id=prepared.agent_id,
                 )
                 s.commit()
             finally:
@@ -548,6 +564,7 @@ async def chat_completions_stream(
                     finish_reason=fr,
                     error_code=None,
                     error_message=None,
+                    agent_id=prepared.agent_id,
                 )
                 s.commit()
                 return str(rid)

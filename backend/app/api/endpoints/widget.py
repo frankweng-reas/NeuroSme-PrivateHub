@@ -1,6 +1,7 @@
 """Widget API：無需登入，以 public_token 驗證知識庫存取"""
 import json
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import AsyncIterator
@@ -11,10 +12,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
 from app.models.km_knowledge_base import KmKnowledgeBase
 from app.models.widget_message import WidgetMessage
 from app.models.widget_session import WidgetSession
+from app.services.agent_usage import log_agent_usage
 from app.services.km_service import format_km_context, km_retrieve_sync
 from app.services.llm_service import _get_llm_params, _get_provider_name
 from app.services.llm_utils import apply_api_base
@@ -173,6 +175,7 @@ async def widget_chat(
             db=db,
             knowledge_base_id=kb_id,
             skip_scope_check=True,
+            agent_id="widget",
         )
         if chunks:
             context_text = format_km_context(chunks, show_source=False)
@@ -213,13 +216,18 @@ async def widget_chat(
 
     is_local_model = kb_model_name.startswith("local/")
     session_id = body.session_id
+    tenant_id_for_log = kb_tenant_id
 
     async def generate() -> AsyncIterator[str]:
+        t0 = time.perf_counter()
+        llm_status = "success"
+        usage_out: tuple[int, int, int] | None = None  # (prompt, completion, total)
         try:
             kwargs: dict = {
                 "model": litellm_model,
                 "messages": msgs,
                 "stream": True,
+                "stream_options": {"include_usage": True},
                 "api_key": api_key,
                 "temperature": 0.3,
             }
@@ -231,10 +239,34 @@ async def widget_chat(
             response = await litellm.acompletion(**kwargs)
             full_text = ""
             async for chunk in response:
+                # usage-only chunk（stream 結束後補送）
+                if not chunk.choices:
+                    u = getattr(chunk, "usage", None)
+                    if u is not None:
+                        try:
+                            usage_out = (
+                                int(getattr(u, "prompt_tokens", None) or 0),
+                                int(getattr(u, "completion_tokens", None) or 0),
+                                int(getattr(u, "total_tokens", None) or 0),
+                            )
+                        except (TypeError, ValueError):
+                            pass
+                    continue
                 delta = chunk.choices[0].delta.content or ""
                 if delta:
                     full_text += delta
                     yield f"data: {json.dumps({'event': 'delta', 'text': delta}, ensure_ascii=False)}\n\n"
+                # 有些 provider 在有 choices 的 chunk 也帶 usage
+                u = getattr(chunk, "usage", None)
+                if u is not None:
+                    try:
+                        pt = getattr(u, "prompt_tokens", None)
+                        ct = getattr(u, "completion_tokens", None)
+                        tt = getattr(u, "total_tokens", None)
+                        if pt is not None or ct is not None or tt is not None:
+                            usage_out = (int(pt or 0), int(ct or 0), int(tt or 0))
+                    except (TypeError, ValueError):
+                        pass
 
             yield f"data: {json.dumps({'event': 'done', 'content': full_text}, ensure_ascii=False)}\n\n"
 
@@ -246,7 +278,27 @@ async def widget_chat(
                 except Exception as save_err:
                     logger.warning("儲存 assistant 訊息失敗: %s", save_err)
         except Exception as e:
+            llm_status = "error"
             logger.error("Widget chat 錯誤: %s", e)
             yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+        finally:
+            s = SessionLocal()
+            try:
+                log_agent_usage(
+                    db=s,
+                    agent_type="widget",
+                    tenant_id=tenant_id_for_log,
+                    model=kb_model_name,
+                    prompt_tokens=usage_out[0] if usage_out else None,
+                    completion_tokens=usage_out[1] if usage_out else None,
+                    total_tokens=usage_out[2] if usage_out else None,
+                    latency_ms=int((time.perf_counter() - t0) * 1000),
+                    status=llm_status,
+                )
+                s.commit()
+            except Exception as log_err:
+                logger.warning("Widget LLM usage log 失敗: %s", log_err)
+            finally:
+                s.close()
 
     return StreamingResponse(generate(), media_type="text/event-stream")

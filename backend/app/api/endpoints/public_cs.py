@@ -18,6 +18,7 @@ from app.core.database import get_db
 from app.core.limiter import limiter
 from app.models.api_key import ApiKey, ApiKeyUsage
 from app.models.km_knowledge_base import KmKnowledgeBase
+from app.services.agent_usage import log_agent_usage
 from app.services.chat_service import _load_system_prompt_from_file
 from app.services.km_service import format_km_context, km_retrieve_sync
 from app.services.llm_service import UsageMeta, _get_llm_params, _get_provider_name
@@ -146,6 +147,7 @@ async def cs_query(
         user_id=0,
         knowledge_base_id=body.knowledge_base_id,
         skip_scope_check=True,
+        agent_id="cs",
     )
     rag_context = format_km_context(chunks)
     logger.info("public cs_query: %d chunks retrieved (kb_id=%s)", len(chunks), body.knowledge_base_id)
@@ -204,12 +206,25 @@ async def cs_query(
     }
     apply_api_base(kwargs, api_base)
 
+    import time as _time
+    t0 = _time.perf_counter()
+    llm_status = "success"
     try:
         resp = await litellm.acompletion(**kwargs)
     except Exception as exc:
+        llm_status = "error"
+        log_agent_usage(
+            db=db,
+            agent_type="cs",
+            tenant_id=tenant_id,
+            model=model,
+            latency_ms=int((_time.perf_counter() - t0) * 1000),
+            status="error",
+        )
         logger.error("public cs_query LiteLLM error: %s", exc)
         raise HTTPException(status_code=502, detail=f"LLM 呼叫失敗：{exc}") from exc
 
+    latency_ms = int((_time.perf_counter() - t0) * 1000)
     answer = resp.choices[0].message.content or ""
     usage: UsageMeta | None = None
     if hasattr(resp, "usage") and resp.usage:
@@ -226,6 +241,19 @@ async def cs_query(
         )
     else:
         _record_usage(db, api_key_id=api_key.id, input_tokens=0, output_tokens=0)
+
+    log_agent_usage(
+        db=db,
+        agent_type="cs",
+        tenant_id=tenant_id,
+        model=model,
+        prompt_tokens=usage.prompt_tokens if usage else None,
+        completion_tokens=usage.completion_tokens if usage else None,
+        total_tokens=usage.total_tokens if usage else None,
+        latency_ms=latency_ms,
+        status=llm_status,
+    )
+    db.commit()
 
     return CsQueryResponse(
         answer=answer,

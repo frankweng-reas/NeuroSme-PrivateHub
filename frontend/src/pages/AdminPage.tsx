@@ -10,11 +10,15 @@ import {
   KeyRound,
   KeySquare,
   ShieldCheck,
+  TrendingUp,
+  UserCircle,
   Users,
 } from 'lucide-react'
 import { getMe } from '@/api/users'
 import type { User } from '@/types'
 import ActivationDialog from '@/components/ActivationDialog'
+import { AvatarCircle } from '@/components/AvatarCircle'
+import ProfileModal from '@/components/ProfileModal'
 
 const SIDEBAR_ITEMS = [
   { to: '/admin/tenant-settings', label: 'REAS-系統 Tenants 設定', icon: Building2, superAdminOnly: true },
@@ -22,6 +26,7 @@ const SIDEBAR_ITEMS = [
   { to: '/admin/users', label: '會員管理', icon: Users, superAdminOnly: false },
   { to: '/admin/agent-permissions', label: 'Agent 權限設定', icon: ShieldCheck, superAdminOnly: false },
   { to: '/admin/chat-insights', label: 'Chat 用量洞察', icon: BarChart3, superAdminOnly: false },
+  { to: '/admin/agent-insights', label: 'Agents 用量洞察', icon: TrendingUp, superAdminOnly: false },
 ] as const
 
 const SIDEBAR_ITEMS_SECONDARY: Array<{
@@ -55,6 +60,7 @@ export default function AdminPage() {
   const [user, setUser] = useState<User | null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed)
   const [showActivation, setShowActivation] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
 
   useEffect(() => {
     getMe()
@@ -80,13 +86,11 @@ export default function AdminPage() {
     <div className="flex h-full flex-col p-4">
       {showActivation && (
         <ActivationDialog
-          onActivated={() => {
-            setShowActivation(false)
-            window.location.reload()
-          }}
+          onActivated={() => { setShowActivation(false); window.location.reload() }}
           onClose={() => setShowActivation(false)}
         />
       )}
+      <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
       {/* Header 容器 - 與既有風格一致 */}
       <header
         className="flex-shrink-0 rounded-lg border-b border-gray-200 px-6 py-4 shadow-sm"
@@ -113,7 +117,7 @@ export default function AdminPage() {
           }`}
           style={{ backgroundColor: '#4b5563' }}
         >
-          <nav className={`flex flex-col py-2 ${sidebarCollapsed ? 'items-center' : ''}`}>
+          <nav className={`flex h-full flex-col py-2 ${sidebarCollapsed ? 'items-center' : ''}`}>
             <div className={`mb-1 flex w-full ${sidebarCollapsed ? 'justify-center px-1' : 'justify-end px-2 pr-3'}`}>
               <button
                 type="button"
@@ -176,6 +180,28 @@ export default function AdminPage() {
                 {!sidebarCollapsed && <span className="min-w-0">{label}</span>}
               </NavLink>
             ))}
+
+            {/* 底部分隔 + 個人設定 */}
+            <div className="flex-1" />
+            <div className={`my-2 border-t border-white/20 ${sidebarCollapsed ? 'mx-2 w-8' : 'mx-4'}`} />
+            <button
+              type="button"
+              onClick={() => setProfileOpen(true)}
+              title={sidebarCollapsed ? '個人設定' : undefined}
+              className={`flex w-full items-center text-white transition-colors hover:bg-white/10 ${
+                sidebarCollapsed ? 'justify-center px-2 py-3' : 'gap-3 px-4 py-3'
+              }`}
+            >
+              {user?.avatar_b64
+                ? <AvatarCircle avatarB64={user.avatar_b64} name={user.display_name || user.username} size={24} />
+                : <UserCircle className="h-5 w-5 flex-shrink-0" />
+              }
+              {!sidebarCollapsed && (
+                <span className="min-w-0 truncate text-sm">
+                  {user?.display_name || user?.username || '個人設定'}
+                </span>
+              )}
+            </button>
           </nav>
         </aside>
 

@@ -170,6 +170,8 @@ async def upload_km_document(
         db=db,
         tenant_id=current.tenant_id,
         doc_type=doc_type,
+        agent_id="knowledge",
+        user_id=current.id,
     )
 
     db.refresh(doc)

@@ -6,6 +6,8 @@ export interface User {
   username: string
   role: UserRole
   tenant_id?: string
+  display_name?: string | null
+  avatar_b64?: string | null
 }
 
 export interface Tenant {

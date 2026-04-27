@@ -59,6 +59,9 @@ export default defineConfig(({ mode }) => {
       headers: {
         "Cache-Control": "no-cache",
       },
+      fs: {
+        allow: ['..'],  // 允許存取上層目錄（VERSION 檔位於此）
+      },
       proxy: {
         '/api': {
           target: `http://localhost:${apiPort}`,

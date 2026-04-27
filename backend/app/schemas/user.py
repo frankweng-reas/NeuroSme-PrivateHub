@@ -21,9 +21,17 @@ class UserResponse(UserBase):
     id: int
     role: Role = "member"
     tenant_id: str = ""
+    display_name: Optional[str] = None
+    avatar_b64: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+
+class UserProfileUpdate(BaseModel):
+    """本人更新個人 profile：顯示名稱、頭像"""
+    display_name: Optional[str] = None
+    avatar_b64: Optional[str] = None
 
 
 class UserAgentsUpdate(BaseModel):

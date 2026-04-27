@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models.bi_project import BiProject
 from app.core.security import get_current_user
+from app.services.agent_usage import log_agent_usage
 from app.services.llm_service import (
     _get_llm_params,
     _get_provider_name,
@@ -527,6 +528,9 @@ async def _stream_compute_tool(
         intent_raw, usage1 = await _call_llm(model, intent_prompt, user_content_intent, db=db, tenant_id=tenant_id)
     except Exception as e:
         logger.exception("意圖萃取 LLM 呼叫失敗")
+        log_agent_usage(db=db, agent_type="business", tenant_id=tenant_id, user_id=user_id,
+                        model=model, status="error")
+        db.commit()
         yield _sse_event({"stage": "done", "error_stage": "intent", "content": f"意圖萃取失敗：{e}", "chart_data": None})
         return
 
@@ -610,6 +614,15 @@ async def _stream_compute_tool(
         text_content, usage2 = await _call_llm(model, text_prompt, user_content_text, db=db, tenant_id=tenant_id)
     except Exception as e:
         logger.exception("文字生成 LLM 呼叫失敗")
+        log_agent_usage(
+            db=db, agent_type="business", tenant_id=tenant_id, user_id=user_id,
+            model=model,
+            prompt_tokens=usage1.get("prompt_tokens") if usage1 else None,
+            completion_tokens=usage1.get("completion_tokens") if usage1 else None,
+            total_tokens=usage1.get("total_tokens") if usage1 else None,
+            status="error",
+        )
+        db.commit()
         yield _sse_event({
             "stage": "done",
             "error_stage": "text",
@@ -627,6 +640,16 @@ async def _stream_compute_tool(
     if usage2:
         for k, v in usage2.items():
             total_usage[k] = total_usage.get(k, 0) + v
+
+    log_agent_usage(
+        db=db, agent_type="business", tenant_id=tenant_id, user_id=user_id,
+        model=model,
+        prompt_tokens=total_usage.get("prompt_tokens"),
+        completion_tokens=total_usage.get("completion_tokens"),
+        total_tokens=total_usage.get("total_tokens"),
+        status="success",
+    )
+    db.commit()
 
     yield _sse_event({
         "stage": "done",

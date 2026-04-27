@@ -70,16 +70,6 @@ BUILTIN_AGENTS: list[AgentDef] = [
         "frontend_key": None,
     },
     {
-        "group_id": "hr",
-        "group_name": "人資管理",
-        "agent_id": "scheduling",
-        "agent_name": "Scheduling Agent",
-        "icon_name": None,
-        "sort_id": "32",
-        "backend_router": None,
-        "frontend_key": "agent-scheduling",
-    },
-    {
         "group_id": "financial",
         "group_name": "財務管理",
         "agent_id": "invoice",

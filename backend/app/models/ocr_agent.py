@@ -31,9 +31,15 @@ class OcrExtractionHistory(Base):
     user_id = Column(Integer, nullable=True)
     filename = Column(String(500), nullable=False, default="")
     raw_text = Column(Text, nullable=False, default="")
-    extracted_fields = Column(JSONB, nullable=False, default=dict)  # {field_name: value}
+    extracted_fields = Column(JSONB, nullable=False, default=dict)
     status = Column(String(20), nullable=False, default="success")  # success / error
     error_message = Column(Text, nullable=True)
+    # usage monitoring
+    model = Column(String(200), nullable=True)
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    total_tokens = Column(Integer, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     config = relationship("OcrAgentConfig", back_populates="history")

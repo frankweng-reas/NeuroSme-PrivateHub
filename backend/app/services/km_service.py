@@ -9,6 +9,7 @@
 """
 import io
 import logging
+import time
 from datetime import datetime, timezone
 
 import litellm
@@ -19,6 +20,7 @@ from app.models.km_document import KmDocument
 from app.models.llm_provider_config import LLMProviderConfig
 from app.models.tenant_config import TenantConfig
 from app.core.encryption import decrypt_api_key
+from app.services.agent_usage import log_agent_usage
 
 logger = logging.getLogger(__name__)
 
@@ -318,38 +320,37 @@ def embed_texts_sync(
     provider: str = "openai",
     api_base: str | None = None,
     task_type: str = "retrieval_document",
-) -> list[list[float]]:
-    """同步呼叫 embedding API，回傳向量清單。
-    provider 決定路由：
-      - gemini → google-generativeai SDK（繞過 LiteLLM）
+) -> tuple[list[list[float]], int | None]:
+    """同步呼叫 embedding API，回傳 (向量清單, prompt_tokens)。
+    所有 provider 統一走 LiteLLM：
+      - gemini → LiteLLM gemini/ 前綴（task_type 透過 extra_body 傳遞）
       - openai → LiteLLM
       - local  → LiteLLM + ollama api_base
     model 直接使用設定值，不自動加前綴。
     task_type：retrieval_document（上傳文件）或 retrieval_query（搜尋查詢）
     """
     if provider == "gemini":
-        import google.genai as genai  # type: ignore[import-untyped]
-        from google.genai import types as genai_types  # type: ignore[import-untyped]
-
-        client = genai.Client(api_key=api_key)
-        response = client.models.embed_content(
-            model=model,
-            contents=texts,
-            config=genai_types.EmbedContentConfig(
-                task_type=task_type,
-                output_dimensionality=EMBEDDING_DIM,
-            ),
+        litellm_model = model if model.startswith("gemini/") else f"gemini/{model}"
+        kwargs: dict = dict(
+            model=litellm_model,
+            input=texts,
+            api_key=api_key,
+            timeout=15,
+            extra_body={"task_type": task_type, "output_dimensionality": EMBEDDING_DIM},
         )
-        return [e.values for e in response.embeddings]
+        response = litellm.embedding(**kwargs)
+        prompt_tokens: int | None = getattr(getattr(response, "usage", None), "prompt_tokens", None)
+        return [item["embedding"] for item in response.data], prompt_tokens
 
     if provider == "local":
         # Ollama embedding：LiteLLM 需要 ollama/ 前綴；api_base 不加 /v1
         litellm_model = model if model.startswith("ollama/") else f"ollama/{model}"
-        kwargs: dict = dict(model=litellm_model, input=texts, api_key=api_key or "local", timeout=15)
+        kwargs = dict(model=litellm_model, input=texts, api_key=api_key or "local", timeout=15)
         if api_base:
             kwargs["api_base"] = api_base.rstrip("/")
         response = litellm.embedding(**kwargs)
-        return [item["embedding"] for item in response.data]
+        prompt_tokens = getattr(getattr(response, "usage", None), "prompt_tokens", None)
+        return [item["embedding"] for item in response.data], prompt_tokens
 
     kwargs = dict(model=model, input=texts, api_key=api_key, timeout=15)
     if api_base:
@@ -357,7 +358,8 @@ def embed_texts_sync(
     if provider == "openai" and "text-embedding-3-small" in model:
         kwargs["dimensions"] = EMBEDDING_DIM
     response = litellm.embedding(**kwargs)
-    return [item["embedding"] for item in response.data]
+    prompt_tokens = getattr(getattr(response, "usage", None), "prompt_tokens", None)
+    return [item["embedding"] for item in response.data], prompt_tokens
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -373,6 +375,8 @@ def process_document(
     db: Session,
     tenant_id: str,
     doc_type: str = "article",
+    agent_id: str = "knowledge",
+    user_id: int | None = None,
 ) -> None:
     """完整管線：文字擷取 → 切分 → Embedding → 寫入 km_chunks。
     同步執行（於上傳請求中直接處理，適合初期小量文件場景）。
@@ -415,10 +419,31 @@ def process_document(
         # 4. 批次 Embedding（每批 100 筆）
         all_embeddings: list[list[float]] = []
         batch_size = 100
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i : i + batch_size]
-            embeddings = embed_texts_sync(batch, model=embed_model, api_key=embed_key, provider=embed_provider, api_base=embed_base)
-            all_embeddings.extend(embeddings)
+        embed_started = time.monotonic()
+        embed_status = "success"
+        total_prompt_tokens: int | None = None
+        try:
+            for i in range(0, len(chunks), batch_size):
+                batch = chunks[i : i + batch_size]
+                batch_vectors, batch_tokens = embed_texts_sync(batch, model=embed_model, api_key=embed_key, provider=embed_provider, api_base=embed_base)
+                all_embeddings.extend(batch_vectors)
+                if batch_tokens is not None:
+                    total_prompt_tokens = (total_prompt_tokens or 0) + batch_tokens
+        except Exception:
+            embed_status = "error"
+            raise
+        finally:
+            log_agent_usage(
+                db=db,
+                agent_type=agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                model=embed_model,
+                prompt_tokens=total_prompt_tokens,
+                total_tokens=total_prompt_tokens,
+                latency_ms=int((time.monotonic() - embed_started) * 1000),
+                status=embed_status,
+            )
 
         # 5. 寫入 km_chunks，並鎖定 embedding config
         for idx, (chunk_content, embedding) in enumerate(zip(chunks, all_embeddings)):
@@ -468,6 +493,7 @@ def km_retrieve_sync(
     selected_doc_ids: list[int] | None = None,
     knowledge_base_id: int | None = None,
     skip_scope_check: bool = False,
+    agent_id: str = "knowledge",
 ) -> list[KmChunk]:
     """同步向量檢索：query → embedding → cosine similarity 找 top-K chunks。
 
@@ -505,8 +531,11 @@ def km_retrieve_sync(
             top_k = 8
         logger.debug("km_retrieve top_k=%d (doc_types=%s)", top_k, doc_types if doc_types else "unknown")
 
+    embed_started = time.monotonic()
+    embed_status = "success"
+    query_prompt_tokens: int | None = None
     try:
-        embeddings = embed_texts_sync(
+        vectors, query_prompt_tokens = embed_texts_sync(
             [query],
             model=embed_model,
             api_key=embed_key,
@@ -514,10 +543,23 @@ def km_retrieve_sync(
             api_base=embed_base,
             task_type="retrieval_query",
         )
-        query_embedding = embeddings[0]
+        query_embedding = vectors[0]
     except Exception as e:
+        embed_status = "error"
         logger.warning("KM embedding 失敗: %s", e)
         return []
+    finally:
+        log_agent_usage(
+            db=db,
+            agent_type=agent_id,
+            tenant_id=tenant_id,
+            user_id=user_id if user_id else None,
+            model=embed_model,
+            prompt_tokens=query_prompt_tokens,
+            total_tokens=query_prompt_tokens,
+            latency_ms=int((time.monotonic() - embed_started) * 1000),
+            status=embed_status,
+        )
 
     try:
         q = (

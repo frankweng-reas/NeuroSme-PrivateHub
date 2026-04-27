@@ -2,6 +2,7 @@
 import csv
 import io
 import logging
+import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
@@ -13,6 +14,7 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.ocr_agent import OcrAgentConfig, OcrExtractionHistory
 from app.models.user import User
+from app.services.agent_usage import log_agent_usage
 from app.services.ocr_service import BUILTIN_TEMPLATES, extract_fields
 
 router = APIRouter()
@@ -236,9 +238,11 @@ async def extract(
         tenant_id=tenant_id,
         user_id=current.id,
         filename=filename,
+        model=cfg.model,
         status="success",
     )
 
+    started_at = time.monotonic()
     try:
         result = await extract_fields(
             file_bytes=file_bytes,
@@ -249,9 +253,16 @@ async def extract(
             db=db,
             tenant_id=tenant_id,
         )
+        hist.latency_ms = int((time.monotonic() - started_at) * 1000)
         hist.raw_text = result["raw_text"]
         hist.extracted_fields = result["extracted_fields"]
+        if result.get("usage"):
+            u = result["usage"]
+            hist.prompt_tokens = u.get("prompt_tokens")
+            hist.completion_tokens = u.get("completion_tokens")
+            hist.total_tokens = u.get("total_tokens")
     except Exception as exc:
+        hist.latency_ms = int((time.monotonic() - started_at) * 1000)
         logger.error("OCR extract error: %s", exc)
         hist.status = "error"
         hist.error_message = str(exc)
@@ -262,6 +273,20 @@ async def extract(
     db.add(hist)
     db.commit()
     db.refresh(hist)
+
+    log_agent_usage(
+        db=db,
+        agent_type="ocr",
+        tenant_id=tenant_id,
+        user_id=current.id,
+        model=hist.model,
+        prompt_tokens=hist.prompt_tokens,
+        completion_tokens=hist.completion_tokens,
+        total_tokens=hist.total_tokens,
+        latency_ms=hist.latency_ms,
+        status=hist.status,
+    )
+    db.commit()
 
     if hist.status == "error":
         raise HTTPException(status_code=502, detail=hist.error_message)

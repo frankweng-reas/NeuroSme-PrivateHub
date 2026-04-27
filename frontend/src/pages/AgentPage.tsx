@@ -10,11 +10,11 @@ import AgentCsUI from './agents/AgentCsUI'
 import AgentCustomerUI from './agents/AgentCustomerUI'
 import AgentKmUI from './agents/AgentKmUI'
 import AgentQuotationUI from './agents/AgentQuotationUI'
-import AgentSchedulingUI from './agents/AgentSchedulingUI'
 import AgentWritingUI from './agents/AgentWritingUI'
 import AgentMarketingUI from './agents/AgentMarketingUI'
 import AgentOcrUI from './agents/AgentOcrUI'
-import AgentDefaultUI from './agents/AgentDefaultUI'
+import AgentPageLayout from '@/components/AgentPageLayout'
+import AgentIcon from '@/components/AgentIcon'
 
 function getAgentUI(agent: Agent) {
   const id = agent.agent_id.toLowerCase()
@@ -26,10 +26,9 @@ function getAgentUI(agent: Agent) {
   if (id.includes('business')) return AgentBusinessUI
   if (id.includes('customer')) return AgentCustomerUI
   if (id.includes('quotation')) return AgentQuotationUI
-  if (id.includes('scheduling')) return AgentSchedulingUI
   if (id === 'ocr') return AgentOcrUI
 
-  return AgentDefaultUI
+  return null
 }
 
 export default function AgentPage() {
@@ -83,5 +82,17 @@ export default function AgentPage() {
   }
 
   const AgentUI = getAgentUI(agent)
+  if (!AgentUI) {
+    return (
+      <AgentPageLayout
+        title={agent.agent_name}
+        headerIcon={<AgentIcon iconName={agent.icon_name} className="h-6 w-6 text-white" />}
+      >
+        <div className="flex flex-1 flex-col rounded-2xl border-2 border-gray-200 bg-white p-8 shadow-sm">
+          <p className="text-gray-500">開發中...</p>
+        </div>
+      </AgentPageLayout>
+    )
+  }
   return <AgentUI agent={agent} />
 }

@@ -239,6 +239,7 @@ async def ordering_chat(
         user_id=0,
         knowledge_base_id=body.knowledge_base_id,
         skip_scope_check=True,
+        agent_id="ordering",
     )
     rag_context = format_km_context(chunks)
     logger.info("ordering_chat: %d chunks retrieved (kb_id=%s)", len(chunks), body.knowledge_base_id)

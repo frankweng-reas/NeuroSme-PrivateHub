@@ -1,6 +1,6 @@
 /** Agent 頁面共用 header：icon + 標題 + 返回連結 */
-import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Trash2, Upload, X } from 'lucide-react'
 import AgentIcon from '@/components/AgentIcon'
 import { getMe } from '@/api/users'
@@ -9,6 +9,8 @@ import { useAuth } from '@/contexts/AuthContext'
 import { ApiError } from '@/api/client'
 import type { Agent } from '@/types'
 import type { User } from '@/types'
+import { AvatarCircle } from '@/components/AvatarCircle'
+import ProfileModal from '@/components/ProfileModal'
 
 function getErrorMessage(err: unknown): string {
   if (err instanceof ApiError && err.detail) return err.detail
@@ -31,8 +33,12 @@ interface AgentHeaderProps {
 }
 
 export default function AgentHeader({ agent, className = '', showManagerTools: showManagerToolsProp = false, showSchemaManager = false, onSchemaManagerOpen, headerBackgroundColor = '#4b5563', onOnlineHelpClick }: AgentHeaderProps) {
-  const { user: authUser } = useAuth()
+  const { user: authUser, logout } = useAuth()
+  const navigate = useNavigate()
   const [user, setUser] = useState<User | null>(null)
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const userMenuRef = useRef<HTMLDivElement>(null)
+  const [profileOpen, setProfileOpen] = useState(false)
   const [managerToolsOpen, setManagerToolsOpen] = useState(false)
   const [catalogName, setCatalogName] = useState('')
   const [catalogContent, setCatalogContent] = useState('')
@@ -57,6 +63,16 @@ export default function AgentHeader({ agent, className = '', showManagerTools: s
       .then(setUser)
       .catch(() => setUser(null))
   }, [authUser])
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setUserMenuOpen(false)
+      }
+    }
+    if (userMenuOpen) document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [userMenuOpen])
 
   const showManagerTools = showManagerToolsProp && (user?.role === 'admin' || user?.role === 'manager')
   const canManageSchema = showSchemaManager && (user?.role === 'manager' || user?.role === 'admin' || user?.role === 'super_admin')
@@ -128,6 +144,7 @@ export default function AgentHeader({ agent, className = '', showManagerTools: s
 
   return (
     <>
+      <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
       <header
         className={`flex-shrink-0 rounded-2xl border-b border-gray-300/50 px-6 py-4 shadow-md ${className}`.trim()}
         style={{ backgroundColor: headerBackgroundColor }}
@@ -170,6 +187,56 @@ export default function AgentHeader({ agent, className = '', showManagerTools: s
                 主管工具
               </button>
             )}
+            {/* 頭像 dropdown */}
+            <div className="relative" ref={userMenuRef}>
+              <button
+                type="button"
+                onClick={() => setUserMenuOpen((o) => !o)}
+                className="flex h-9 w-9 items-center justify-center rounded-full border border-white/30 overflow-hidden transition-opacity hover:opacity-80"
+                aria-label="使用者選單"
+              >
+                <AvatarCircle
+                  avatarB64={user?.avatar_b64}
+                  name={user?.display_name || user?.username || authUser?.email?.split('@')[0] || 'U'}
+                  size={36}
+                />
+              </button>
+              {userMenuOpen && (
+                <div className="absolute right-0 top-full z-50 mt-2 min-w-[200px] rounded-xl border border-gray-200 bg-white shadow-lg overflow-hidden">
+                  <div className="flex items-center gap-3 bg-gray-50 border-b border-gray-100 px-4 py-3">
+                    <AvatarCircle
+                      avatarB64={user?.avatar_b64}
+                      name={user?.display_name || user?.username || authUser?.email?.split('@')[0] || 'U'}
+                      size={32}
+                    />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-gray-900">
+                        {user?.display_name || user?.username || '—'}
+                      </p>
+                      <p className="truncate text-xs text-gray-500">{authUser?.email ?? user?.email ?? '-'}</p>
+                    </div>
+                  </div>
+                  <div className="py-1">
+                    <button
+                      type="button"
+                      onClick={() => { setProfileOpen(true); setUserMenuOpen(false) }}
+                      className="block w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                    >
+                      個人設定
+                    </button>
+                  </div>
+                  <div className="border-t border-gray-100 py-1">
+                    <button
+                      type="button"
+                      onClick={() => { logout(); navigate('/login'); setUserMenuOpen(false) }}
+                      className="block w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                    >
+                      登出
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
             <Link
               to="/"
               className="flex items-center text-white transition-opacity hover:opacity-80"

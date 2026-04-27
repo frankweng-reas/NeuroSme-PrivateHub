@@ -16,12 +16,14 @@ import AdminLLMSettings from './pages/admin/AdminLLMSettings'
 import AdminTenantSettings from './pages/admin/AdminTenantSettings'
 import AdminUsers from './pages/admin/AdminUsers'
 import AdminChatInsights from './pages/admin/AdminChatInsights'
+import AdminAgentInsights from './pages/admin/AdminAgentInsights'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import ChangePasswordPage from './pages/ChangePasswordPage'
 import ChangePasswordExpiredPage from './pages/ChangePasswordExpiredPage'
 import ForgotPasswordPage from './pages/ForgotPasswordPage'
 import ResetPasswordPage from './pages/ResetPasswordPage'
+import ProfilePage from './pages/ProfilePage'
 import TestLLMChat from './pages/TestLLMChat'
 import TestComputeEngine from './pages/TestComputeEngine'
 import DevPipelineInspector from './pages/DevPipelineInspector'
@@ -58,6 +60,14 @@ function App() {
                 }
               />
               <Route
+                path="profile"
+                element={
+                  <ProtectedRoute>
+                    <ProfilePage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
                 path="admin"
               element={
                   <ProtectedRoute>
@@ -74,6 +84,7 @@ function App() {
                 <Route path="tenant-settings" element={<SuperAdminRoute><AdminTenantSettings /></SuperAdminRoute>} />
                 <Route path="llm-settings" element={<AdminLLMSettings />} />
                 <Route path="chat-insights" element={<AdminChatInsights />} />
+                <Route path="agent-insights" element={<AdminAgentInsights />} />
                 <Route path="users" element={<AdminUsers />} />
               </Route>
               <Route

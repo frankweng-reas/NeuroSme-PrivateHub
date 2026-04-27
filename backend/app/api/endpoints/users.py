@@ -13,7 +13,7 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
 from app.models.user_agent import UserAgent
-from app.schemas.user import UserAgentsUpdate, UserCreate, UserResponse, UserRoleUpdate, UserUpdate
+from app.schemas.user import UserAgentsUpdate, UserCreate, UserProfileUpdate, UserResponse, UserRoleUpdate, UserUpdate
 from app.services.permission import get_agent_ids_for_user, resolve_agent_catalog
 
 router = APIRouter()
@@ -96,6 +96,25 @@ async def _localauth_delete_user_by_email(email: str) -> None:
 def get_current_user_info(current: Annotated[User, Depends(get_current_user)]):
     """取得當前登入使用者（從 JWT）"""
     return current
+
+
+@router.patch("/me/profile", response_model=UserResponse)
+def update_my_profile(
+    body: UserProfileUpdate,
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """本人更新個人顯示名稱與頭像（base64）"""
+    user = db.query(User).filter(User.id == current.id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if body.display_name is not None:
+        user.display_name = body.display_name.strip() or None
+    if body.avatar_b64 is not None:
+        user.avatar_b64 = body.avatar_b64 or None
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 @router.get("/by-email", response_model=UserResponse)

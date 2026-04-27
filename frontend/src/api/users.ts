@@ -61,3 +61,15 @@ export async function updateUser(
     body: JSON.stringify(payload),
   })
 }
+
+export interface UpdateProfilePayload {
+  display_name?: string | null
+  avatar_b64?: string | null
+}
+
+export async function updateMyProfile(payload: UpdateProfilePayload): Promise<User> {
+  return apiFetch<User>('/users/me/profile', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
