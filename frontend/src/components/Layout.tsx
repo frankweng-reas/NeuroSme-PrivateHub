@@ -64,10 +64,10 @@ export default function Layout() {
                 className="text-2xl font-bold text-white"
                 style={{ letterSpacing: '-0.5px', fontFamily: "'Inter', 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif", fontStyle: 'italic' }}
               >
-                <span style={{ fontWeight: 700, color: '#fb923c' }}>Neuro</span>
-                <span style={{ fontWeight: 700, color: '#fb923c' }}>Sme</span>
-                <span style={{ fontWeight: 300, fontStyle: 'normal', fontSize: '0.8em', opacity: 0.7 }}>{' \u00a0| Private Hub'}</span>
-                <span style={{ fontWeight: 300, fontStyle: 'normal', fontSize: '0.65em', opacity: 0.5, marginLeft: '0.6em', letterSpacing: '0.02em' }}>
+                <span style={{ fontWeight: 700, color: '#fb923c', fontSize: '32px' }}>Neuro</span>
+                <span style={{ fontWeight: 700, color: '#fb923c', fontSize: '32px' }}>Sme</span>
+                <span style={{ fontWeight: 300, fontStyle: 'normal', fontSize: '24px', opacity: 0.7 }}>{' \u00a0| Private Hub'}</span>
+                <span style={{ fontWeight: 300, fontStyle: 'normal', fontSize: '20px', opacity: 0.3, marginLeft: '0.6em', letterSpacing: '0.02em' }}>
                   {APP_VERSION}
                 </span>
               </h1>
@@ -87,7 +87,7 @@ export default function Layout() {
                 <button
                   type="button"
                   onClick={() => setUserMenuOpen((o) => !o)}
-                  className="flex h-10 w-10 items-center justify-center rounded-full border border-white/30 overflow-hidden transition-opacity hover:opacity-80"
+                  className="flex h-10 w-10 items-center justify-center rounded-full border border-white/30 overflow-hidden ring-1 ring-gray-400/40 transition-all hover:opacity-80 hover:ring-gray-300/60"
                   aria-label="使用者選單"
                 >
                   <AvatarCircle avatarB64={user?.avatar_b64} name={displayName} size={40} />

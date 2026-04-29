@@ -15,11 +15,19 @@ const AGENT_DESCRIPTIONS: Record<string, string> = {
   cs:        '基於知識庫，提供精準客服問答',
   business:  '數據分析與商業洞察報告',
   marketing: '社群貼文、廣告文案、EDM 一鍵生成',
-  quotation: '自動化報價流程管理',
   customer:  '客戶行為分析與洞察',
-  interview: '面試流程與評核輔助',
-  invoice:   '發票與財務單據管理',
   ocr:       '上傳圖片，自動抽取結構化欄位資料',
+}
+
+const AGENT_SCENARIOS: Record<string, string> = {
+  chat:      '日常問答、文件草稿、腦力激盪',
+  writing:   '企劃書、提案報告、商業電子郵件',
+  knowledge: '文件查詢、政策解讀、FAQ、履歷分析',
+  cs:        '客服回覆、問題解答、投訴處理',
+  business:  '銷售分析、市場趨勢、績效報告',
+  marketing: '社群貼文、廣告文案、電子報',
+  customer:  '客戶分群、購買行為、留存分析',
+  ocr:       '名片、發票、收據、合約掃描',
 }
 
 // 依 group 首次出現順序分配色盤
@@ -155,6 +163,7 @@ export default function HomePage() {
                 const idx = (groupPaletteIndex.get(agent.group_id) ?? 0) % PALETTES.length
                 const p = PALETTES[idx]
                 const description = AGENT_DESCRIPTIONS[agent.agent_id] ?? ''
+                const scenario = AGENT_SCENARIOS[agent.agent_id] ?? ''
                 return (
                   <div
                     key={agent.id}
@@ -162,20 +171,28 @@ export default function HomePage() {
                     tabIndex={0}
                     onClick={() => navigate(`/agent/${encodeURIComponent(agent.id)}`)}
                     onKeyDown={(e) => e.key === 'Enter' && navigate(`/agent/${encodeURIComponent(agent.id)}`)}
-                    className={`group relative flex cursor-pointer items-center gap-5 rounded-xl bg-white px-5 pt-5 pb-9 ring-1 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:ring-2 ${p.ring} ${p.ringHover}`}
+                    className={`group relative flex cursor-pointer items-center gap-5 rounded-xl bg-white px-5 pt-5 pb-9 min-h-[180px] ring-1 transition-all duration-200 hover:-translate-y-2 hover:ring-2 ${p.ring} ${p.ringHover}`}
+                    style={{ boxShadow: '0 4px 0 0 rgba(0,0,0,0.07), 0 6px 16px rgba(0,0,0,0.08)' }}
+                    onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 8px 0 0 rgba(0,0,0,0.07), 0 12px 24px rgba(0,0,0,0.12)')}
+                    onMouseLeave={e => (e.currentTarget.style.boxShadow = '0 4px 0 0 rgba(0,0,0,0.07), 0 6px 16px rgba(0,0,0,0.08)')}
                   >
                     {/* icon：與右側文字垂直置中 */}
                     <div className={`flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-xl transition-transform duration-200 group-hover:scale-105 ${p.iconBg}`}>
                       <AgentIcon iconName={agent.icon_name} className={`h-7 w-7 ${p.iconColor}`} />
                     </div>
-                    {/* 右側：name + desc */}
+                    {/* 右側：name + desc + scenario */}
                     <div className="min-w-0 flex-1">
-                      <h3 className="truncate text-base font-semibold leading-snug text-gray-900">
+                      <h3 className="truncate text-xl font-semibold leading-snug text-gray-900">
                         {agent.agent_name}
                       </h3>
-                      <p className="mt-0.5 truncate text-sm leading-snug text-gray-500">
+                      <p className="mt-2 truncate text-base leading-snug text-gray-500">
                         {description || '—'}
                       </p>
+                      {scenario && (
+                        <p className="mt-1 text-base leading-snug text-gray-400 line-clamp-2">
+                          <span className="font-medium text-gray-500">場景：</span>{scenario}
+                        </p>
+                      )}
                     </div>
                     {/* badge：絕對定位右下角 */}
                     <span className={`absolute bottom-2.5 right-4 inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${p.badgeBg} ${p.badgeText}`}>
