@@ -1,14 +1,29 @@
+import fs from 'node:fs'
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 import { VitePWA } from 'vite-plugin-pwa'
 
+function readRepoRootVersion(): string {
+  try {
+    return fs.readFileSync(path.join(__dirname, '..', 'VERSION'), 'utf-8').trim()
+  } catch {
+    return 'dev'
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const apiPort = env.VITE_API_PORT || '8000'
   const localAuthPort = env.VITE_LOCALAUTH_PORT || '4000'
+  // Docker Dockerfile 會以 ARG/ENV 注入；本地開發無則自 ../../VERSION 讀（build context 僅 frontend 時此檔不存在，依賴 Dockerfile）
+  const viteAppVersion =
+    process.env.VITE_APP_VERSION ?? env.VITE_APP_VERSION ?? readRepoRootVersion()
 
   return {
+    define: {
+      'import.meta.env.VITE_APP_VERSION': JSON.stringify(viteAppVersion),
+    },
     plugins: [
       react(),
       VitePWA({

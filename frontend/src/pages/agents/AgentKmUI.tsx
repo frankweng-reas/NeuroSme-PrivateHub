@@ -200,7 +200,7 @@ export default function AgentKmUI({ agent }: AgentKmUIProps) {
     if (stored === null) return
     try {
       const storedIds: number[] = JSON.parse(stored)
-      setSelectedDocIds((prev) => {
+      setSelectedDocIds((_prev) => {
         const validIds = new Set(docs.map((d) => d.id))
         // 過濾掉已刪除的 doc，保留有效的
         const next = new Set(storedIds.filter((id) => validIds.has(id)))

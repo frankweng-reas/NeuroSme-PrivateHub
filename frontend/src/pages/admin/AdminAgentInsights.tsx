@@ -22,11 +22,8 @@ import {
   type UsersOverviewResponse,
   type UserLeaderboardRow,
   type UsersLeaderboardResponse,
-  type UserAgentBreakdownRow,
   type UserBreakdownResponse,
-  type UserChatThreadRow,
   type UserChatThreadsResponse,
-  type UserOcrHistoryRow,
   type UserOcrHistoryResponse,
 } from '@/api/agentInsights'
 import { useToast } from '@/contexts/ToastContext'
@@ -72,12 +69,6 @@ function deltaLabel(d: number) {
   const sign = d > 0 ? '+' : ''
   const cls = d > 0 ? 'text-green-600' : 'text-red-500'
   return <span className={`${cls} text-xs font-medium`}>{sign}{fmtInt(d)}</span>
-}
-
-function healthDot(rate: number) {
-  if (rate >= 0.99) return 'bg-green-500'
-  if (rate >= 0.95) return 'bg-yellow-400'
-  return 'bg-red-500'
 }
 
 // ── DateRange picker ─────────────────────────────────────────────────────────
@@ -221,7 +212,6 @@ function TabHealth({ start, end }: { start: string; end: string }) {
 function HealthCard({ card }: { card: AgentHealthCard }) {
   const isGreen = card.success_rate >= 0.99
   const isYellow = card.success_rate >= 0.95 && card.success_rate < 0.99
-  const isRed = card.success_rate < 0.95
 
   const accentColor = isGreen ? '#22c55e' : isYellow ? '#f59e0b' : '#ef4444'
   const bgClass = isGreen

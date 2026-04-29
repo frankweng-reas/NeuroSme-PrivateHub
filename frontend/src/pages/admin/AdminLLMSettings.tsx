@@ -929,16 +929,19 @@ export default function AdminLLMSettings() {
                   const ms = cfg?.available_models?.length ? cfg.available_models : (providerOptions[defaultLLMForm.provider] ?? [])
                   return ms.length > 0 ? (
                     <div className="flex flex-wrap gap-1 mt-2">
-                      {ms.map((m) => (
+                      {ms.map((m) => {
+                        const mid = typeof m === 'string' ? m : m.model
+                        return (
                         <button
-                          key={m}
+                          key={mid}
                           type="button"
-                          onClick={() => setDefaultLLMForm((f) => ({ ...f, model: m }))}
+                          onClick={() => setDefaultLLMForm((f) => ({ ...f, model: mid }))}
                           className="rounded bg-gray-100 px-2 py-0.5 text-base text-gray-600 hover:bg-gray-200 transition-colors font-mono"
                         >
-                          {m}
+                          {mid}
                         </button>
-                      ))}
+                        )
+                      })}
                     </div>
                   ) : null
                 })()}

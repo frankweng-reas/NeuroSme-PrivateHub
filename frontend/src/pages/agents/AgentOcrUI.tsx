@@ -14,7 +14,6 @@ import {
   Layers as LayersIcon,
   Loader2,
   Maximize2,
-  Minus,
   Pencil,
   Plus,
   Save,
@@ -34,7 +33,6 @@ import {
   listOcrConfigs,
   listOcrHistory,
   listOcrTemplates,
-  ocrExportCsvUrl,
   updateOcrConfig,
   updateOcrHistoryFields,
   type OcrConfig,
@@ -119,7 +117,7 @@ export default function AgentOcrUI({ agent }: AgentOcrUIProps) {
   const [showUploadModal, setShowUploadModal] = useState(false)
   const [showHistoryModal, setShowHistoryModal] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
-  const [fileStatuses, setFileStatuses] = useState<Record<string, 'pending' | 'processing' | 'done' | 'error'>>({})
+  const [, setFileStatuses] = useState<Record<string, 'pending' | 'processing' | 'done' | 'error'>>({})
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   // history
   const [deleteHistTarget, setDeleteHistTarget] = useState<OcrHistoryItem | null>(null)
@@ -1132,7 +1130,6 @@ export default function AgentOcrUI({ agent }: AgentOcrUIProps) {
                 <LLMModelSelect
                   value={configForm.model}
                   onChange={(m) => setConfigForm((f) => ({ ...f, model: m }))}
-                  placeholder="選擇支援視覺的模型"
                 />
 
               </div>
