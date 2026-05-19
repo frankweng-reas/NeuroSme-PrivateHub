@@ -2,20 +2,34 @@
  * Bot Widget 公開頁面：/widget/bot/:token
  * - 不需要登入
  * - ?embed=1 → iframe 模式
- * - localStorage 存 session，支援對話記憶
+ * - 訪客表單已移除，改為匿名 session 自動建立
+ * - 若 Bot 啟用首頁面（home_enabled），新訪客先看首頁面再進對話
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { I18nextProvider, useTranslation } from 'react-i18next'
-import { Loader2, MessageCircle, RotateCcw } from 'lucide-react'
+import {
+  ChevronDown,
+  ChevronRight,
+  HelpCircle,
+  Loader2,
+  MessageCircle,
+  MessageSquare,
+  RotateCcw,
+  X,
+} from 'lucide-react'
 import {
   botWidgetChatStream,
   botWidgetTranscribeAudio,
   checkBotWidgetSession,
   createBotWidgetSession,
   getBotWidgetInfo,
+  type BotWidgetFaqItem,
   type BotWidgetInfo,
 } from '@/api/widget_bot_public'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import remarkBreaks from 'remark-breaks'
 import widgetI18n from '@/i18n/widgetI18n'
 import AgentChat, { type Message } from '@/components/AgentChat'
 import VoiceInput from '@/components/VoiceInput'
@@ -24,15 +38,13 @@ import VoiceInput from '@/components/VoiceInput'
 
 interface StoredSession {
   sessionId: string
-  visitorName: string
-  visitorEmail: string
-  visitorPhone: string
   messages: Message[]
 }
 
 // ── 常數 ──────────────────────────────────────────────────────────────────────
 
 const SESSION_KEY = (token: string) => `bot_widget_session_${token}`
+const POPULAR_PREVIEW = 3   // 預設顯示幾筆熱門問題
 
 function loadSession(token: string): StoredSession | null {
   try {
@@ -46,21 +58,309 @@ function loadSession(token: string): StoredSession | null {
 function saveSession(token: string, data: StoredSession) {
   try {
     localStorage.setItem(SESSION_KEY(token), JSON.stringify(data))
-  } catch {
-    /* iframe / 無痕儲存被拒 */
-  }
+  } catch { /* iframe / 無痕儲存被拒 */ }
 }
 
 function clearSession(token: string) {
-  try {
-    localStorage.removeItem(SESSION_KEY(token))
-  } catch {
-    /* ignore */
-  }
+  try { localStorage.removeItem(SESSION_KEY(token)) } catch { /* ignore */ }
 }
 
 function genSessionId() {
   return (crypto.randomUUID?.() ?? Math.random().toString(36).slice(2))
+}
+
+// ── 熱門問題卡片 ──────────────────────────────────────────────────────────────
+
+function PopularFaqCards({
+  faqs,
+  color,
+}: {
+  faqs: BotWidgetFaqItem[]
+  color: string
+}) {
+  const [openId, setOpenId] = useState<number | null>(null)
+  const [showAll, setShowAll] = useState(false)
+
+  const visible = showAll ? faqs : faqs.slice(0, POPULAR_PREVIEW)
+  const hasMore = faqs.length > POPULAR_PREVIEW
+
+  return (
+    <div className="flex flex-col gap-2">
+      {visible.map((faq, idx) => {
+        const isOpen = openId === faq.id
+        return (
+          <div
+            key={faq.id}
+            className="overflow-hidden rounded-2xl bg-white"
+            style={{
+              boxShadow: isOpen
+                ? `0 2px 12px 0 ${color}28`
+                : '0 1px 4px 0 rgba(0,0,0,0.07)',
+              border: isOpen ? `1.5px solid ${color}40` : '1.5px solid transparent',
+              transition: 'border-color 0.18s, box-shadow 0.18s',
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setOpenId(isOpen ? null : faq.id)}
+              className="flex w-full items-center gap-3 px-4 py-3.5 text-left"
+            >
+              {/* 序號 badge */}
+              <span
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
+                style={{ backgroundColor: isOpen ? color : color + 'aa' }}
+              >
+                {idx + 1}
+              </span>
+
+              {/* 問題文字 */}
+              <span
+                className="flex-1 text-sm font-medium leading-snug"
+                style={{ color: isOpen ? color : '#1f2937' }}
+              >
+                {faq.question}
+              </span>
+
+              {/* 箭頭 */}
+              <span
+                className="shrink-0 transition-transform duration-200"
+                style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
+              >
+                <ChevronRight className="h-4 w-4 text-gray-300" />
+              </span>
+            </button>
+
+            {/* 答案 */}
+            {isOpen && (
+              <div
+                className="px-4 pb-4 pt-1 text-sm leading-relaxed text-gray-600"
+                style={{ borderTop: `1px solid ${color}20` }}
+              >
+                <div
+                  className="faq-answer rounded-xl px-4 py-3 text-sm leading-relaxed text-gray-600"
+                  style={{ backgroundColor: color + '0d' }}
+                >
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm, remarkBreaks]}
+                    components={{
+                      a: ({ children, href, ...props }) => {
+                        const safeHref =
+                          href && !/^https?:\/\//i.test(href) && !href.startsWith('mailto:')
+                            ? `https://${href}`
+                            : href
+                        return (
+                          <a
+                            className="text-blue-600 underline hover:text-blue-800"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            href={safeHref}
+                            {...props}
+                          >
+                            {children}
+                          </a>
+                        )
+                      },
+                      p: ({ children, ...props }) => (
+                        <p className="mb-1.5 last:mb-0 leading-relaxed" {...props}>
+                          {children}
+                        </p>
+                      ),
+                      ul: ({ children, ...props }) => (
+                        <ul className="mb-1.5 ml-4 list-disc space-y-0.5" {...props}>{children}</ul>
+                      ),
+                      ol: ({ children, ...props }) => (
+                        <ol className="mb-1.5 ml-4 list-decimal space-y-0.5" {...props}>{children}</ol>
+                      ),
+                      strong: ({ children, ...props }) => (
+                        <strong className="font-semibold text-gray-800" {...props}>{children}</strong>
+                      ),
+                      code: ({ children, ...props }) => (
+                        <code className="rounded bg-gray-100 px-1 py-0.5 text-xs font-mono text-gray-700" {...props}>
+                          {children}
+                        </code>
+                      ),
+                    }}
+                  >
+                    {faq.answer}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })}
+
+      {/* 顯示更多 */}
+      {hasMore && !showAll && (
+        <button
+          type="button"
+          onClick={() => setShowAll(true)}
+          className="mt-1 flex w-full items-center justify-center gap-1 py-2 text-sm font-medium transition-colors"
+          style={{ color }}
+        >
+          顯示更多
+          <ChevronDown className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ── 常見問題 Sheet（底部滑出）────────────────────────────────────────────────
+
+function FaqSheet({
+  faqs,
+  color,
+  title,
+  onClose,
+}: {
+  faqs: BotWidgetFaqItem[]
+  color: string
+  title: string
+  onClose: () => void
+}) {
+  return (
+    <div
+      className="absolute inset-0 z-50 flex flex-col justify-end"
+      style={{ backgroundColor: 'rgba(0,0,0,0.35)' }}
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[78%] flex-col overflow-hidden rounded-t-2xl bg-white"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Sheet header */}
+        <div className="flex shrink-0 items-center justify-between border-b border-gray-100 px-4 py-3">
+          <span className="text-sm font-semibold text-gray-800">{title}</span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        {/* 卡片列表 */}
+        <div className="overflow-y-auto p-4">
+          <PopularFaqCards faqs={faqs} color={color} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── 首頁面 ────────────────────────────────────────────────────────────────────
+
+interface HomePageProps {
+  info: BotWidgetInfo
+  color: string
+}
+
+function HomePage({ info, color }: HomePageProps) {
+  const { t } = useTranslation('widget')
+  const greeting = info.home_greeting || t('home.greeting_default')
+
+  const hasPopular = info.popular_faq_enabled && info.popular_faqs.length > 0
+
+  return (
+    <div className="flex flex-1 flex-col overflow-y-auto">
+
+      {/* ── 歡迎語區 ──────────────────────────────────────────────── */}
+      <div
+        className="shrink-0 px-5 pb-5 pt-6"
+        style={{
+          background: `linear-gradient(160deg, ${color}18 0%, transparent 70%)`,
+        }}
+      >
+        <div className="flex items-center gap-3">
+          <div
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl"
+            style={{ backgroundColor: color + '25' }}
+          >
+            <MessageSquare className="h-5 w-5" style={{ color }} />
+          </div>
+          <p className="text-base font-semibold leading-snug text-gray-800">
+            {greeting}
+          </p>
+        </div>
+      </div>
+
+      {/* ── 熱門問題 ──────────────────────────────────────────────── */}
+      {hasPopular && (
+        <div className="flex flex-1 flex-col px-4 pb-4">
+          <div className="mb-3 flex items-center gap-2">
+            <span
+              className="h-3.5 w-1 rounded-full"
+              style={{ backgroundColor: color }}
+            />
+            <p className="text-sm font-semibold text-gray-700">
+              {t('home.popular_questions')}
+            </p>
+          </div>
+          <PopularFaqCards faqs={info.popular_faqs} color={color} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── 首頁 input bar ────────────────────────────────────────────────────────────
+
+function HomeComposer({
+  onSubmit,
+  isLoading,
+  placeholder,
+}: {
+  onSubmit: (text: string) => void
+  isLoading: boolean
+  placeholder: string
+}) {
+  const [input, setInput] = useState('')
+  const ref = useRef<HTMLTextAreaElement>(null)
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    const text = input.trim()
+    if (!text || isLoading) return
+    setInput('')
+    if (ref.current) { ref.current.style.height = 'auto' }
+    onSubmit(text)
+  }
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="flex gap-2 border-t border-gray-100 bg-white px-3 pb-2 pt-2"
+    >
+      <textarea
+        ref={ref}
+        rows={1}
+        value={input}
+        onChange={(e) => {
+          setInput(e.target.value)
+          e.target.style.height = 'auto'
+          e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`
+        }}
+        onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing) return
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            if (!isLoading && input.trim()) handleSubmit(e as unknown as React.FormEvent)
+          }
+        }}
+        placeholder={placeholder}
+        disabled={isLoading}
+        className="min-h-[44px] max-h-[160px] min-w-0 flex-1 resize-none overflow-y-auto rounded-lg border border-gray-300 px-3 py-2.5 text-[16px] leading-snug focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-400"
+      />
+      <button
+        type="submit"
+        disabled={isLoading || !input.trim()}
+        className="min-h-[44px] min-w-[64px] rounded-2xl bg-gray-800 px-4 py-2 text-[16px] font-medium text-white transition-colors hover:bg-gray-900 disabled:opacity-40"
+      >
+        送出
+      </button>
+    </form>
+  )
 }
 
 // ── 內層元件（需要 i18n context）────────────────────────────────────────────
@@ -70,17 +370,14 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
 
   const [info, setInfo] = useState<BotWidgetInfo | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [phase, setPhase] = useState<'loading' | 'welcome' | 'chat'>('loading')
+  const [phase, setPhase] = useState<'loading' | 'home' | 'chat'>('loading')
 
-  const [visitorName, setVisitorName] = useState('')
-  const [visitorEmail, setVisitorEmail] = useState('')
-  const [visitorPhone, setVisitorPhone] = useState('')
   const [sessionId, setSessionId] = useState('')
-
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [chatError, setChatError] = useState<string | null>(null)
   const [voiceAutoSendText, setVoiceAutoSendText] = useState('')
+  const [showFaqSheet, setShowFaqSheet] = useState(false)
 
   // ── 載入 Bot info ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -94,20 +391,17 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
             const { valid } = await checkBotWidgetSession(token, stored.sessionId)
             if (!valid) {
               clearSession(token)
-              setPhase('welcome')
+              setPhase(data.home_enabled ? 'home' : 'chat')
               return
             }
           } catch {
             // 驗證失敗時保守處理：仍使用本地 session
           }
           setSessionId(stored.sessionId)
-          setVisitorName(stored.visitorName)
-          setVisitorEmail(stored.visitorEmail)
-          setVisitorPhone(stored.visitorPhone)
           setMessages(stored.messages)
           setPhase('chat')
         } else {
-          setPhase('welcome')
+          setPhase(data.home_enabled ? 'home' : 'chat')
         }
       })
       .catch((e: unknown) => {
@@ -131,36 +425,44 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
     return () => { style.remove() }
   }, [isEmbed])
 
-  // ── 提交訪客資訊 ─────────────────────────────────────────────────────────────
-  async function handleStartChat(e: React.FormEvent) {
-    e.preventDefault()
-    if (!visitorName.trim()) return
-    const sid = genSessionId()
-    try {
-      await createBotWidgetSession(token, {
-        session_id: sid,
-        visitor_name: visitorName.trim(),
-        visitor_email: visitorEmail.trim() || undefined,
-        visitor_phone: visitorPhone.trim() || undefined,
-      })
-      setSessionId(sid)
-      const stored: StoredSession = {
-        sessionId: sid,
-        visitorName: visitorName.trim(),
-        visitorEmail: visitorEmail.trim(),
-        visitorPhone: visitorPhone.trim(),
-        messages: [],
+  // ── 建立匿名 session 並進入對話 ──────────────────────────────────────────────
+  async function enterChat() {
+    let sid = sessionId
+    if (!sid) {
+      sid = genSessionId()
+      try {
+        await createBotWidgetSession(token, { session_id: sid })
+        setSessionId(sid)
+        const stored: StoredSession = { sessionId: sid, messages: [] }
+        saveSession(token, stored)
+      } catch (e: unknown) {
+        setChatError(e instanceof Error ? e.message : t('error.generic'))
+        return
       }
-      saveSession(token, stored)
-      setPhase('chat')
-    } catch (e: unknown) {
-      setChatError(e instanceof Error ? e.message : t('welcome.error_create'))
     }
+    setPhase('chat')
   }
 
   // ── 送出訊息 ────────────────────────────────────────────────────────────────
   async function handleSend(text: string) {
     if (!text || isLoading) return
+
+    // 從首頁面送出第一則訊息時，立即切換到聊天模式
+    setPhase('chat')
+
+    let sid = sessionId
+    if (!sid) {
+      sid = genSessionId()
+      try {
+        await createBotWidgetSession(token, { session_id: sid })
+        setSessionId(sid)
+        saveSession(token, { sessionId: sid, messages: [] })
+      } catch {
+        setChatError(t('error.generic'))
+        return
+      }
+    }
+
     setChatError(null)
 
     const startIdx = messages.length + 1
@@ -174,7 +476,7 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
       await botWidgetChatStream(
         token,
         {
-          session_id: sessionId,
+          session_id: sid,
           messages: messages.map((m) => ({ role: m.role, content: m.content })),
           content: text,
         },
@@ -195,7 +497,7 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
               return next
             })
             saveSession(token, {
-              sessionId, visitorName, visitorEmail, visitorPhone,
+              sessionId: sid,
               messages: [...messages, { role: 'user', content: text }, { role: 'assistant', content: assistantText }],
             })
             setIsLoading(false)
@@ -217,11 +519,9 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
   function handleReset() {
     clearSession(token)
     setMessages([])
-    setVisitorName('')
-    setVisitorEmail('')
-    setVisitorPhone('')
     setSessionId('')
-    setPhase('welcome')
+    setChatError(null)
+    if (info?.home_enabled) setPhase('home')
   }
 
   const color = info?.color ?? '#1A3A52'
@@ -249,15 +549,19 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
 
   return (
     <div
-      className={`flex flex-col bg-gray-50 ${isEmbed ? '' : 'mx-auto max-w-lg shadow-xl'}`}
+      className={`relative flex flex-col ${isEmbed ? '' : 'mx-auto max-w-lg shadow-xl'}`}
       style={{
         height: '100dvh',
         minHeight: isEmbed ? '100%' : '100vh',
+        backgroundColor: '#f8f9fb',
         paddingBottom: 'env(safe-area-inset-bottom)',
       }}
     >
-      {/* Header */}
-      <div className="flex shrink-0 items-center gap-3 px-4 py-3" style={{ backgroundColor: color }}>
+      {/* ── Header ── */}
+      <div
+        className="flex shrink-0 items-center gap-3 px-4 py-3"
+        style={{ backgroundColor: color }}
+      >
         {info?.logo_url ? (
           <img src={info.logo_url} alt="logo" className="h-8 w-8 rounded-full object-cover" />
         ) : (
@@ -266,79 +570,45 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
           </div>
         )}
         <span className="flex-1 text-base font-semibold text-white">
-          {info?.title ?? t('welcome.title', { title: '' })}
+          {info?.title ?? ''}
         </span>
-        {phase === 'chat' && (
+        {info?.common_faq_enabled && (info?.common_faqs?.length ?? 0) > 0 && (
           <button
             type="button"
-            onClick={handleReset}
+            onClick={() => setShowFaqSheet(true)}
             className="rounded-lg p-1.5 text-white/70 transition-colors hover:bg-white/15 hover:text-white"
-            title={t('chat.reset_title')}
+            title={t('home.faq')}
           >
-            <RotateCcw className="h-4 w-4" />
+            <HelpCircle className="h-4 w-4" />
           </button>
         )}
+        <button
+          type="button"
+          onClick={handleReset}
+          className="rounded-lg p-1.5 text-white/70 transition-colors hover:bg-white/15 hover:text-white"
+          title={t('chat.reset_title')}
+        >
+          <RotateCcw className="h-4 w-4" />
+        </button>
       </div>
 
-      {/* Welcome 階段 */}
-      {phase === 'welcome' && (
-        <div className="flex flex-1 flex-col items-center justify-center px-6 py-8">
-          <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-full" style={{ backgroundColor: color + '20' }}>
-            <MessageCircle className="h-7 w-7" style={{ color }} />
-          </div>
-          <h2 className="mb-1 text-lg font-semibold text-gray-800">
-            {t('welcome.title', { title: info?.title ?? '' })}
-          </h2>
-          <p className="mb-6 text-base text-gray-500">{t('welcome.subtitle')}</p>
-          <form onSubmit={handleStartChat} className="w-full max-w-sm space-y-3">
-            <div>
-              <label className="mb-1 block text-base font-medium text-gray-700">{t('welcome.name_required')}</label>
-              <input
-                type="text"
-                value={visitorName}
-                onChange={(e) => setVisitorName(e.target.value)}
-                placeholder={t('welcome.name_placeholder')}
-                required
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-base font-medium text-gray-700">{t('welcome.email_label')}</label>
-              <input
-                type="email"
-                value={visitorEmail}
-                onChange={(e) => setVisitorEmail(e.target.value)}
-                placeholder={t('welcome.email_placeholder')}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-base font-medium text-gray-700">{t('welcome.phone_label')}</label>
-              <input
-                type="tel"
-                value={visitorPhone}
-                onChange={(e) => setVisitorPhone(e.target.value)}
-                placeholder={t('welcome.phone_placeholder')}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-              />
-            </div>
-            {chatError && <p className="text-base text-red-600">{chatError}</p>}
-            <button
-              type="submit"
-              className="w-full rounded-lg py-2.5 text-base font-medium text-white transition-opacity hover:opacity-90"
-              style={{ backgroundColor: color }}
-            >
-              {t('welcome.start_button')}
-            </button>
-          </form>
+      {/* ── 首頁面 ── */}
+      {phase === 'home' && info && (
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <HomePage info={info} color={color} />
+          <HomeComposer
+            onSubmit={handleSend}
+            isLoading={isLoading}
+            placeholder={t('chat.input_placeholder')}
+          />
         </div>
       )}
 
-      {/* Chat 階段 */}
+      {/* ── Chat ── */}
       {phase === 'chat' && (
         <div className="flex flex-1 flex-col overflow-hidden">
           {chatError && (
-            <div className="mx-4 mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-base text-red-600">
+            <div className="mx-4 mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
               {chatError}
             </div>
           )}
@@ -346,7 +616,7 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
             messages={messages}
             onSubmit={handleSend}
             isLoading={isLoading}
-            emptyPlaceholder={t('chat.greeting', { name: visitorName })}
+            emptyPlaceholder={t('chat.greeting')}
             headerTitle=""
             showChart={false}
             showPdf={false}
@@ -371,6 +641,16 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
             ) : undefined}
           />
         </div>
+      )}
+
+      {/* ── 常見問題 Sheet ── */}
+      {showFaqSheet && info?.common_faqs && (
+        <FaqSheet
+          faqs={info.common_faqs}
+          color={color}
+          title={t('home.faq')}
+          onClose={() => setShowFaqSheet(false)}
+        />
       )}
     </div>
   )

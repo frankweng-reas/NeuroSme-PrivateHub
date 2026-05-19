@@ -8,6 +8,7 @@ import {
   Bot,
   BarChart2,
   Check,
+  ChevronDown,
   ChevronRight,
   Copy,
   Loader2,
@@ -15,15 +16,22 @@ import {
   Plus,
   RefreshCw,
   Trash2,
+  X,
 } from 'lucide-react'
 import { chatCompletionsStream } from '@/api/chat'
 import {
   createBot,
+  createBotFaq,
   deleteBot,
+  deleteBotFaq,
   getBotQueryStats,
+  listBotFaqs,
   listBots,
   updateBot,
+  updateBotFaq,
   type Bot as BotType,
+  type BotFaq,
+  type BotFaqType,
   type BotKbItem,
   type BotQueryStatsResponse,
   type BotQueryStatsView,
@@ -139,6 +147,24 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
   const [settingsKbIds, setSettingsKbIds] = useState<BotKbItem[]>([])
   const [settingsSaving, setSettingsSaving] = useState(false)
 
+  // ── 客服情境設定 ──────────────────────────────────────────────────────────
+  const [settingsHomeEnabled, setSettingsHomeEnabled] = useState(false)
+  const [settingsHomeGreeting, setSettingsHomeGreeting] = useState('')
+  const [settingsHomeLinks, setSettingsHomeLinks] = useState<{ label: string; url: string }[]>([])
+  const [settingsPopularFaqEnabled, setSettingsPopularFaqEnabled] = useState(false)
+  const [settingsCommonFaqEnabled, setSettingsCommonFaqEnabled] = useState(false)
+
+  // ── FAQ 管理（各 type 獨立）───────────────────────────────────────────────
+  const [popularFaqs, setPopularFaqs] = useState<BotFaq[]>([])
+  const [commonFaqs, setCommonFaqs] = useState<BotFaq[]>([])
+  const [faqsLoading, setFaqsLoading] = useState(false)
+  const [faqEditId, setFaqEditId] = useState<number | null>(null)
+  const [faqEditQ, setFaqEditQ] = useState('')
+  const [faqEditA, setFaqEditA] = useState('')
+  const [faqNewQ, setFaqNewQ] = useState<Record<BotFaqType, string>>({ popular: '', common: '' })
+  const [faqNewA, setFaqNewA] = useState<Record<BotFaqType, string>>({ popular: '', common: '' })
+  const [faqAddOpen, setFaqAddOpen] = useState<Record<BotFaqType, boolean>>({ popular: false, common: false })
+
   // ── 訪客對話 ──────────────────────────────────────────────────────────────
   const [wSessions, setWSessions] = useState<WidgetSessionItem[]>([])
   const [wSessionsLoading, setWSessionsLoading] = useState(false)
@@ -219,6 +245,17 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
     setSettingsWidgetVoiceEnabled(selectedBot.widget_voice_enabled ?? false)
     setSettingsWidgetVoicePrompt(selectedBot.widget_voice_prompt ?? '')
     setSettingsKbIds(selectedBot.knowledge_bases.map((kb) => ({ knowledge_base_id: kb.knowledge_base_id, sort_order: kb.sort_order })))
+    setSettingsHomeEnabled(selectedBot.home_enabled ?? false)
+    setSettingsHomeGreeting(selectedBot.home_greeting ?? '')
+    setSettingsHomeLinks(
+      selectedBot.home_links ? (() => { try { return JSON.parse(selectedBot.home_links!) } catch { return [] } })() : []
+    )
+    setSettingsPopularFaqEnabled(selectedBot.popular_faq_enabled ?? false)
+    setSettingsCommonFaqEnabled(selectedBot.common_faq_enabled ?? false)
+    setFaqAddOpen({ popular: false, common: false })
+    setFaqEditId(null)
+    setFaqNewQ({ popular: '', common: '' })
+    setFaqNewA({ popular: '', common: '' })
     setMessages([])
     setWDetail(null)
     setWSessions([])
@@ -265,6 +302,19 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
       .catch(() => setWSessions([]))
       .finally(() => setWSessionsLoading(false))
   }, [rightTab, selectedBot])
+
+  // 選 Bot 時載入 FAQ 清單（兩組並行）
+  useEffect(() => {
+    if (!selectedBotId) { setPopularFaqs([]); setCommonFaqs([]); return }
+    setFaqsLoading(true)
+    Promise.all([
+      listBotFaqs(selectedBotId, 'popular'),
+      listBotFaqs(selectedBotId, 'common'),
+    ])
+      .then(([popular, common]) => { setPopularFaqs(popular); setCommonFaqs(common) })
+      .catch(() => { setPopularFaqs([]); setCommonFaqs([]) })
+      .finally(() => setFaqsLoading(false))
+  }, [selectedBotId])
 
   // ── Bot CRUD ──────────────────────────────────────────────────────────────
   const handleCreateBot = async () => {
@@ -331,6 +381,11 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
         widget_voice_enabled: settingsWidgetVoiceEnabled,
         widget_voice_prompt: settingsWidgetVoicePrompt || undefined,
         knowledge_base_ids: settingsKbIds,
+        home_enabled: settingsHomeEnabled,
+        home_greeting: settingsHomeGreeting || undefined,
+        home_links: settingsHomeLinks.length > 0 ? JSON.stringify(settingsHomeLinks) : '',
+        popular_faq_enabled: settingsPopularFaqEnabled,
+        common_faq_enabled: settingsCommonFaqEnabled,
       })
       setBots((prev) => prev.map((b) => b.id === updated.id ? updated : b))
       showToast('Bot 設定已儲存')
@@ -440,6 +495,77 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
       if (exists) return prev.filter((item) => item.knowledge_base_id !== kbId)
       return [...prev, { knowledge_base_id: kbId, sort_order: prev.length }]
     })
+  }
+
+  // ── FAQ 操作 ──────────────────────────────────────────────────────────────
+  function setFaqsByType(type: BotFaqType, updater: (prev: BotFaq[]) => BotFaq[]) {
+    if (type === 'popular') setPopularFaqs(updater)
+    else setCommonFaqs(updater)
+  }
+
+  function getFaqsByType(type: BotFaqType) {
+    return type === 'popular' ? popularFaqs : commonFaqs
+  }
+
+  async function handleCreateFaq(type: BotFaqType) {
+    if (!selectedBotId || !faqNewQ[type].trim() || !faqNewA[type].trim()) return
+    try {
+      const created = await createBotFaq(selectedBotId, {
+        question: faqNewQ[type].trim(),
+        answer: faqNewA[type].trim(),
+        sort_order: getFaqsByType(type).length,
+        faq_type: type,
+      })
+      setFaqsByType(type, (prev) => [...prev, created])
+      setFaqNewQ((prev) => ({ ...prev, [type]: '' }))
+      setFaqNewA((prev) => ({ ...prev, [type]: '' }))
+      setFaqAddOpen((prev) => ({ ...prev, [type]: false }))
+    } catch (err) {
+      setErrorModal({ title: '新增 FAQ 失敗', message: err instanceof Error ? err.message : '新增失敗' })
+    }
+  }
+
+  async function handleUpdateFaq(faqId: number, type: BotFaqType) {
+    if (!selectedBotId || !faqEditQ.trim() || !faqEditA.trim()) return
+    try {
+      const updated = await updateBotFaq(selectedBotId, faqId, { question: faqEditQ.trim(), answer: faqEditA.trim() })
+      setFaqsByType(type, (prev) => prev.map((f) => f.id === faqId ? updated : f))
+      setFaqEditId(null)
+    } catch (err) {
+      setErrorModal({ title: '更新 FAQ 失敗', message: err instanceof Error ? err.message : '更新失敗' })
+    }
+  }
+
+  async function handleDeleteFaq(faqId: number, type: BotFaqType) {
+    if (!selectedBotId) return
+    try {
+      await deleteBotFaq(selectedBotId, faqId)
+      setFaqsByType(type, (prev) => prev.filter((f) => f.id !== faqId))
+    } catch (err) {
+      setErrorModal({ title: '刪除 FAQ 失敗', message: err instanceof Error ? err.message : '刪除失敗' })
+    }
+  }
+
+  async function handleToggleFaqActive(faq: BotFaq) {
+    if (!selectedBotId) return
+    try {
+      const updated = await updateBotFaq(selectedBotId, faq.id, { is_active: !faq.is_active })
+      setFaqsByType(faq.faq_type as BotFaqType, (prev) => prev.map((f) => f.id === faq.id ? updated : f))
+    } catch (err) {
+      setErrorModal({ title: '更新失敗', message: err instanceof Error ? err.message : '更新失敗' })
+    }
+  }
+
+  function addHomeLink() {
+    setSettingsHomeLinks((prev) => [...prev, { label: '', url: '' }])
+  }
+
+  function updateHomeLink(idx: number, field: 'label' | 'url', value: string) {
+    setSettingsHomeLinks((prev) => prev.map((lk, i) => i === idx ? { ...lk, [field]: value } : lk))
+  }
+
+  function removeHomeLink(idx: number) {
+    setSettingsHomeLinks((prev) => prev.filter((_, i) => i !== idx))
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -908,6 +1034,186 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
                       placeholder={`很抱歉，目前無法回答您的問題。\n如需協助，請聯繫客服：service@company.com`}
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-base text-gray-800 placeholder-gray-300 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:opacity-50"
                     />
+                  </div>
+
+                  {/* ── 客服功能 ── */}
+                  <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-4 space-y-4">
+                    <p className="text-base font-semibold text-sky-800">客服功能</p>
+
+                    {/* FAQ 區塊共用渲染邏輯 */}
+                    {(
+                      [
+                        { type: 'popular' as BotFaqType, label: '熱門 FAQ', enabled: settingsPopularFaqEnabled, setEnabled: setSettingsPopularFaqEnabled },
+                        { type: 'common'  as BotFaqType, label: '常見 FAQ', enabled: settingsCommonFaqEnabled,  setEnabled: setSettingsCommonFaqEnabled  },
+                      ] as const
+                    ).map(({ type, label, enabled, setEnabled }) => {
+                      const faqList = type === 'popular' ? popularFaqs : commonFaqs
+                      return (
+                        <div key={type}>
+                          <div className="mb-2 flex items-center justify-between">
+                            <div>
+                              <p className="text-base font-medium text-gray-700">{label}</p>
+                              <p className="text-sm text-gray-400">啟用後顯示在 Widget 首頁面</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setEnabled((v) => !v)}
+                              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${enabled ? 'bg-sky-500' : 'bg-gray-300'}`}
+                              role="switch" aria-checked={enabled}
+                            >
+                              <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                            </button>
+                          </div>
+
+                          {/* FAQ 清單 */}
+                          <div className="space-y-1.5">
+                            {faqsLoading ? (
+                              <div className="flex items-center justify-center py-3">
+                                <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
+                              </div>
+                            ) : faqList.length === 0 && !faqAddOpen[type] ? (
+                              <p className="text-sm text-gray-400 py-1">尚無項目，點「新增」建立第一筆</p>
+                            ) : (
+                              faqList.map((faq) => (
+                                <div key={faq.id} className={`rounded-xl border bg-white ${!faq.is_active ? 'opacity-50' : ''}`}>
+                                  {faqEditId === faq.id ? (
+                                    <div className="p-3 space-y-2">
+                                      <input type="text" value={faqEditQ} onChange={(e) => setFaqEditQ(e.target.value)}
+                                        placeholder="問題"
+                                        className="w-full rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:border-sky-500 focus:outline-none" />
+                                      <textarea value={faqEditA} onChange={(e) => setFaqEditA(e.target.value)}
+                                        placeholder="答案" rows={3}
+                                        className="w-full rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:border-sky-500 focus:outline-none resize-none" />
+                                      <div className="flex gap-2">
+                                        <button type="button" onClick={() => void handleUpdateFaq(faq.id, type)}
+                                          disabled={!faqEditQ.trim() || !faqEditA.trim()}
+                                          className="rounded-lg bg-sky-500 px-3 py-1 text-sm text-white hover:bg-sky-600 disabled:opacity-50">儲存</button>
+                                        <button type="button" onClick={() => setFaqEditId(null)}
+                                          className="rounded-lg border border-gray-200 px-3 py-1 text-sm text-gray-500 hover:bg-gray-50">取消</button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-start gap-2 px-3 py-2.5">
+                                      <div className="flex-1 min-w-0">
+                                        <p className="text-sm font-medium text-gray-800 truncate">{faq.question}</p>
+                                        <p className="text-sm text-gray-400 mt-0.5 line-clamp-2">{faq.answer}</p>
+                                      </div>
+                                      <div className="flex shrink-0 items-center gap-1">
+                                        <button type="button" onClick={() => void handleToggleFaqActive(faq)}
+                                          className={`text-xs rounded px-1.5 py-0.5 ${faq.is_active ? 'text-sky-600 bg-sky-50 hover:bg-sky-100' : 'text-gray-400 bg-gray-100 hover:bg-gray-200'}`}>
+                                          {faq.is_active ? '啟用' : '停用'}
+                                        </button>
+                                        <button type="button"
+                                          onClick={() => { setFaqEditId(faq.id); setFaqEditQ(faq.question); setFaqEditA(faq.answer) }}
+                                          className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700">
+                                          <ChevronDown className="h-3.5 w-3.5" />
+                                        </button>
+                                        <button type="button" onClick={() => void handleDeleteFaq(faq.id, type)}
+                                          className="rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-500">
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              ))
+                            )}
+
+                            {/* 新增 FAQ 表單 */}
+                            {faqAddOpen[type] ? (
+                              <div className="rounded-xl border border-sky-300 bg-white p-3 space-y-2">
+                                <input type="text" value={faqNewQ[type]} onChange={(e) => setFaqNewQ((p) => ({ ...p, [type]: e.target.value }))}
+                                  placeholder="問題（必填）"
+                                  className="w-full rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:border-sky-500 focus:outline-none" />
+                                <textarea value={faqNewA[type]} onChange={(e) => setFaqNewA((p) => ({ ...p, [type]: e.target.value }))}
+                                  placeholder="答案（必填）" rows={3}
+                                  className="w-full rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:border-sky-500 focus:outline-none resize-none" />
+                                <div className="flex gap-2">
+                                  <button type="button" onClick={() => void handleCreateFaq(type)}
+                                    disabled={!faqNewQ[type].trim() || !faqNewA[type].trim()}
+                                    className="rounded-lg bg-sky-500 px-3 py-1 text-sm text-white hover:bg-sky-600 disabled:opacity-50">新增</button>
+                                  <button type="button"
+                                    onClick={() => { setFaqAddOpen((p) => ({ ...p, [type]: false })); setFaqNewQ((p) => ({ ...p, [type]: '' })); setFaqNewA((p) => ({ ...p, [type]: '' })) }}
+                                    className="rounded-lg border border-gray-200 px-3 py-1 text-sm text-gray-500 hover:bg-gray-50">取消</button>
+                                </div>
+                              </div>
+                            ) : (
+                              <button type="button" onClick={() => setFaqAddOpen((p) => ({ ...p, [type]: true }))}
+                                className="flex items-center gap-1.5 rounded-lg border border-dashed border-sky-300 px-3 py-2 text-sm text-sky-500 hover:bg-sky-50 w-full">
+                                <Plus className="h-3.5 w-3.5" />新增{label}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+
+                    {/* 首頁面 */}
+                    <div className="border-t border-sky-200 pt-4">
+                      <div className="mb-3 flex items-center justify-between">
+                        <div>
+                          <p className="text-base font-medium text-gray-700">首頁面</p>
+                          <p className="text-sm text-gray-400">啟用後，新訪客開啟 Widget 時先看到此頁面</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setSettingsHomeEnabled((v) => !v)}
+                          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${settingsHomeEnabled ? 'bg-sky-500' : 'bg-gray-300'}`}
+                          role="switch" aria-checked={settingsHomeEnabled}
+                        >
+                          <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${settingsHomeEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                        </button>
+                      </div>
+
+                      {settingsHomeEnabled && (
+                        <div className="space-y-3">
+                          {/* 歡迎語 */}
+                          <div>
+                            <label className="mb-1 block text-sm font-medium text-gray-700">歡迎語</label>
+                            <textarea
+                              value={settingsHomeGreeting}
+                              onChange={(e) => setSettingsHomeGreeting(e.target.value)}
+                              rows={2}
+                              placeholder="您好！有什麼可以協助您的嗎？"
+                              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 focus:border-sky-500 focus:outline-none resize-none"
+                            />
+                          </div>
+
+                          {/* 自訂連結 */}
+                          <div>
+                            <label className="mb-1 block text-sm font-medium text-gray-700">自訂連結</label>
+                            <div className="space-y-2">
+                              {settingsHomeLinks.map((lk, idx) => (
+                                <div key={idx} className="flex items-center gap-2">
+                                  <input
+                                    type="text"
+                                    value={lk.label}
+                                    onChange={(e) => updateHomeLink(idx, 'label', e.target.value)}
+                                    placeholder="連結名稱"
+                                    className="w-28 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:border-sky-500 focus:outline-none"
+                                  />
+                                  <input
+                                    type="url"
+                                    value={lk.url}
+                                    onChange={(e) => updateHomeLink(idx, 'url', e.target.value)}
+                                    placeholder="https://..."
+                                    className="flex-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:border-sky-500 focus:outline-none"
+                                  />
+                                  <button type="button" onClick={() => removeHomeLink(idx)}
+                                    className="rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-500">
+                                    <X className="h-4 w-4" />
+                                  </button>
+                                </div>
+                              ))}
+                              <button type="button" onClick={addHomeLink}
+                                className="flex items-center gap-1.5 rounded-lg border border-dashed border-sky-300 px-3 py-1.5 text-sm text-sky-500 hover:bg-sky-50 w-full">
+                                <Plus className="h-3.5 w-3.5" />新增連結
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   {

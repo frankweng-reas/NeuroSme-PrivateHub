@@ -19,6 +19,17 @@ async function botWidgetFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+export interface BotWidgetFaqItem {
+  id: number
+  question: string
+  answer: string
+}
+
+export interface BotWidgetHomeLink {
+  label: string
+  url: string
+}
+
 export interface BotWidgetInfo {
   bot_id: number
   title: string
@@ -27,6 +38,14 @@ export interface BotWidgetInfo {
   lang: string
   is_active: boolean
   voice_enabled: boolean
+  home_enabled: boolean
+  home_greeting: string | null
+  home_quick_questions: string[]
+  home_links: BotWidgetHomeLink[]
+  popular_faq_enabled: boolean
+  common_faq_enabled: boolean
+  popular_faqs: BotWidgetFaqItem[]
+  common_faqs: BotWidgetFaqItem[]
 }
 
 export async function botWidgetTranscribeAudio(

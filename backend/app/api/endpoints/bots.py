@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.bot import Bot, BotKnowledgeBase
+from app.models.bot import Bot, BotFaq, BotKnowledgeBase
 from app.models.km_knowledge_base import KmKnowledgeBase
 from app.models.user import User
 
@@ -54,6 +54,13 @@ class BotUpdate(BaseModel):
     widget_lang: str | None = None
     widget_voice_enabled: bool | None = None
     widget_voice_prompt: str | None = None
+    # 客服情境
+    home_enabled: bool | None = None
+    home_greeting: str | None = None
+    home_quick_questions: str | None = None  # JSON string（保留欄位，暫不顯示）
+    home_links: str | None = None            # JSON string
+    popular_faq_enabled: bool | None = None
+    common_faq_enabled: bool | None = None
 
 
 class BotKbResponse(BaseModel):
@@ -61,6 +68,17 @@ class BotKbResponse(BaseModel):
     name: str
     sort_order: int
     answer_mode: str = "rag"
+
+    model_config = {"from_attributes": True}
+
+
+class BotFaqResponse(BaseModel):
+    id: int
+    question: str
+    answer: str
+    sort_order: int
+    is_active: bool
+    faq_type: str
 
     model_config = {"from_attributes": True}
 
@@ -82,6 +100,12 @@ class BotResponse(BaseModel):
     widget_lang: str | None
     widget_voice_enabled: bool
     widget_voice_prompt: str | None
+    home_enabled: bool
+    home_greeting: str | None
+    home_quick_questions: str | None
+    home_links: str | None
+    popular_faq_enabled: bool
+    common_faq_enabled: bool
     knowledge_bases: list[BotKbResponse]
     created_at: str
 
@@ -122,6 +146,12 @@ def _to_response(bot: Bot, db: Session) -> BotResponse:
         widget_lang=bot.widget_lang,
         widget_voice_enabled=bot.widget_voice_enabled or False,
         widget_voice_prompt=bot.widget_voice_prompt,
+        home_enabled=bot.home_enabled or False,
+        home_greeting=bot.home_greeting,
+        home_quick_questions=bot.home_quick_questions,
+        home_links=bot.home_links,
+        popular_faq_enabled=bot.popular_faq_enabled or False,
+        common_faq_enabled=bot.common_faq_enabled or False,
         knowledge_bases=kbs,
         created_at=bot.created_at.isoformat() if bot.created_at else "",
     )
@@ -250,6 +280,18 @@ def update_bot(
         bot.widget_voice_prompt = body.widget_voice_prompt or None
     if body.knowledge_base_ids is not None:
         _sync_kb_relations(bot.id, body.knowledge_base_ids, db)
+    if body.home_enabled is not None:
+        bot.home_enabled = body.home_enabled
+    if body.home_greeting is not None:
+        bot.home_greeting = body.home_greeting or None
+    if body.home_quick_questions is not None:
+        bot.home_quick_questions = body.home_quick_questions or None
+    if body.home_links is not None:
+        bot.home_links = body.home_links or None
+    if body.popular_faq_enabled is not None:
+        bot.popular_faq_enabled = body.popular_faq_enabled
+    if body.common_faq_enabled is not None:
+        bot.common_faq_enabled = body.common_faq_enabled
 
     db.commit()
     db.refresh(bot)
@@ -423,3 +465,133 @@ def get_bot_query_stats(
         total=count_q,
         offset=offset,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Bot FAQ CRUD
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+FAQ_TYPES = ("popular", "common")
+
+
+class FaqCreate(BaseModel):
+    question: str = Field(..., min_length=1)
+    answer: str = Field(..., min_length=1)
+    sort_order: int = 0
+    faq_type: str = "common"  # 'popular' | 'common'
+
+
+class FaqUpdate(BaseModel):
+    question: str | None = Field(None, min_length=1)
+    answer: str | None = None
+    sort_order: int | None = None
+    is_active: bool | None = None
+    faq_type: str | None = None  # 'popular' | 'common'
+
+
+class FaqReorderItem(BaseModel):
+    id: int
+    sort_order: int
+
+
+def _get_bot_for_manage(bot_id: int, current: User, db: Session) -> Bot:
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.tenant_id == current.tenant_id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot 不存在")
+    return bot
+
+
+@router.get("/{bot_id}/faqs", response_model=list[BotFaqResponse])
+def list_faqs(
+    bot_id: int,
+    faq_type: str | None = None,
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """列出 FAQ；可傳 ?faq_type=popular 或 ?faq_type=common 篩選"""
+    _get_bot_for_manage(bot_id, current, db)
+    q = db.query(BotFaq).filter(BotFaq.bot_id == bot_id)
+    if faq_type and faq_type in FAQ_TYPES:
+        q = q.filter(BotFaq.faq_type == faq_type)
+    rows = q.order_by(BotFaq.sort_order, BotFaq.id).all()
+    return [BotFaqResponse.model_validate(r) for r in rows]
+
+
+@router.post("/{bot_id}/faqs", response_model=BotFaqResponse, status_code=201)
+def create_faq(
+    bot_id: int,
+    body: FaqCreate,
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    _get_bot_for_manage(bot_id, current, db)
+    faq_type = body.faq_type if body.faq_type in FAQ_TYPES else "common"
+    faq = BotFaq(
+        bot_id=bot_id,
+        question=body.question.strip(),
+        answer=body.answer.strip(),
+        sort_order=body.sort_order,
+        faq_type=faq_type,
+    )
+    db.add(faq)
+    db.commit()
+    db.refresh(faq)
+    return BotFaqResponse.model_validate(faq)
+
+
+@router.patch("/{bot_id}/faqs/{faq_id}", response_model=BotFaqResponse)
+def update_faq(
+    bot_id: int,
+    faq_id: int,
+    body: FaqUpdate,
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    _get_bot_for_manage(bot_id, current, db)
+    faq = db.query(BotFaq).filter(BotFaq.id == faq_id, BotFaq.bot_id == bot_id).first()
+    if not faq:
+        raise HTTPException(status_code=404, detail="FAQ 不存在")
+    if body.question is not None:
+        faq.question = body.question.strip()
+    if body.answer is not None:
+        faq.answer = body.answer.strip()
+    if body.sort_order is not None:
+        faq.sort_order = body.sort_order
+    if body.is_active is not None:
+        faq.is_active = body.is_active
+    if body.faq_type is not None and body.faq_type in FAQ_TYPES:
+        faq.faq_type = body.faq_type
+    db.commit()
+    db.refresh(faq)
+    return BotFaqResponse.model_validate(faq)
+
+
+@router.delete("/{bot_id}/faqs/{faq_id}", status_code=204)
+def delete_faq(
+    bot_id: int,
+    faq_id: int,
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    _get_bot_for_manage(bot_id, current, db)
+    faq = db.query(BotFaq).filter(BotFaq.id == faq_id, BotFaq.bot_id == bot_id).first()
+    if not faq:
+        raise HTTPException(status_code=404, detail="FAQ 不存在")
+    db.delete(faq)
+    db.commit()
+
+
+@router.post("/{bot_id}/faqs/reorder", status_code=204)
+def reorder_faqs(
+    bot_id: int,
+    body: list[FaqReorderItem],
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    _get_bot_for_manage(bot_id, current, db)
+    for item in body:
+        db.query(BotFaq).filter(BotFaq.id == item.id, BotFaq.bot_id == bot_id).update(
+            {"sort_order": item.sort_order}
+        )
+    db.commit()

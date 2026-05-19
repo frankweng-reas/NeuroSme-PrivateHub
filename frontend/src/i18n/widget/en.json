@@ -1,19 +1,13 @@
 {
-  "welcome": {
-    "title": "Welcome to {{title}}",
-    "subtitle": "Please fill in your information to start chatting",
-    "name_label": "Name",
-    "name_required": "Name *",
-    "name_placeholder": "Enter your name",
-    "email_label": "Email",
-    "email_placeholder": "Optional",
-    "phone_label": "Phone",
-    "phone_placeholder": "Optional",
+  "home": {
+    "popular_questions": "Popular Questions",
+    "faq": "FAQ",
+    "links": "Links",
     "start_button": "Start Chat",
-    "error_create": "Failed to create session"
+    "greeting_default": "Hi! How can I help you today?"
   },
   "chat": {
-    "greeting": "Hi {{name}}! How can I help you today?",
+    "greeting": "Hi! How can I help you today?",
     "input_placeholder": "Type a message…",
     "reset_title": "Start over",
     "thinking": "Thinking…"

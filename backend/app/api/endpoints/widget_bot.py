@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal, get_db
-from app.models.bot import Bot, BotKnowledgeBase
+from app.models.bot import Bot, BotFaq, BotKnowledgeBase
 from app.models.bot_widget_session import BotWidgetMessage, BotWidgetSession
 from app.services.agent_usage import log_agent_usage
 from app.services.bot_rag_service import apply_bot_fallback, prepare_bot_rag_messages, rag_hit
@@ -38,6 +38,17 @@ def _get_bot_by_token(token: str, db: Session) -> Bot:
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 
+class BotWidgetFaqItem(BaseModel):
+    id: int
+    question: str
+    answer: str
+
+
+class BotWidgetHomeLink(BaseModel):
+    label: str
+    url: str
+
+
 class BotWidgetInfoResponse(BaseModel):
     bot_id: int
     title: str
@@ -46,6 +57,15 @@ class BotWidgetInfoResponse(BaseModel):
     lang: str
     is_active: bool
     voice_enabled: bool
+    # 客服情境
+    home_enabled: bool
+    home_greeting: str | None
+    home_quick_questions: list[str]
+    home_links: list[BotWidgetHomeLink]
+    popular_faq_enabled: bool
+    common_faq_enabled: bool
+    popular_faqs: list[BotWidgetFaqItem]
+    common_faqs: list[BotWidgetFaqItem]
 
     model_config = {"from_attributes": True}
 
@@ -74,10 +94,44 @@ class BotWidgetChatRequest(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
+def _parse_json_list(raw: str | None, default: list) -> list:
+    if not raw:
+        return default
+    try:
+        result = json.loads(raw)
+        return result if isinstance(result, list) else default
+    except Exception:
+        return default
+
+
 @router.get("/{token}/info", response_model=BotWidgetInfoResponse)
 def bot_widget_info(token: str, db: Session = Depends(get_db)):
-    """取得 Bot Widget 基本設定"""
+    """取得 Bot Widget 基本設定（含客服情境首頁面 / FAQ）"""
     bot = _get_bot_by_token(token, db)
+
+    def _load_faqs(faq_type: str) -> list[BotWidgetFaqItem]:
+        rows = (
+            db.query(BotFaq)
+            .filter(
+                BotFaq.bot_id == bot.id,
+                BotFaq.is_active.is_(True),
+                BotFaq.faq_type == faq_type,
+            )
+            .order_by(BotFaq.sort_order, BotFaq.id)
+            .all()
+        )
+        return [BotWidgetFaqItem(id=r.id, question=r.question, answer=r.answer) for r in rows]
+
+    popular_faqs = _load_faqs("popular") if (bot.popular_faq_enabled or False) else []
+    common_faqs = _load_faqs("common") if (bot.common_faq_enabled or False) else []
+
+    raw_links = _parse_json_list(bot.home_links, [])
+    home_links = [
+        BotWidgetHomeLink(label=lk.get("label", ""), url=lk.get("url", ""))
+        for lk in raw_links
+        if isinstance(lk, dict) and lk.get("label") and lk.get("url")
+    ]
+
     return BotWidgetInfoResponse(
         bot_id=bot.id,
         title=bot.widget_title or bot.name,
@@ -86,6 +140,14 @@ def bot_widget_info(token: str, db: Session = Depends(get_db)):
         lang=bot.widget_lang or "zh-TW",
         is_active=bot.is_active,
         voice_enabled=bot.widget_voice_enabled or False,
+        home_enabled=bot.home_enabled or False,
+        home_greeting=bot.home_greeting,
+        home_quick_questions=_parse_json_list(bot.home_quick_questions, []),
+        home_links=home_links,
+        popular_faq_enabled=bot.popular_faq_enabled or False,
+        common_faq_enabled=bot.common_faq_enabled or False,
+        popular_faqs=popular_faqs,
+        common_faqs=common_faqs,
     )
 
 

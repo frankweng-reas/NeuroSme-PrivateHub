@@ -1,19 +1,13 @@
 {
-  "welcome": {
-    "title": "欢迎使用 {{title}}",
-    "subtitle": "请填写以下信息后开始对话",
-    "name_label": "姓名",
-    "name_required": "姓名 *",
-    "name_placeholder": "请输入您的姓名",
-    "email_label": "邮箱",
-    "email_placeholder": "选填",
-    "phone_label": "电话",
-    "phone_placeholder": "选填",
+  "home": {
+    "popular_questions": "热门问题",
+    "faq": "常见问题",
+    "links": "相关链接",
     "start_button": "开始对话",
-    "error_create": "创建对话失败"
+    "greeting_default": "您好！有什么可以协助您的吗？"
   },
   "chat": {
-    "greeting": "您好，{{name}}！请问有什么可以协助您的吗？",
+    "greeting": "您好！请问有什么可以协助您的吗？",
     "input_placeholder": "输入消息…",
     "reset_title": "重新开始",
     "thinking": "思考中…"
