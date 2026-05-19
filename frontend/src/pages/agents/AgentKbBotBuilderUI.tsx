@@ -154,6 +154,7 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
   const [settingsCommonFaqEnabled, setSettingsCommonFaqEnabled] = useState(false)
   const [settingsContactEnabled, setSettingsContactEnabled] = useState(false)
   const [settingsContactLinks, setSettingsContactLinks] = useState<{ type: string; label: string; value: string }[]>([])
+  const [settingsAccessMode, setSettingsAccessMode] = useState<'public' | 'authenticated'>('public')
 
   // ── FAQ 管理（各 type 獨立）───────────────────────────────────────────────
   const [popularFaqs, setPopularFaqs] = useState<BotFaq[]>([])
@@ -254,6 +255,7 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
     setSettingsContactLinks(
       selectedBot.contact_links ? (() => { try { return JSON.parse(selectedBot.contact_links!) } catch { return [] } })() : []
     )
+    setSettingsAccessMode(selectedBot.access_mode ?? 'public')
     setFaqAddOpen({ popular: false, common: false })
     setFaqEditId(null)
     setFaqNewQ({ popular: '', common: '' })
@@ -389,6 +391,7 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
         common_faq_enabled: settingsCommonFaqEnabled,
         contact_enabled: settingsContactEnabled,
         contact_links: settingsContactLinks.length > 0 ? JSON.stringify(settingsContactLinks) : '',
+        access_mode: settingsAccessMode,
       })
       setBots((prev) => prev.map((b) => b.id === updated.id ? updated : b))
       showToast('Bot 設定已儲存')
@@ -904,6 +907,39 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
                       maxLength={100}
                       className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base text-gray-800 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:opacity-60"
                     />
+                  </div>
+
+                  {/* 存取控制 */}
+                  <div>
+                    <label className="mb-1.5 block text-base font-medium text-gray-700">存取控制</label>
+                    <p className="mb-2 text-sm text-gray-400">控制誰可以使用此 Widget</p>
+                    <div className="space-y-2">
+                      {(['public', 'authenticated'] as const).map((mode) => (
+                        <label key={mode} className={`flex cursor-pointer items-start gap-3 rounded-xl border px-4 py-3 transition-colors ${settingsAccessMode === mode ? 'border-sky-400 bg-sky-50' : 'border-gray-200 bg-white hover:bg-gray-50'}`}>
+                          <input
+                            type="radio"
+                            name="access_mode"
+                            value={mode}
+                            checked={settingsAccessMode === mode}
+                            onChange={() => setSettingsAccessMode(mode)}
+                            className="mt-0.5 accent-sky-500"
+                          />
+                          <div>
+                            {mode === 'public' ? (
+                              <>
+                                <p className="text-sm font-medium text-gray-700">公開模式</p>
+                                <p className="text-xs text-gray-400">任何人無需登入即可使用（適合對外客服）</p>
+                              </>
+                            ) : (
+                              <>
+                                <p className="text-sm font-medium text-gray-700">內部認證模式</p>
+                                <p className="text-xs text-gray-400">需以 LocalAuth 帳號登入後才可使用（適合 HR、內部知識庫）</p>
+                              </>
+                            )}
+                          </div>
+                        </label>
+                      ))}
+                    </div>
                   </div>
 
                   {/* LLM 模型 */}

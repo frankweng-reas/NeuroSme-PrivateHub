@@ -55,6 +55,7 @@ export interface Bot {
   common_faq_enabled: boolean
   contact_enabled: boolean
   contact_links: string | null         // JSON BotContactLink[]
+  access_mode: 'public' | 'authenticated'
   knowledge_bases: BotKbResponse[]
   created_at: string
 }
@@ -108,6 +109,7 @@ export async function updateBot(
     common_faq_enabled?: boolean
     contact_enabled?: boolean
     contact_links?: string
+    access_mode?: 'public' | 'authenticated'
   }
 ): Promise<Bot> {
   return apiFetch<Bot>(`/bots/${id}`, {

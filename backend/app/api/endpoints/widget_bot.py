@@ -6,12 +6,14 @@ from datetime import datetime, timezone
 from typing import AsyncIterator
 
 import httpx
+import jwt
 import litellm
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.database import SessionLocal, get_db
 from app.models.bot import Bot, BotFaq, BotKnowledgeBase
 from app.models.bot_widget_session import BotWidgetMessage, BotWidgetSession
@@ -33,6 +35,24 @@ def _get_bot_by_token(token: str, db: Session) -> Bot:
     if not bot.is_active:
         raise HTTPException(status_code=403, detail="此 Bot 已停用")
     return bot
+
+
+def _verify_widget_auth(request: Request, bot: Bot) -> dict | None:
+    """若 Bot 為 authenticated 模式，驗證 LocalAuth JWT；否則放行。
+    回傳 JWT payload（含 sub/email），或 None（public 模式）。"""
+    if (bot.access_mode or "public") != "authenticated":
+        return None
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="此 Widget 需要登入，請提供 Authorization Token")
+    token = auth_header[len("Bearer "):]
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="登入已過期，請重新登入")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="無效的 Token，請重新登入")
+    return payload
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -59,6 +79,7 @@ class BotWidgetInfoResponse(BaseModel):
     lang: str
     is_active: bool
     voice_enabled: bool
+    access_mode: str                         # 'public' | 'authenticated'
     # 客服情境
     home_enabled: bool
     home_greeting: str | None
@@ -147,6 +168,7 @@ def bot_widget_info(token: str, db: Session = Depends(get_db)):
         lang=bot.widget_lang or "zh-TW",
         is_active=bot.is_active,
         voice_enabled=bot.widget_voice_enabled or False,
+        access_mode=bot.access_mode or "public",
         home_enabled=bot.home_enabled or False,
         home_greeting=bot.home_greeting,
         home_quick_questions=_parse_json_list(bot.home_quick_questions, []),
@@ -159,9 +181,71 @@ def bot_widget_info(token: str, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/{token}/session/{session_id}")
-def check_session(token: str, session_id: str, db: Session = Depends(get_db)):
+class WidgetLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class WidgetLoginResponse(BaseModel):
+    access_token: str
+    user_email: str
+    user_name: str | None = None
+
+
+@router.post("/{token}/auth/login", response_model=WidgetLoginResponse)
+async def widget_auth_login(token: str, body: WidgetLoginRequest, db: Session = Depends(get_db)):
+    """Authenticated Bot Widget 登入（代理至 LocalAuth）"""
     bot = _get_bot_by_token(token, db)
+    if (bot.access_mode or "public") != "authenticated":
+        raise HTTPException(status_code=400, detail="此 Widget 為公開模式，無需登入")
+
+    localauth_url = (settings.LOCALAUTH_ADMIN_URL or "").rstrip("/")
+    if not localauth_url:
+        raise HTTPException(status_code=503, detail="LocalAuth 服務未設定")
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{localauth_url}/auth/login",
+                json={"email": body.email, "password": body.password},
+            )
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="無法連線至認證服務，請聯繫管理員")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="認證服務逾時")
+
+    if resp.status_code == 401:
+        raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+    if resp.status_code == 403:
+        data = resp.json()
+        raise HTTPException(status_code=403, detail=data.get("message", "帳號無存取權限"))
+    if resp.status_code != 200 and resp.status_code != 201:
+        raise HTTPException(status_code=502, detail="認證服務異常，請稍後再試")
+
+    data = resp.json()
+    access_token = data.get("access_token") or data.get("accessToken") or ""
+    if not access_token:
+        raise HTTPException(status_code=502, detail="認證服務回應異常")
+
+    try:
+        payload = jwt.decode(access_token, settings.JWT_SECRET, algorithms=["HS256"])
+        user_email = payload.get("email", body.email)
+        user_name = payload.get("name") or data.get("name")
+    except Exception:
+        user_email = body.email
+        user_name = None
+
+    return WidgetLoginResponse(
+        access_token=access_token,
+        user_email=user_email,
+        user_name=user_name,
+    )
+
+
+@router.get("/{token}/session/{session_id}")
+def check_session(token: str, session_id: str, request: Request, db: Session = Depends(get_db)):
+    bot = _get_bot_by_token(token, db)
+    _verify_widget_auth(request, bot)
     session = db.query(BotWidgetSession).filter(
         BotWidgetSession.id == session_id,
         BotWidgetSession.bot_id == bot.id,
@@ -173,9 +257,11 @@ def check_session(token: str, session_id: str, db: Session = Depends(get_db)):
 def create_or_update_session(
     token: str,
     body: SessionCreateRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     bot = _get_bot_by_token(token, db)
+    _verify_widget_auth(request, bot)
 
     session = db.query(BotWidgetSession).filter(BotWidgetSession.id == body.session_id).first()
     if session:
@@ -211,10 +297,12 @@ def create_or_update_session(
 async def bot_widget_chat(
     token: str,
     body: BotWidgetChatRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """Bot Widget 對話（SSE streaming）"""
     bot = _get_bot_by_token(token, db)
+    _verify_widget_auth(request, bot)
 
     bot_id: int = bot.id
     bot_tenant_id: str = bot.tenant_id
@@ -424,6 +512,7 @@ class BotWidgetSpeechResponse(BaseModel):
 async def bot_widget_speech(
     token: str,
     file: UploadFile,
+    request: Request,
     language: str | None = None,
     db: Session = Depends(get_db),
 ):
@@ -431,6 +520,7 @@ async def bot_widget_speech(
     from app.models.tenant_config import TenantConfig
 
     bot = _get_bot_by_token(token, db)
+    _verify_widget_auth(request, bot)
     tenant_id = bot.tenant_id
     tc = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
 

@@ -62,6 +62,7 @@ class BotUpdate(BaseModel):
     common_faq_enabled: bool | None = None
     contact_enabled: bool | None = None
     contact_links: str | None = None         # JSON string
+    access_mode: str | None = None           # 'public' | 'authenticated'
 
 
 class BotKbResponse(BaseModel):
@@ -108,6 +109,7 @@ class BotResponse(BaseModel):
     common_faq_enabled: bool
     contact_enabled: bool
     contact_links: str | None
+    access_mode: str
     knowledge_bases: list[BotKbResponse]
     created_at: str
 
@@ -155,6 +157,7 @@ def _to_response(bot: Bot, db: Session) -> BotResponse:
         common_faq_enabled=bot.common_faq_enabled or False,
         contact_enabled=bot.contact_enabled or False,
         contact_links=bot.contact_links,
+        access_mode=bot.access_mode or "public",
         knowledge_bases=kbs,
         created_at=bot.created_at.isoformat() if bot.created_at else "",
     )
@@ -297,6 +300,8 @@ def update_bot(
         bot.contact_enabled = body.contact_enabled
     if body.contact_links is not None:
         bot.contact_links = body.contact_links or None
+    if body.access_mode is not None and body.access_mode in ("public", "authenticated"):
+        bot.access_mode = body.access_mode
 
     db.commit()
     db.refresh(bot)

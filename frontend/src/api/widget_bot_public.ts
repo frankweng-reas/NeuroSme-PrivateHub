@@ -2,11 +2,10 @@
 
 const BASE = '/api/v1/widget/bot'
 
-async function botWidgetFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-  })
+async function botWidgetFetch<T>(path: string, init?: RequestInit, authToken?: string): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(init?.headers as Record<string, string> ?? {}) }
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`
+  const res = await fetch(`${BASE}${path}`, { ...init, headers })
   if (!res.ok) {
     let detail = `HTTP ${res.status}`
     try {
@@ -39,6 +38,7 @@ export interface BotWidgetInfo {
   lang: string
   is_active: boolean
   voice_enabled: boolean
+  access_mode: 'public' | 'authenticated'
   home_enabled: boolean
   home_greeting: string | null
   home_quick_questions: string[]
@@ -50,17 +50,38 @@ export interface BotWidgetInfo {
   contact_links: BotWidgetContactLink[]
 }
 
+export interface WidgetLoginResponse {
+  access_token: string
+  user_email: string
+  user_name: string | null
+}
+
+export async function widgetLogin(
+  token: string,
+  email: string,
+  password: string,
+): Promise<WidgetLoginResponse> {
+  return botWidgetFetch<WidgetLoginResponse>(`/${token}/auth/login`, {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  })
+}
+
 export async function botWidgetTranscribeAudio(
   token: string,
   audioBlob: Blob,
   filename = 'audio.webm',
   language?: string,
+  authToken?: string,
 ): Promise<string> {
   const form = new FormData()
   form.append('file', audioBlob, filename)
   if (language) form.append('language', language)
+  const headers: Record<string, string> = {}
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`
   const res = await fetch(`${BASE}/${token}/speech`, {
     method: 'POST',
+    headers,
     body: form,
   })
   if (!res.ok) {
@@ -87,8 +108,12 @@ export async function getBotWidgetInfo(token: string): Promise<BotWidgetInfo> {
   return botWidgetFetch<BotWidgetInfo>(`/${token}/info`)
 }
 
-export function checkBotWidgetSession(token: string, sessionId: string): Promise<{ valid: boolean }> {
-  return botWidgetFetch<{ valid: boolean }>(`/${token}/session/${sessionId}`)
+export function checkBotWidgetSession(
+  token: string,
+  sessionId: string,
+  authToken?: string,
+): Promise<{ valid: boolean }> {
+  return botWidgetFetch<{ valid: boolean }>(`/${token}/session/${sessionId}`, undefined, authToken)
 }
 
 export async function createBotWidgetSession(
@@ -98,12 +123,13 @@ export async function createBotWidgetSession(
     visitor_name?: string
     visitor_email?: string
     visitor_phone?: string
-  }
+  },
+  authToken?: string,
 ): Promise<BotWidgetSessionData> {
   return botWidgetFetch<BotWidgetSessionData>(`/${token}/session`, {
     method: 'POST',
     body: JSON.stringify(data),
-  })
+  }, authToken)
 }
 
 export async function botWidgetChatStream(
@@ -113,11 +139,14 @@ export async function botWidgetChatStream(
     onDelta: (chunk: string) => void
     onDone: (content?: string) => void
     onError: (msg: string) => void
-  }
+  },
+  authToken?: string,
 ) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`
   const res = await fetch(`${BASE}/${token}/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(body),
   })
   if (!res.ok) {

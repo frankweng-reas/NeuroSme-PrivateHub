@@ -37,6 +37,9 @@ class Bot(Base):
     contact_enabled = Column(Boolean, nullable=False, default=False)
     contact_links = Column(Text, nullable=True)              # JSON {type,label,value}[]
 
+    # 存取控制：public | authenticated
+    access_mode = Column(String(20), nullable=False, default="public")
+
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)

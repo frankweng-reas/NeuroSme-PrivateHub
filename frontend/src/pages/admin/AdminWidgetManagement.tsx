@@ -1,8 +1,8 @@
 /** Admin Bot 部署管理：列出所有 Bot，由 admin 統一開通 / 撤銷 Widget Token */
 import { useEffect, useState } from 'react'
 import {
-  CheckCircle2, CircleOff, Code2, Copy, Loader2,
-  RefreshCw, Wifi, WifiOff, X,
+  CheckCircle2, CircleOff, Code2, Copy, Lock, Loader2,
+  RefreshCw, Unlock, Wifi, WifiOff, X,
 } from 'lucide-react'
 import { listBots, generateBotToken, revokeBotToken, type Bot } from '@/api/bots'
 import { useToast } from '@/contexts/ToastContext'
@@ -121,12 +121,21 @@ function EmbedModal({ bot, onClose }: { bot: Bot; onClose: () => void }) {
   )
 }
 
+type FilterAccess = 'all' | 'public' | 'authenticated'
+type FilterDeploy = 'all' | 'deployed' | 'undeployed'
+type FilterStatus = 'all' | 'active' | 'inactive'
+
 export default function AdminWidgetManagement() {
   const [bots, setBots] = useState<Bot[]>([])
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<number | null>(null)
   const [embedBot, setEmbedBot] = useState<Bot | null>(null)
   const { showToast } = useToast()
+
+  const [filterAccess, setFilterAccess] = useState<FilterAccess>('all')
+  const [filterDeploy, setFilterDeploy] = useState<FilterDeploy>('all')
+  const [filterStatus, setFilterStatus] = useState<FilterStatus>('all')
+  const [search, setSearch] = useState('')
 
   useEffect(() => {
     listBots()
@@ -137,6 +146,19 @@ export default function AdminWidgetManagement() {
 
   const updateBot = (updated: Bot) =>
     setBots((prev) => prev.map((b) => (b.id === updated.id ? updated : b)))
+
+  const filteredBots = bots.filter((b) => {
+    if (search && !b.name.toLowerCase().includes(search.toLowerCase())) return false
+    if (filterAccess === 'public' && b.access_mode !== 'public') return false
+    if (filterAccess === 'authenticated' && b.access_mode !== 'authenticated') return false
+    if (filterDeploy === 'deployed' && !b.public_token) return false
+    if (filterDeploy === 'undeployed' && b.public_token) return false
+    if (filterStatus === 'active' && !b.is_active) return false
+    if (filterStatus === 'inactive' && b.is_active) return false
+    return true
+  })
+
+  const hasFilter = filterAccess !== 'all' || filterDeploy !== 'all' || filterStatus !== 'all' || search !== ''
 
   const handleGenerate = async (bot: Bot) => {
     setActionLoading(bot.id)
@@ -185,7 +207,7 @@ export default function AdminWidgetManagement() {
     <>
       {embedBot && <EmbedModal bot={embedBot} onClose={() => setEmbedBot(null)} />}
 
-      <div className="space-y-6">
+      <div className="space-y-5">
         {/* 頁首 */}
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -200,6 +222,113 @@ export default function AdminWidgetManagement() {
             </span>
           )}
         </div>
+
+        {/* Filter Bar */}
+        {!loading && bots.length > 0 && (
+          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
+            {/* 搜尋 */}
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="搜尋 Bot 名稱…"
+              className="h-8 w-48 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 focus:border-sky-400 focus:outline-none"
+            />
+
+            <div className="h-4 w-px bg-gray-300" />
+
+            {/* 存取控制 */}
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-gray-400 mr-1">存取控制</span>
+              {([
+                { v: 'all',           label: '全部' },
+                { v: 'public',        label: '🔓 公開' },
+                { v: 'authenticated', label: '🔒 內部認證' },
+              ] as { v: FilterAccess; label: string }[]).map(({ v, label }) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setFilterAccess(v)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                    filterAccess === v
+                      ? 'bg-sky-500 text-white'
+                      : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="h-4 w-px bg-gray-300" />
+
+            {/* 部署狀態 */}
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-gray-400 mr-1">部署</span>
+              {([
+                { v: 'all',        label: '全部' },
+                { v: 'deployed',   label: '已部署' },
+                { v: 'undeployed', label: '未部署' },
+              ] as { v: FilterDeploy; label: string }[]).map(({ v, label }) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setFilterDeploy(v)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                    filterDeploy === v
+                      ? 'bg-sky-500 text-white'
+                      : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="h-4 w-px bg-gray-300" />
+
+            {/* 服務狀態 */}
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-gray-400 mr-1">服務</span>
+              {([
+                { v: 'all',      label: '全部' },
+                { v: 'active',   label: '運行中' },
+                { v: 'inactive', label: '已暫停' },
+              ] as { v: FilterStatus; label: string }[]).map(({ v, label }) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setFilterStatus(v)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                    filterStatus === v
+                      ? 'bg-sky-500 text-white'
+                      : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* 重置 */}
+            {hasFilter && (
+              <>
+                <div className="h-4 w-px bg-gray-300" />
+                <button
+                  type="button"
+                  onClick={() => { setFilterAccess('all'); setFilterDeploy('all'); setFilterStatus('all'); setSearch('') }}
+                  className="text-xs text-gray-400 hover:text-gray-600 underline"
+                >
+                  清除篩選
+                </button>
+              </>
+            )}
+
+            <span className="ml-auto text-xs text-gray-400">
+              顯示 {filteredBots.length} / {bots.length} 筆
+            </span>
+          </div>
+        )}
 
         {/* 表格 */}
         {loading ? (
@@ -222,7 +351,13 @@ export default function AdminWidgetManagement() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 bg-white">
-                {bots.map((bot) => (
+                {filteredBots.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-10 text-center text-sm text-gray-400">
+                      沒有符合條件的 Bot
+                    </td>
+                  </tr>
+                ) : filteredBots.map((bot) => (
                   <tr key={bot.id} className="hover:bg-gray-50">
                     {/* 名稱 */}
                     <td className="px-4 py-3">
@@ -230,6 +365,15 @@ export default function AdminWidgetManagement() {
                       {bot.description && (
                         <p className="mt-0.5 max-w-xs truncate text-xs text-gray-400">{bot.description}</p>
                       )}
+                      <span className={`mt-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+                        bot.access_mode === 'authenticated'
+                          ? 'bg-amber-100 text-amber-700'
+                          : 'bg-gray-100 text-gray-500'
+                      }`}>
+                        {bot.access_mode === 'authenticated'
+                          ? <><Lock className="h-2.5 w-2.5" />內部認證</>
+                          : <><Unlock className="h-2.5 w-2.5" />公開</>}
+                      </span>
                     </td>
 
                     {/* 服務狀態 */}
@@ -304,6 +448,7 @@ export default function AdminWidgetManagement() {
                   </tr>
                 ))}
               </tbody>
+
             </table>
           </div>
         )}

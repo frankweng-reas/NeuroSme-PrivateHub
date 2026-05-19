@@ -27,6 +27,7 @@ import {
   checkBotWidgetSession,
   createBotWidgetSession,
   getBotWidgetInfo,
+  widgetLogin,
   type BotWidgetContactLink,
   type BotWidgetFaqItem,
   type BotWidgetInfo,
@@ -48,7 +49,18 @@ interface StoredSession {
 // ── 常數 ──────────────────────────────────────────────────────────────────────
 
 const SESSION_KEY = (token: string) => `bot_widget_session_${token}`
+const AUTH_KEY = (token: string) => `bot_widget_auth_${token}`
 const POPULAR_PREVIEW = 3   // 預設顯示幾筆熱門問題
+
+function loadWidgetAuthToken(token: string): string | null {
+  try { return localStorage.getItem(AUTH_KEY(token)) } catch { return null }
+}
+function saveWidgetAuthToken(token: string, jwt: string) {
+  try { localStorage.setItem(AUTH_KEY(token), jwt) } catch {}
+}
+function clearWidgetAuthToken(token: string) {
+  try { localStorage.removeItem(AUTH_KEY(token)) } catch {}
+}
 
 function loadSession(token: string): StoredSession | null {
   try {
@@ -331,6 +343,105 @@ function ContactSheet({
   )
 }
 
+// ── 認證登入頁 ────────────────────────────────────────────────────────────────
+
+function LoginPage({
+  title,
+  color,
+  logoUrl,
+  onLogin,
+}: {
+  title: string
+  color: string
+  logoUrl?: string | null
+  onLogin: (email: string, password: string) => Promise<void>
+}) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!email.trim() || !password) return
+    setLoading(true)
+    setError(null)
+    try {
+      await onLogin(email.trim(), password)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '登入失敗，請稍後再試')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-1 flex-col overflow-y-auto">
+      {/* 品牌區 */}
+      <div className="shrink-0 px-6 pb-8 pt-10 text-center"
+        style={{ background: `linear-gradient(160deg, ${color}18 0%, transparent 70%)` }}>
+        {logoUrl ? (
+          <img src={logoUrl} alt="logo" className="mx-auto mb-4 h-16 w-16 rounded-2xl object-cover shadow" />
+        ) : (
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl shadow"
+            style={{ backgroundColor: color }}>
+            <MessageCircle className="h-8 w-8 text-white" />
+          </div>
+        )}
+        <p className="text-lg font-semibold text-gray-800">{title}</p>
+        <p className="mt-1 text-sm text-gray-500">請登入後繼續</p>
+      </div>
+
+      {/* 表單 */}
+      <div className="mx-5 mt-2">
+        <form onSubmit={(e) => void handleSubmit(e)} className="space-y-3">
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Email</label>
+            <input
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="your@email.com"
+              required
+              className="w-full rounded-xl border border-gray-300 px-4 py-3 text-base focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-400"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">密碼</label>
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              required
+              className="w-full rounded-xl border border-gray-300 px-4 py-3 text-base focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-400"
+            />
+          </div>
+          {error && (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+              {error}
+            </div>
+          )}
+          <button
+            type="submit"
+            disabled={loading || !email.trim() || !password}
+            className="flex w-full items-center justify-center gap-2 rounded-xl py-3 text-base font-semibold text-white transition-opacity disabled:opacity-50"
+            style={{ backgroundColor: color }}
+          >
+            {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+            {loading ? '登入中...' : '登入'}
+          </button>
+        </form>
+        <p className="mt-4 text-center text-xs text-gray-400">
+          本 Widget 僅限授權人員使用
+        </p>
+      </div>
+    </div>
+  )
+}
+
 // ── 首頁面 ────────────────────────────────────────────────────────────────────
 
 interface HomePageProps {
@@ -452,8 +563,9 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
 
   const [info, setInfo] = useState<BotWidgetInfo | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [phase, setPhase] = useState<'loading' | 'home' | 'chat'>('loading')
+  const [phase, setPhase] = useState<'loading' | 'login' | 'home' | 'chat'>('loading')
 
+  const [widgetAuthToken, setWidgetAuthToken] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState('')
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -468,6 +580,39 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
     getBotWidgetInfo(token)
       .then(async (data) => {
         setInfo(data)
+
+        // Authenticated 模式：檢查本地是否有有效的 auth token
+        if (data.access_mode === 'authenticated') {
+          const savedAuthToken = loadWidgetAuthToken(token)
+          if (savedAuthToken) {
+            // 嘗試用既有 token 繼續（驗證是否仍有效）
+            try {
+              const stored = loadSession(token)
+              if (stored) {
+                const { valid } = await checkBotWidgetSession(token, stored.sessionId, savedAuthToken)
+                if (valid) {
+                  setWidgetAuthToken(savedAuthToken)
+                  setSessionId(stored.sessionId)
+                  setMessages(stored.messages)
+                  setPhase('chat')
+                  return
+                }
+              }
+              // token 有效但無 session，進首頁/對話
+              setWidgetAuthToken(savedAuthToken)
+              setPhase(data.home_enabled ? 'home' : 'chat')
+              return
+            } catch {
+              // token 過期或無效 → 清除，要求重新登入
+              clearWidgetAuthToken(token)
+              clearSession(token)
+            }
+          }
+          setPhase('login')
+          return
+        }
+
+        // Public 模式：既有流程
         const stored = loadSession(token)
         if (stored) {
           try {
@@ -508,13 +653,22 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
     return () => { style.remove() }
   }, [isEmbed])
 
+  // ── Widget 登入（authenticated 模式）─────────────────────────────────────────
+  async function handleWidgetLogin(email: string, password: string) {
+    const resp = await widgetLogin(token, email, password)
+    const jwt = resp.access_token
+    saveWidgetAuthToken(token, jwt)
+    setWidgetAuthToken(jwt)
+    setPhase(info?.home_enabled ? 'home' : 'chat')
+  }
+
   // ── 建立匿名 session 並進入對話 ──────────────────────────────────────────────
   async function enterChat() {
     let sid = sessionId
     if (!sid) {
       sid = genSessionId()
       try {
-        await createBotWidgetSession(token, { session_id: sid })
+        await createBotWidgetSession(token, { session_id: sid }, widgetAuthToken ?? undefined)
         setSessionId(sid)
         const stored: StoredSession = { sessionId: sid, messages: [] }
         saveSession(token, stored)
@@ -537,7 +691,7 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
     if (!sid) {
       sid = genSessionId()
       try {
-        await createBotWidgetSession(token, { session_id: sid })
+        await createBotWidgetSession(token, { session_id: sid }, widgetAuthToken ?? undefined)
         setSessionId(sid)
         saveSession(token, { sessionId: sid, messages: [] })
       } catch {
@@ -590,7 +744,8 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
             setChatError(msg)
             setIsLoading(false)
           },
-        }
+        },
+        widgetAuthToken ?? undefined,
       )
     } catch {
       setMessages((prev) => prev.slice(0, startIdx))
@@ -605,6 +760,18 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
     setSessionId('')
     setChatError(null)
     if (info?.home_enabled) setPhase('home')
+    else setPhase('chat')
+  }
+
+  // ── 登出（authenticated 模式）─────────────────────────────────────────────────
+  function handleLogout() {
+    clearSession(token)
+    clearWidgetAuthToken(token)
+    setMessages([])
+    setSessionId('')
+    setWidgetAuthToken(null)
+    setChatError(null)
+    setPhase('login')
   }
 
   const color = info?.color ?? '#1A3A52'
@@ -675,15 +842,36 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
             <HelpCircle className="h-4 w-4" />
           </button>
         )}
-        <button
-          type="button"
-          onClick={handleReset}
-          className="rounded-lg p-1.5 text-white/70 transition-colors hover:bg-white/15 hover:text-white"
-          title={t('chat.reset_title')}
-        >
-          <RotateCcw className="h-4 w-4" />
-        </button>
+        {info?.access_mode === 'authenticated' ? (
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="rounded-lg p-1.5 text-white/70 transition-colors hover:bg-white/15 hover:text-white"
+            title="登出"
+          >
+            <RotateCcw className="h-4 w-4" />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={handleReset}
+            className="rounded-lg p-1.5 text-white/70 transition-colors hover:bg-white/15 hover:text-white"
+            title={t('chat.reset_title')}
+          >
+            <RotateCcw className="h-4 w-4" />
+          </button>
+        )}
       </div>
+
+      {/* ── 登入（authenticated 模式）── */}
+      {phase === 'login' && info && (
+        <LoginPage
+          title={info.title}
+          color={color}
+          logoUrl={info.logo_url}
+          onLogin={handleWidgetLogin}
+        />
+      )}
 
       {/* ── 首頁面 ── */}
       {phase === 'home' && info && (
@@ -719,7 +907,7 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
               <VoiceInput
                 hideLangSelector
                 transcribe={(blob, filename, lang) =>
-                  botWidgetTranscribeAudio(token, blob, filename, lang)
+                  botWidgetTranscribeAudio(token, blob, filename, lang, widgetAuthToken ?? undefined)
                 }
                 onTranscript={(text, autoSend) => {
                   if (autoSend) {

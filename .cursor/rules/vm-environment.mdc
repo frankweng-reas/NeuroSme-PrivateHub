@@ -1,0 +1,60 @@
+---
+description: 這台 VM (sme-ee-frank) 的服務架構與管理方式
+alwaysApply: true
+---
+
+# VM 環境架構（sme-ee-frank / ee.neurosme.ai）
+
+## 入口 Nginx（neurosme20-nginx-dev-1 Docker container）
+
+| Domain / Port | 代理目標 | 說明 |
+|---|---|---|
+| `ee.neurosme.ai:443` | `localhost:8089` | NeuroSme 產品官網 (website Docker container) |
+| `ee.neurosme.ai:8443` | `localhost:5173` | NeuroSme 前端 Vite dev server |
+| `ee.neurosme.ai:3000` | `localhost:3001` | reas-portal **測試環境**前端 Vite dev server |
+| `portal.ee.neurosme.ai:443` | `localhost:8088` | reas-portal **正式環境**前端 Docker container |
+| `demo.ee.neurosme.ai:443` | `localhost:4443` | NeuroSme Demo 環境 |
+
+nginx config: `/home/frank_weng/NeuroSme2.0/nginx.dev.conf`
+
+---
+
+## NeuroSme2.0（`/home/frank_weng/NeuroSme2.0`）
+
+| 服務 | 管理方式 | port |
+|---|---|---|
+| backend (uvicorn) | systemd user service `neurosme-backend.service` | 8000 |
+| frontend (Vite dev) | systemd user service `neurosme-frontend.service` | 5173 |
+
+---
+
+## reas-portal（`/home/frank_weng/reas-portal`）
+
+### 測試環境（`ee.neurosme.ai:3000`）→ systemd
+
+| 服務 | 管理方式 | port |
+|---|---|---|
+| backend (uvicorn) | systemd user service `reas-portal-backend.service` | 8080 |
+| frontend (Vite dev) | systemd user service `reas-portal-frontend.service` | 3001 |
+
+- systemd service 讀取 `EnvironmentFile=/home/frank_weng/reas-portal/.env`
+- 重啟：`systemctl --user restart reas-portal-backend.service`
+
+### 正式環境（`portal.ee.neurosme.ai`）→ Docker Compose
+
+| 服務 | port |
+|---|---|
+| frontend (nginx) | 8088 |
+| backend (uvicorn) | 內部（由 frontend container proxy） |
+
+- 設定：`/home/frank_weng/reas-portal/docker-compose.yml`，讀取 `.env`
+- 重啟：`docker compose -f /home/frank_weng/reas-portal/docker-compose.yml restart backend`
+- 重建（env var 改變時需要）：`docker compose -f /home/frank_weng/reas-portal/docker-compose.yml up -d backend`
+
+---
+
+## 共用設定
+
+- `.env` 路徑：`/home/frank_weng/reas-portal/.env`
+- systemd user services 位置：`~/.config/systemd/user/`
+- PORTAL_BASE_URL 應設為 `https://portal.ee.neurosme.ai`（`ee.neurosme.ai:3000` 測試環境也使用此值）
