@@ -31,11 +31,11 @@ class Bot(Base):
     home_enabled = Column(Boolean, nullable=False, default=False)
     home_greeting = Column(Text, nullable=True)
     home_quick_questions = Column(Text, nullable=True)   # JSON string[]
-    home_links = Column(Text, nullable=True)             # JSON {label,url}[]
-
     # 客服情境：FAQ（拆為 熱門 / 常見 兩組）
     popular_faq_enabled = Column(Boolean, nullable=False, default=False)
     common_faq_enabled = Column(Boolean, nullable=False, default=False)
+    contact_enabled = Column(Boolean, nullable=False, default=False)
+    contact_links = Column(Text, nullable=True)              # JSON {type,label,value}[]
 
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

@@ -30,6 +30,7 @@ from app.services.stored_files_store import absolute_blob_path
 logger = logging.getLogger(__name__)
 
 _PROMPT_TYPE_FILES: dict[str, str] = {
+    "bot_base":             "system_prompt_bot_base.md",
     "chat_agent":           "system_prompt_chat_agent.md",
     "chat":                 "system_prompt_chat_agent.md",  # aid 直接對應，前端未帶 prompt_type 時的 fallback
     "knowledge":            "system_prompt_km_agent.md",

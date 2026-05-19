@@ -25,9 +25,10 @@ export interface BotWidgetFaqItem {
   answer: string
 }
 
-export interface BotWidgetHomeLink {
+export interface BotWidgetContactLink {
+  type: string   // phone | email | line | form | url
   label: string
-  url: string
+  value: string
 }
 
 export interface BotWidgetInfo {
@@ -41,11 +42,12 @@ export interface BotWidgetInfo {
   home_enabled: boolean
   home_greeting: string | null
   home_quick_questions: string[]
-  home_links: BotWidgetHomeLink[]
   popular_faq_enabled: boolean
   common_faq_enabled: boolean
   popular_faqs: BotWidgetFaqItem[]
   common_faqs: BotWidgetFaqItem[]
+  contact_enabled: boolean
+  contact_links: BotWidgetContactLink[]
 }
 
 export async function botWidgetTranscribeAudio(

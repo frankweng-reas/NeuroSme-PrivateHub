@@ -44,9 +44,11 @@ class BotWidgetFaqItem(BaseModel):
     answer: str
 
 
-class BotWidgetHomeLink(BaseModel):
+
+class BotWidgetContactLink(BaseModel):
+    type: str    # phone | email | line | form | url
     label: str
-    url: str
+    value: str
 
 
 class BotWidgetInfoResponse(BaseModel):
@@ -61,11 +63,12 @@ class BotWidgetInfoResponse(BaseModel):
     home_enabled: bool
     home_greeting: str | None
     home_quick_questions: list[str]
-    home_links: list[BotWidgetHomeLink]
     popular_faq_enabled: bool
     common_faq_enabled: bool
     popular_faqs: list[BotWidgetFaqItem]
     common_faqs: list[BotWidgetFaqItem]
+    contact_enabled: bool
+    contact_links: list[BotWidgetContactLink]
 
     model_config = {"from_attributes": True}
 
@@ -125,11 +128,15 @@ def bot_widget_info(token: str, db: Session = Depends(get_db)):
     popular_faqs = _load_faqs("popular") if (bot.popular_faq_enabled or False) else []
     common_faqs = _load_faqs("common") if (bot.common_faq_enabled or False) else []
 
-    raw_links = _parse_json_list(bot.home_links, [])
-    home_links = [
-        BotWidgetHomeLink(label=lk.get("label", ""), url=lk.get("url", ""))
-        for lk in raw_links
-        if isinstance(lk, dict) and lk.get("label") and lk.get("url")
+    raw_contact = _parse_json_list(bot.contact_links, []) if (bot.contact_enabled or False) else []
+    contact_links = [
+        BotWidgetContactLink(
+            type=lk.get("type", "url"),
+            label=lk.get("label", ""),
+            value=lk.get("value", ""),
+        )
+        for lk in raw_contact
+        if isinstance(lk, dict) and lk.get("label") and lk.get("value")
     ]
 
     return BotWidgetInfoResponse(
@@ -143,11 +150,12 @@ def bot_widget_info(token: str, db: Session = Depends(get_db)):
         home_enabled=bot.home_enabled or False,
         home_greeting=bot.home_greeting,
         home_quick_questions=_parse_json_list(bot.home_quick_questions, []),
-        home_links=home_links,
         popular_faq_enabled=bot.popular_faq_enabled or False,
         common_faq_enabled=bot.common_faq_enabled or False,
         popular_faqs=popular_faqs,
         common_faqs=common_faqs,
+        contact_enabled=bot.contact_enabled or False,
+        contact_links=contact_links,
     )
 
 
@@ -287,6 +295,17 @@ async def bot_widget_chat(
                 logger.warning("儲存 FAQ direct 訊息失敗: %s", save_err)
             return
 
+        # 若無任何 RAG context 且 fallback 已啟用 → 直接回傳 fallback，不呼叫 LLM
+        if not _bot_chunk_ids and bot_fallback_message_enabled and bot_fallback_message:
+            clean_text = bot_fallback_message.strip()
+            yield f"data: {json.dumps({'event': 'done', 'content': clean_text}, ensure_ascii=False)}\n\n"
+            try:
+                db.add(BotWidgetMessage(session_id=session_id, role="assistant", content=clean_text))
+                db.commit()
+            except Exception as save_err:
+                logger.warning("儲存 fallback 訊息失敗: %s", save_err)
+            return
+
         try:
             kwargs = build_llm_kwargs(
                 model=bot_model_name,
@@ -327,12 +346,17 @@ async def bot_widget_chat(
                         pass
 
             from app.api.endpoints.chat import _clean_rag_response
-            clean_text = _clean_rag_response(
-                full_text,
-                "cs",
-                fallback_message=bot_fallback_message,
-                fallback_message_enabled=bot_fallback_message_enabled,
-            )
+            # 若 context chunks 為空（無知識庫內容可參考），且已啟用 fallback，
+            # 不論 LLM 輸出為何（可能不遵守 [NOT_FOUND] 指令），直接套用 fallback。
+            if bot_fallback_message_enabled and bot_fallback_message and not _bot_chunk_ids:
+                clean_text = bot_fallback_message.strip()
+            else:
+                clean_text = _clean_rag_response(
+                    full_text,
+                    "cs",
+                    fallback_message=bot_fallback_message,
+                    fallback_message_enabled=bot_fallback_message_enabled,
+                )
             yield f"data: {json.dumps({'event': 'done', 'content': clean_text}, ensure_ascii=False)}\n\n"
 
             if full_text:

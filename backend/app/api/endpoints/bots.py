@@ -58,9 +58,10 @@ class BotUpdate(BaseModel):
     home_enabled: bool | None = None
     home_greeting: str | None = None
     home_quick_questions: str | None = None  # JSON string（保留欄位，暫不顯示）
-    home_links: str | None = None            # JSON string
     popular_faq_enabled: bool | None = None
     common_faq_enabled: bool | None = None
+    contact_enabled: bool | None = None
+    contact_links: str | None = None         # JSON string
 
 
 class BotKbResponse(BaseModel):
@@ -103,9 +104,10 @@ class BotResponse(BaseModel):
     home_enabled: bool
     home_greeting: str | None
     home_quick_questions: str | None
-    home_links: str | None
     popular_faq_enabled: bool
     common_faq_enabled: bool
+    contact_enabled: bool
+    contact_links: str | None
     knowledge_bases: list[BotKbResponse]
     created_at: str
 
@@ -149,9 +151,10 @@ def _to_response(bot: Bot, db: Session) -> BotResponse:
         home_enabled=bot.home_enabled or False,
         home_greeting=bot.home_greeting,
         home_quick_questions=bot.home_quick_questions,
-        home_links=bot.home_links,
         popular_faq_enabled=bot.popular_faq_enabled or False,
         common_faq_enabled=bot.common_faq_enabled or False,
+        contact_enabled=bot.contact_enabled or False,
+        contact_links=bot.contact_links,
         knowledge_bases=kbs,
         created_at=bot.created_at.isoformat() if bot.created_at else "",
     )
@@ -286,12 +289,14 @@ def update_bot(
         bot.home_greeting = body.home_greeting or None
     if body.home_quick_questions is not None:
         bot.home_quick_questions = body.home_quick_questions or None
-    if body.home_links is not None:
-        bot.home_links = body.home_links or None
     if body.popular_faq_enabled is not None:
         bot.popular_faq_enabled = body.popular_faq_enabled
     if body.common_faq_enabled is not None:
         bot.common_faq_enabled = body.common_faq_enabled
+    if body.contact_enabled is not None:
+        bot.contact_enabled = body.contact_enabled
+    if body.contact_links is not None:
+        bot.contact_links = body.contact_links or None
 
     db.commit()
     db.refresh(bot)

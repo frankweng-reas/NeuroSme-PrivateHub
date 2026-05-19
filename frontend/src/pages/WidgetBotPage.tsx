@@ -11,10 +11,13 @@ import { I18nextProvider, useTranslation } from 'react-i18next'
 import {
   ChevronDown,
   ChevronRight,
+  Globe,
   HelpCircle,
   Loader2,
+  Mail,
   MessageCircle,
   MessageSquare,
+  Phone,
   RotateCcw,
   X,
 } from 'lucide-react'
@@ -24,6 +27,7 @@ import {
   checkBotWidgetSession,
   createBotWidgetSession,
   getBotWidgetInfo,
+  type BotWidgetContactLink,
   type BotWidgetFaqItem,
   type BotWidgetInfo,
 } from '@/api/widget_bot_public'
@@ -249,6 +253,84 @@ function FaqSheet({
   )
 }
 
+// ── 聯絡資訊 Sheet ────────────────────────────────────────────────────────────
+
+const CONTACT_ICON: Record<string, React.ReactNode> = {
+  phone: <Phone className="h-4 w-4" />,
+  email: <Mail className="h-4 w-4" />,
+  line:  <MessageCircle className="h-4 w-4" />,
+  form:  <Globe className="h-4 w-4" />,
+  url:   <Globe className="h-4 w-4" />,
+}
+
+function buildContactHref(type: string, value: string): string {
+  if (type === 'phone') return `tel:${value.replace(/\s/g, '')}`
+  if (type === 'email') return `mailto:${value}`
+  if (/^https?:\/\//i.test(value)) return value
+  return `https://${value}`
+}
+
+function ContactSheet({
+  links,
+  color,
+  title,
+  onClose,
+}: {
+  links: BotWidgetContactLink[]
+  color: string
+  title: string
+  onClose: () => void
+}) {
+  return (
+    <div
+      className="absolute inset-0 z-50 flex flex-col justify-end"
+      style={{ backgroundColor: 'rgba(0,0,0,0.35)' }}
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[70%] flex-col overflow-hidden rounded-t-2xl bg-white"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex shrink-0 items-center justify-between border-b border-gray-100 px-4 py-3">
+          <span className="text-sm font-semibold text-gray-800">{title}</span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        {/* 聯絡項目 */}
+        <div className="overflow-y-auto p-4 space-y-2">
+          {links.map((lk, idx) => (
+            <a
+              key={idx}
+              href={buildContactHref(lk.type, lk.value)}
+              target={lk.type === 'phone' || lk.type === 'email' ? '_self' : '_blank'}
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 rounded-2xl border border-gray-100 bg-white px-4 py-3.5 shadow-sm transition-colors hover:bg-gray-50"
+            >
+              <span
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-white"
+                style={{ backgroundColor: color }}
+              >
+                {CONTACT_ICON[lk.type] ?? <Globe className="h-4 w-4" />}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-gray-800">{lk.label}</p>
+                <p className="truncate text-xs text-gray-400">{lk.value}</p>
+              </div>
+              <Globe className="h-3.5 w-3.5 shrink-0 text-gray-300" />
+            </a>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── 首頁面 ────────────────────────────────────────────────────────────────────
 
 interface HomePageProps {
@@ -378,6 +460,7 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
   const [chatError, setChatError] = useState<string | null>(null)
   const [voiceAutoSendText, setVoiceAutoSendText] = useState('')
   const [showFaqSheet, setShowFaqSheet] = useState(false)
+  const [showContactSheet, setShowContactSheet] = useState(false)
 
   // ── 載入 Bot info ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -572,6 +655,16 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
         <span className="flex-1 text-base font-semibold text-white">
           {info?.title ?? ''}
         </span>
+        {info?.contact_enabled && (info?.contact_links?.length ?? 0) > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowContactSheet(true)}
+            className="rounded-lg p-1.5 text-white/70 transition-colors hover:bg-white/15 hover:text-white"
+            title="聯絡我們"
+          >
+            <Phone className="h-4 w-4" />
+          </button>
+        )}
         {info?.common_faq_enabled && (info?.common_faqs?.length ?? 0) > 0 && (
           <button
             type="button"
@@ -650,6 +743,16 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
           color={color}
           title={t('home.faq')}
           onClose={() => setShowFaqSheet(false)}
+        />
+      )}
+
+      {/* ── 聯絡資訊 Sheet ── */}
+      {showContactSheet && info?.contact_links && (
+        <ContactSheet
+          links={info.contact_links}
+          color={color}
+          title="聯絡我們"
+          onClose={() => setShowContactSheet(false)}
         />
       )}
     </div>

@@ -150,9 +150,10 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
   // ── 客服情境設定 ──────────────────────────────────────────────────────────
   const [settingsHomeEnabled, setSettingsHomeEnabled] = useState(false)
   const [settingsHomeGreeting, setSettingsHomeGreeting] = useState('')
-  const [settingsHomeLinks, setSettingsHomeLinks] = useState<{ label: string; url: string }[]>([])
   const [settingsPopularFaqEnabled, setSettingsPopularFaqEnabled] = useState(false)
   const [settingsCommonFaqEnabled, setSettingsCommonFaqEnabled] = useState(false)
+  const [settingsContactEnabled, setSettingsContactEnabled] = useState(false)
+  const [settingsContactLinks, setSettingsContactLinks] = useState<{ type: string; label: string; value: string }[]>([])
 
   // ── FAQ 管理（各 type 獨立）───────────────────────────────────────────────
   const [popularFaqs, setPopularFaqs] = useState<BotFaq[]>([])
@@ -247,11 +248,12 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
     setSettingsKbIds(selectedBot.knowledge_bases.map((kb) => ({ knowledge_base_id: kb.knowledge_base_id, sort_order: kb.sort_order })))
     setSettingsHomeEnabled(selectedBot.home_enabled ?? false)
     setSettingsHomeGreeting(selectedBot.home_greeting ?? '')
-    setSettingsHomeLinks(
-      selectedBot.home_links ? (() => { try { return JSON.parse(selectedBot.home_links!) } catch { return [] } })() : []
-    )
     setSettingsPopularFaqEnabled(selectedBot.popular_faq_enabled ?? false)
     setSettingsCommonFaqEnabled(selectedBot.common_faq_enabled ?? false)
+    setSettingsContactEnabled(selectedBot.contact_enabled ?? false)
+    setSettingsContactLinks(
+      selectedBot.contact_links ? (() => { try { return JSON.parse(selectedBot.contact_links!) } catch { return [] } })() : []
+    )
     setFaqAddOpen({ popular: false, common: false })
     setFaqEditId(null)
     setFaqNewQ({ popular: '', common: '' })
@@ -383,9 +385,10 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
         knowledge_base_ids: settingsKbIds,
         home_enabled: settingsHomeEnabled,
         home_greeting: settingsHomeGreeting || undefined,
-        home_links: settingsHomeLinks.length > 0 ? JSON.stringify(settingsHomeLinks) : '',
         popular_faq_enabled: settingsPopularFaqEnabled,
         common_faq_enabled: settingsCommonFaqEnabled,
+        contact_enabled: settingsContactEnabled,
+        contact_links: settingsContactLinks.length > 0 ? JSON.stringify(settingsContactLinks) : '',
       })
       setBots((prev) => prev.map((b) => b.id === updated.id ? updated : b))
       showToast('Bot 設定已儲存')
@@ -556,17 +559,6 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
     }
   }
 
-  function addHomeLink() {
-    setSettingsHomeLinks((prev) => [...prev, { label: '', url: '' }])
-  }
-
-  function updateHomeLink(idx: number, field: 'label' | 'url', value: string) {
-    setSettingsHomeLinks((prev) => prev.map((lk, i) => i === idx ? { ...lk, [field]: value } : lk))
-  }
-
-  function removeHomeLink(idx: number) {
-    setSettingsHomeLinks((prev) => prev.filter((_, i) => i !== idx))
-  }
 
   // ─────────────────────────────────────────────────────────────────────────
   return (
@@ -1148,6 +1140,72 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
                       )
                     })}
 
+                    {/* 聯絡資訊 */}
+                    <div className="border-t border-sky-200 pt-4">
+                      <div className="mb-3 flex items-center justify-between">
+                        <div>
+                          <p className="text-base font-medium text-gray-700">聯絡資訊</p>
+                          <p className="text-sm text-gray-400">啟用後，Widget 右上角顯示聯絡按鈕</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setSettingsContactEnabled((v) => !v)}
+                          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${settingsContactEnabled ? 'bg-sky-500' : 'bg-gray-300'}`}
+                          role="switch" aria-checked={settingsContactEnabled}
+                        >
+                          <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${settingsContactEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                        </button>
+                      </div>
+
+                      {settingsContactEnabled && (
+                        <div className="space-y-2">
+                          {settingsContactLinks.map((lk, idx) => (
+                            <div key={idx} className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2">
+                              <select
+                                value={lk.type}
+                                onChange={(e) => setSettingsContactLinks((prev) => prev.map((l, i) => i === idx ? { ...l, type: e.target.value } : l))}
+                                className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-1 text-sm text-gray-700 focus:border-sky-500 focus:outline-none"
+                              >
+                                <option value="phone">📞 電話</option>
+                                <option value="email">📧 Email</option>
+                                <option value="line">💬 Line</option>
+                                <option value="form">📋 表單</option>
+                                <option value="url">🌐 網址</option>
+                              </select>
+                              <input
+                                type="text"
+                                value={lk.label}
+                                onChange={(e) => setSettingsContactLinks((prev) => prev.map((l, i) => i === idx ? { ...l, label: e.target.value } : l))}
+                                placeholder="標籤（如：客服專線）"
+                                className="min-w-0 flex-1 rounded-lg border border-gray-200 px-2 py-1 text-sm focus:border-sky-500 focus:outline-none"
+                              />
+                              <input
+                                type="text"
+                                value={lk.value}
+                                onChange={(e) => setSettingsContactLinks((prev) => prev.map((l, i) => i === idx ? { ...l, value: e.target.value } : l))}
+                                placeholder="值（電話/Email/網址）"
+                                className="min-w-0 flex-1 rounded-lg border border-gray-200 px-2 py-1 text-sm focus:border-sky-500 focus:outline-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setSettingsContactLinks((prev) => prev.filter((_, i) => i !== idx))}
+                                className="shrink-0 rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-500"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => setSettingsContactLinks((prev) => [...prev, { type: 'phone', label: '', value: '' }])}
+                            className="flex w-full items-center gap-1.5 rounded-lg border border-dashed border-sky-300 px-3 py-2 text-sm text-sky-500 hover:bg-sky-50"
+                          >
+                            <Plus className="h-3.5 w-3.5" />新增聯絡方式
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
                     {/* 首頁面 */}
                     <div className="border-t border-sky-200 pt-4">
                       <div className="mb-3 flex items-center justify-between">
@@ -1179,38 +1237,6 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
                             />
                           </div>
 
-                          {/* 自訂連結 */}
-                          <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700">自訂連結</label>
-                            <div className="space-y-2">
-                              {settingsHomeLinks.map((lk, idx) => (
-                                <div key={idx} className="flex items-center gap-2">
-                                  <input
-                                    type="text"
-                                    value={lk.label}
-                                    onChange={(e) => updateHomeLink(idx, 'label', e.target.value)}
-                                    placeholder="連結名稱"
-                                    className="w-28 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:border-sky-500 focus:outline-none"
-                                  />
-                                  <input
-                                    type="url"
-                                    value={lk.url}
-                                    onChange={(e) => updateHomeLink(idx, 'url', e.target.value)}
-                                    placeholder="https://..."
-                                    className="flex-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:border-sky-500 focus:outline-none"
-                                  />
-                                  <button type="button" onClick={() => removeHomeLink(idx)}
-                                    className="rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-500">
-                                    <X className="h-4 w-4" />
-                                  </button>
-                                </div>
-                              ))}
-                              <button type="button" onClick={addHomeLink}
-                                className="flex items-center gap-1.5 rounded-lg border border-dashed border-sky-300 px-3 py-1.5 text-sm text-sky-500 hover:bg-sky-50 w-full">
-                                <Plus className="h-3.5 w-3.5" />新增連結
-                              </button>
-                            </div>
-                          </div>
                         </div>
                       )}
                     </div>

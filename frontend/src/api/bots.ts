@@ -12,9 +12,12 @@ export interface BotKbResponse {
   answer_mode: 'rag' | 'direct'
 }
 
-export interface BotHomeLink {
+export type BotContactLinkType = 'phone' | 'email' | 'line' | 'form' | 'url'
+
+export interface BotContactLink {
+  type: BotContactLinkType
   label: string
-  url: string
+  value: string
 }
 
 export type BotFaqType = 'popular' | 'common'
@@ -48,9 +51,10 @@ export interface Bot {
   home_enabled: boolean
   home_greeting: string | null
   home_quick_questions: string | null  // JSON string[]（保留欄位）
-  home_links: string | null            // JSON BotHomeLink[]
   popular_faq_enabled: boolean
   common_faq_enabled: boolean
+  contact_enabled: boolean
+  contact_links: string | null         // JSON BotContactLink[]
   knowledge_bases: BotKbResponse[]
   created_at: string
 }
@@ -100,9 +104,10 @@ export async function updateBot(
     home_enabled?: boolean
     home_greeting?: string
     home_quick_questions?: string
-    home_links?: string
     popular_faq_enabled?: boolean
     common_faq_enabled?: boolean
+    contact_enabled?: boolean
+    contact_links?: string
   }
 ): Promise<Bot> {
   return apiFetch<Bot>(`/bots/${id}`, {
