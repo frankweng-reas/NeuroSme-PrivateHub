@@ -21,6 +21,15 @@ class BotContentContactLink(BaseModel):
     value: str
 
 
+_CONTACT_DEFAULT_LABELS: dict[str, str] = {
+    "phone": "電話",
+    "email": "Email",
+    "line": "Line",
+    "form": "表單",
+    "url": "網址",
+}
+
+
 class BotContentData(BaseModel):
     bot_id: int
     title: str
@@ -68,15 +77,18 @@ def build_bot_content(bot: Bot, db: Session) -> BotContentData:
     common_faqs = _load_faqs(db, bot.id, "common") if (bot.common_faq_enabled or False) else []
 
     raw_contact = parse_json_list(bot.contact_links, []) if (bot.contact_enabled or False) else []
-    contact_links = [
-        BotContentContactLink(
-            type=lk.get("type", "url"),
-            label=lk.get("label", ""),
-            value=lk.get("value", ""),
-        )
-        for lk in raw_contact
-        if isinstance(lk, dict) and lk.get("label") and lk.get("value")
-    ]
+    contact_links: list[BotContentContactLink] = []
+    for lk in raw_contact:
+        if not isinstance(lk, dict):
+            continue
+        value = str(lk.get("value") or "").strip()
+        if not value:
+            continue
+        link_type = str(lk.get("type") or "url")
+        label = str(lk.get("label") or "").strip()
+        if not label:
+            label = _CONTACT_DEFAULT_LABELS.get(link_type, link_type)
+        contact_links.append(BotContentContactLink(type=link_type, label=label, value=value))
 
     return BotContentData(
         bot_id=bot.id,
