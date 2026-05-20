@@ -15,9 +15,14 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import SessionLocal, get_db
-from app.models.bot import Bot, BotFaq, BotKnowledgeBase
+from app.models.bot import Bot, BotKnowledgeBase
 from app.models.bot_widget_session import BotWidgetMessage, BotWidgetSession
 from app.services.agent_usage import log_agent_usage
+from app.services.bot_content_service import (
+    BotContentContactLink,
+    BotContentFaqItem,
+    build_bot_content,
+)
 from app.services.bot_rag_service import apply_bot_fallback, prepare_bot_rag_messages, rag_hit
 from app.services.llm_caller import LLMProviderNotConfigured, build_llm_kwargs, resolve_llm_params
 
@@ -58,17 +63,9 @@ def _verify_widget_auth(request: Request, bot: Bot) -> dict | None:
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 
-class BotWidgetFaqItem(BaseModel):
-    id: int
-    question: str
-    answer: str
-
-
-
-class BotWidgetContactLink(BaseModel):
-    type: str    # phone | email | line | form | url
-    label: str
-    value: str
+# 與 bot_content_service 共用 schema（Widget API 向後相容別名）
+BotWidgetFaqItem = BotContentFaqItem
+BotWidgetContactLink = BotContentContactLink
 
 
 class BotWidgetInfoResponse(BaseModel):
@@ -118,66 +115,17 @@ class BotWidgetChatRequest(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
-def _parse_json_list(raw: str | None, default: list) -> list:
-    if not raw:
-        return default
-    try:
-        result = json.loads(raw)
-        return result if isinstance(result, list) else default
-    except Exception:
-        return default
-
-
 @router.get("/{token}/info", response_model=BotWidgetInfoResponse)
 def bot_widget_info(token: str, db: Session = Depends(get_db)):
     """取得 Bot Widget 基本設定（含客服情境首頁面 / FAQ）"""
     bot = _get_bot_by_token(token, db)
-
-    def _load_faqs(faq_type: str) -> list[BotWidgetFaqItem]:
-        rows = (
-            db.query(BotFaq)
-            .filter(
-                BotFaq.bot_id == bot.id,
-                BotFaq.is_active.is_(True),
-                BotFaq.faq_type == faq_type,
-            )
-            .order_by(BotFaq.sort_order, BotFaq.id)
-            .all()
-        )
-        return [BotWidgetFaqItem(id=r.id, question=r.question, answer=r.answer) for r in rows]
-
-    popular_faqs = _load_faqs("popular") if (bot.popular_faq_enabled or False) else []
-    common_faqs = _load_faqs("common") if (bot.common_faq_enabled or False) else []
-
-    raw_contact = _parse_json_list(bot.contact_links, []) if (bot.contact_enabled or False) else []
-    contact_links = [
-        BotWidgetContactLink(
-            type=lk.get("type", "url"),
-            label=lk.get("label", ""),
-            value=lk.get("value", ""),
-        )
-        for lk in raw_contact
-        if isinstance(lk, dict) and lk.get("label") and lk.get("value")
-    ]
+    content = build_bot_content(bot, db)
 
     return BotWidgetInfoResponse(
-        bot_id=bot.id,
-        title=bot.widget_title or bot.name,
-        logo_url=bot.widget_logo_url,
-        color=bot.widget_color or "#1A3A52",
-        lang=bot.widget_lang or "zh-TW",
+        **content.model_dump(),
         is_active=bot.is_active,
         voice_enabled=bot.widget_voice_enabled or False,
         access_mode=bot.access_mode or "public",
-        home_enabled=bot.home_enabled or False,
-        home_greeting=bot.home_greeting,
-        home_quick_questions=_parse_json_list(bot.home_quick_questions, []),
-        popular_faq_enabled=bot.popular_faq_enabled or False,
-        common_faq_enabled=bot.common_faq_enabled or False,
-        popular_faqs=popular_faqs,
-        common_faqs=common_faqs,
-        contact_enabled=bot.contact_enabled or False,
-        contact_links=contact_links,
     )
 
 

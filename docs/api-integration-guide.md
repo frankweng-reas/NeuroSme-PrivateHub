@@ -17,10 +17,12 @@
 
 ### 端點
 
-```
-POST https://{你的網域}/api/v1/public/bot/query
-```
-例如：POST https://ee.neurosme.ai:4443/api/v1/public/bot/query
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET | `/api/v1/public/bot/content` | 取得熱門/常見 FAQ、聯絡資訊、首頁設定（與 Widget 一致） |
+| POST | `/api/v1/public/bot/query` | 知識庫問答（RAG） |
+
+例如：`https://ee.neurosme.ai:4443/api/v1/public/bot/query`
 
 ### 認證
 
@@ -52,7 +54,31 @@ X-API-Key: nsk_your_key_here
 
 ---
 
-## 範例：curl
+## 取得展示內容（GET /content）
+
+用於 LINE / Messenger 等渠道建立「熱門問題」按鈕或 FAQ 選單，無需呼叫 LLM。
+
+```bash
+curl "https://your-domain/api/v1/public/bot/content" \
+  -H "X-API-Key: nsk_your_key_here"
+```
+
+回傳欄位（節錄）：
+
+| 欄位 | 說明 |
+|------|------|
+| `popular_faq_enabled` | 是否啟用熱門 FAQ |
+| `popular_faqs` | `[{ id, question, answer }]` |
+| `common_faq_enabled` | 是否啟用常見 FAQ |
+| `common_faqs` | `[{ id, question, answer }]` |
+| `contact_links` | 聯絡方式清單 |
+| `home_greeting` | 首頁歡迎語 |
+
+僅回傳已啟用區塊的內容；Rate limit：1000 次/小時。
+
+---
+
+## 範例：curl（問答）
 
 ```bash
 curl -X POST https://your-domain/api/v1/public/bot/query \

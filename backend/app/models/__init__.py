@@ -26,12 +26,13 @@ from app.models.activation_code import ActivationCode
 from app.models.km_document import KmDocument
 from app.models.km_chunk import KmChunk
 from app.models.km_knowledge_base import KmKnowledgeBase
-from app.models.ordering_session import OrderingSession
 from app.models.bot import Bot, BotKnowledgeBase
 from app.models.bot_widget_session import BotWidgetSession, BotWidgetMessage
 from app.models.km_query_log import KmQueryLog
 from app.models.bot_query_log import BotQueryLog
 from app.models.km_connector import KmConnector
+from app.models.doc_parse_profile import DocParseProfile
+from app.models.doc_parse_result import DocParseResult
 
 __all__ = [
     "Base", "Tenant", "User", "AgentCatalog", "TenantAgent", "UserAgent",
@@ -43,10 +44,11 @@ __all__ = [
     "KmDocument", "KmChunk", "KmKnowledgeBase",
     "TenantConfig",
     "ApiKey", "ApiKeyUsage",
-    "OrderingSession",
     "Bot", "BotKnowledgeBase",
     "BotWidgetSession", "BotWidgetMessage",
     "KmQueryLog",
     "BotQueryLog",
     "KmConnector",
+    "DocParseProfile",
+    "DocParseResult",
 ]

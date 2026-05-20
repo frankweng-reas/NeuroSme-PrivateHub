@@ -41,11 +41,11 @@ _PROMPT_TYPE_FILES: dict[str, str] = {
     "quotation_share":      "system_prompt_quotation_4_share.md",
     "marketing":            "system_prompt_marketing_agent.md",
     "marketing_chat":       "system_prompt_marketing_chat.md",
-    "ordering":             "system_prompt_ordering.md",
     "doc_refiner_doc":      "system_prompt_doc_refiner_doc.md",
     "doc_refiner_note":     "system_prompt_doc_refiner_note.md",
     "doc_refiner_rewrite":  "system_prompt_doc_refiner_rewrite.md",
     "doc_refiner_sop":      "system_prompt_doc_refiner_sop.md",
+    "document_parse":       "system_prompt_document_parse.md",
 }
 
 

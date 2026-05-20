@@ -16,7 +16,6 @@ import {
   Plus,
   RefreshCw,
   Trash2,
-  X,
 } from 'lucide-react'
 import { chatCompletionsStream } from '@/api/chat'
 import {
@@ -913,9 +912,9 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
                   <div>
                     <label className="mb-1.5 block text-base font-medium text-gray-700">存取控制</label>
                     <p className="mb-2 text-sm text-gray-400">控制誰可以使用此 Widget</p>
-                    <div className="space-y-2">
+                    <div className="flex gap-3">
                       {(['public', 'authenticated'] as const).map((mode) => (
-                        <label key={mode} className={`flex cursor-pointer items-start gap-3 rounded-xl border px-4 py-3 transition-colors ${settingsAccessMode === mode ? 'border-sky-400 bg-sky-50' : 'border-gray-200 bg-white hover:bg-gray-50'}`}>
+                        <label key={mode} className={`flex flex-1 cursor-pointer items-start gap-3 rounded-xl border px-4 py-3 transition-colors ${settingsAccessMode === mode ? 'border-sky-400 bg-sky-50' : 'border-gray-200 bg-white hover:bg-gray-50'}`}>
                           <input
                             type="radio"
                             name="access_mode"
@@ -1085,7 +1084,11 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
                             </div>
                             <button
                               type="button"
-                              onClick={() => setEnabled((v) => !v)}
+                              onClick={() => {
+                                const next = !enabled
+                                setEnabled(next)
+                                if (type === 'popular' && next) setSettingsHomeEnabled(true)
+                              }}
                               className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${enabled ? 'bg-sky-500' : 'bg-gray-300'}`}
                               role="switch" aria-checked={enabled}
                             >

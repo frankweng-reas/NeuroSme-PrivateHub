@@ -1,13 +1,15 @@
-"""公開 Bot API：外部 App 透過 API Key 呼叫 Bot 知識庫問答（RAG）
+"""公開 Bot API：外部 App 透過 API Key 整合 Bot
 
-端點：POST /api/v1/public/bot/query
+端點：
+  - GET  /api/v1/public/bot/content  — 取得熱門/常見 FAQ、聯絡資訊等展示內容
+  - POST /api/v1/public/bot/query    — 知識庫問答（RAG）
 認證：X-API-Key header
 """
 import logging
 from datetime import date, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -17,6 +19,7 @@ from app.core.limiter import limiter
 from app.models.api_key import ApiKey, ApiKeyUsage
 from app.models.bot import Bot, BotKnowledgeBase
 from app.services.agent_usage import log_agent_usage
+from app.services.bot_content_service import BotContentData, build_bot_content
 from app.services.bot_rag_service import apply_bot_fallback, prepare_bot_rag_messages, rag_hit
 from app.services.llm_caller import LLMCallError, LLMProviderNotConfigured, call_llm
 from app.services.llm_service import UsageMeta
@@ -65,6 +68,37 @@ class BotQueryResponse(BaseModel):
     model: str = ""
 
 
+class BotContentResponse(BotContentData):
+    """Bot 對外展示內容（與 Widget /info 對齊，不含內部設定）。"""
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Bot 解析（API Key）
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _resolve_bot_id(api_key: ApiKey, bot_id: int | None) -> int:
+    if api_key.bot_id is not None:
+        if bot_id is not None and bot_id != api_key.bot_id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"此 API Key 僅限查詢 Bot ID {api_key.bot_id}",
+            )
+        return api_key.bot_id
+    if bot_id is not None:
+        return bot_id
+    raise HTTPException(status_code=400, detail="請提供 bot_id（此 Key 未綁定特定 Bot）")
+
+
+def _get_tenant_bot(db: Session, tenant_id: str, bot_id: int) -> Bot:
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.tenant_id == tenant_id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="bot_id 不存在或不屬於此 tenant")
+    if not bot.is_active:
+        raise HTTPException(status_code=403, detail="此 Bot 已停用")
+    return bot
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Usage tracking helper
 # ──────────────────────────────────────────────────────────────────────────────
@@ -98,8 +132,30 @@ def _record_usage(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Route
+# Routes
 # ──────────────────────────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/content",
+    response_model=BotContentResponse,
+    summary="取得 Bot 展示內容",
+    description=(
+        "取得 Bot 的熱門 FAQ、常見 FAQ、聯絡資訊、首頁設定等。"
+        "僅回傳已啟用區塊的內容，與 Widget 首頁/常見問題一致。"
+        "Rate limit：每個 API Key 每小時最多 1000 次請求。"
+    ),
+)
+@limiter.limit("1000/hour")
+def bot_content(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    api_key: Annotated[ApiKey, Depends(get_api_key)],
+    bot_id: int | None = Query(None, description="Bot ID；若 API Key 已綁定特定 Bot 則可省略"),
+):
+    resolved_bot_id = _resolve_bot_id(api_key, bot_id)
+    bot = _get_tenant_bot(db, api_key.tenant_id, resolved_bot_id)
+    return build_bot_content(bot, db)
 
 
 @router.post(
@@ -121,27 +177,8 @@ async def bot_query(
     api_key: Annotated[ApiKey, Depends(get_api_key)],
 ):
     tenant_id = api_key.tenant_id
-
-    # 決定 bot_id：Key 綁定的優先；否則從 body 取
-    if api_key.bot_id is not None:
-        resolved_bot_id = api_key.bot_id
-        # 如果 body 也帶了 bot_id，必須一致
-        if body.bot_id is not None and body.bot_id != api_key.bot_id:
-            raise HTTPException(status_code=403, detail="此 API Key 僅限查詢 Bot ID " + str(api_key.bot_id))
-    elif body.bot_id is not None:
-        resolved_bot_id = body.bot_id
-    else:
-        raise HTTPException(status_code=400, detail="請提供 bot_id（此 Key 未綁定特定 Bot）")
-
-    # 確認 Bot 屬於此 tenant 且為啟用狀態
-    bot = db.query(Bot).filter(
-        Bot.id == resolved_bot_id,
-        Bot.tenant_id == tenant_id,
-    ).first()
-    if not bot:
-        raise HTTPException(status_code=404, detail="bot_id 不存在或不屬於此 tenant")
-    if not bot.is_active:
-        raise HTTPException(status_code=403, detail="此 Bot 已停用")
+    resolved_bot_id = _resolve_bot_id(api_key, body.bot_id)
+    bot = _get_tenant_bot(db, tenant_id, resolved_bot_id)
 
     # 取得 Bot 關聯的 KB ID 列表
     kb_links = (

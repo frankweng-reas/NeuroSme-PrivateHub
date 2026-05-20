@@ -15,6 +15,7 @@ import {
   FileText,
   FilePen,
   FileQuestion,
+  FileSearch,
   Megaphone,
   ScanText,
   type LucideIcon,
@@ -37,6 +38,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   FileText,
   FilePen,
   FileQuestion,
+  FileSearch,
   Megaphone,
   ScanText,
 }

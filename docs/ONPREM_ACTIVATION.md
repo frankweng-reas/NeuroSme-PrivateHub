@@ -28,10 +28,17 @@ REAS 業務／工程師                    客戶
 
 **目前 reas-portal 已啟用（可授權）：**
 
-| agent_id   | 名稱                    | 群組     |
-|------------|-------------------------|----------|
-| `chat`     | Chat Agent              | 生產管理 |
-| `business` | Business Insight Agent  | 銷售管理 |
+| agent_id         | 名稱                    | 群組     |
+|------------------|-------------------------|----------|
+| `chat`           | Chat Agent              | 生產管理 |
+| `writing`        | Writing Agent           | 生產管理 |
+| `ocr`            | OCR Agent               | 生產管理 |
+| `kb-manager`     | KB 管理                 | 知識管理 |
+| `kb-bot-builder` | KB Bot Builder          | 知識管理 |
+| `doc-refiner`    | Doc Refiner             | 知識管理 |
+| `document-parse` | Document Parse          | 知識管理 |
+| `business`       | Business Insight Agent  | 分析     |
+| `marketing`      | Marketing Agent         | 行銷     |
 
 **其他已定義、尚未在 reas-portal 啟用的 agents（需修改 `reas-portal/backend/app/core/agent_defs.py` 解除註解後才可授權）：**
 

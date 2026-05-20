@@ -450,12 +450,17 @@ export default function AgentKbBotApiKeys({ canManage, bots: _bots, selectedBotI
           )}
 
           <div className="border-t border-gray-200 pt-3 space-y-3">
-            <p>
-              <span className="font-medium text-gray-800">端點：</span>
-              <code className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-base">
-                POST /api/v1/public/bot/query
-              </code>
-            </p>
+            <p className="font-medium text-gray-800">端點</p>
+            <ul className="list-inside list-disc space-y-1 text-base text-gray-700">
+              <li>
+                展示內容：
+                <code className="ml-1 rounded bg-gray-200 px-1.5 py-0.5 font-mono">GET /api/v1/public/bot/content</code>
+              </li>
+              <li>
+                知識庫問答：
+                <code className="ml-1 rounded bg-gray-200 px-1.5 py-0.5 font-mono">POST /api/v1/public/bot/query</code>
+              </li>
+            </ul>
             <p>
               <span className="font-medium text-gray-800">認證：</span>
               Header 加入 <code className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-base">X-API-Key: nsk_...</code>
@@ -463,7 +468,10 @@ export default function AgentKbBotApiKeys({ canManage, bots: _bots, selectedBotI
             <p className="text-base text-gray-500">
               API Key 已綁定此 Bot，請求時<strong>不需要</strong>帶入 <code className="rounded bg-gray-200 px-1 font-mono">bot_id</code>。
             </p>
-            <p className="font-medium text-gray-800">請求範例（含多輪對話歷史）：</p>
+            <p className="font-medium text-gray-800">取得展示內容範例：</p>
+            <pre className="overflow-x-auto rounded-lg border border-gray-200 bg-white p-3 font-mono text-base text-gray-700">{`curl "${window.location.origin}/api/v1/public/bot/content" \\
+  -H "X-API-Key: nsk_your_key_here"`}</pre>
+            <p className="font-medium text-gray-800">問答請求範例（含多輪對話歷史）：</p>
             <pre className="overflow-x-auto rounded-lg border border-gray-200 bg-white p-3 font-mono text-base text-gray-700">{`curl -X POST ${window.location.origin}/api/v1/public/bot/query \\
   -H "X-API-Key: nsk_your_key_here" \\
   -H "Content-Type: application/json" \\
@@ -481,7 +489,7 @@ export default function AgentKbBotApiKeys({ canManage, bots: _bots, selectedBotI
     ]
   }'`}</pre>
             <p className="text-base text-gray-500">
-              Rate Limit：每個 API Key 每小時最多 100 次請求。{' '}
+              Rate Limit：問答 100 次/小時；展示內容 1000 次/小時。{' '}
               詳細規格請參閱{' '}
               <a
                 href="/api/v1/public/docs"

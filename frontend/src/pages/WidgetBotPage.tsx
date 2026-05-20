@@ -52,6 +52,11 @@ const SESSION_KEY = (token: string) => `bot_widget_session_${token}`
 const AUTH_KEY = (token: string) => `bot_widget_auth_${token}`
 const POPULAR_PREVIEW = 3   // 預設顯示幾筆熱門問題
 
+/** 新訪客是否應先看到首頁（歡迎語 / 熱門 FAQ） */
+function shouldShowWidgetHome(info: Pick<BotWidgetInfo, 'home_enabled' | 'popular_faq_enabled' | 'popular_faqs'>): boolean {
+  return info.home_enabled || (info.popular_faq_enabled && info.popular_faqs.length > 0)
+}
+
 function loadWidgetAuthToken(token: string): string | null {
   try { return localStorage.getItem(AUTH_KEY(token)) } catch { return null }
 }
@@ -458,7 +463,8 @@ function HomePage({ info, color }: HomePageProps) {
   return (
     <div className="flex flex-1 flex-col overflow-y-auto">
 
-      {/* ── 歡迎語區 ──────────────────────────────────────────────── */}
+      {/* ── 歡迎語區（需啟用首頁面）──────────────────────────────── */}
+      {info.home_enabled && (
       <div
         className="shrink-0 px-5 pb-5 pt-6"
         style={{
@@ -477,10 +483,11 @@ function HomePage({ info, color }: HomePageProps) {
           </p>
         </div>
       </div>
+      )}
 
       {/* ── 熱門問題 ──────────────────────────────────────────────── */}
       {hasPopular && (
-        <div className="flex flex-1 flex-col px-4 pb-4">
+        <div className={`flex flex-1 flex-col px-4 pb-4${info.home_enabled ? '' : ' pt-5'}`}>
           <div className="mb-3 flex items-center gap-2">
             <span
               className="h-3.5 w-1 rounded-full"
@@ -600,7 +607,7 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
               }
               // token 有效但無 session，進首頁/對話
               setWidgetAuthToken(savedAuthToken)
-              setPhase(data.home_enabled ? 'home' : 'chat')
+              setPhase(shouldShowWidgetHome(data) ? 'home' : 'chat')
               return
             } catch {
               // token 過期或無效 → 清除，要求重新登入
@@ -619,7 +626,7 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
             const { valid } = await checkBotWidgetSession(token, stored.sessionId)
             if (!valid) {
               clearSession(token)
-              setPhase(data.home_enabled ? 'home' : 'chat')
+              setPhase(shouldShowWidgetHome(data) ? 'home' : 'chat')
               return
             }
           } catch {
@@ -629,7 +636,7 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
           setMessages(stored.messages)
           setPhase('chat')
         } else {
-          setPhase(data.home_enabled ? 'home' : 'chat')
+          setPhase(shouldShowWidgetHome(data) ? 'home' : 'chat')
         }
       })
       .catch((e: unknown) => {
@@ -659,25 +666,7 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
     const jwt = resp.access_token
     saveWidgetAuthToken(token, jwt)
     setWidgetAuthToken(jwt)
-    setPhase(info?.home_enabled ? 'home' : 'chat')
-  }
-
-  // ── 建立匿名 session 並進入對話 ──────────────────────────────────────────────
-  async function enterChat() {
-    let sid = sessionId
-    if (!sid) {
-      sid = genSessionId()
-      try {
-        await createBotWidgetSession(token, { session_id: sid }, widgetAuthToken ?? undefined)
-        setSessionId(sid)
-        const stored: StoredSession = { sessionId: sid, messages: [] }
-        saveSession(token, stored)
-      } catch (e: unknown) {
-        setChatError(e instanceof Error ? e.message : t('error.generic'))
-        return
-      }
-    }
-    setPhase('chat')
+    setPhase(info && shouldShowWidgetHome(info) ? 'home' : 'chat')
   }
 
   // ── 送出訊息 ────────────────────────────────────────────────────────────────

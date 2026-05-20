@@ -149,4 +149,14 @@ BUILTIN_AGENTS: list[AgentDef] = [
         "backend_router": None,
         "frontend_key": "agent-doc-refiner",
     },
+    {
+        "group_id": "knowledge",
+        "group_name": "知識管理",
+        "agent_id": "document-parse",
+        "agent_name": "Document Parse",
+        "icon_name": "FileSearch",
+        "sort_id": "16",
+        "backend_router": None,
+        "frontend_key": "agent-document-parse",
+    },
 ]
