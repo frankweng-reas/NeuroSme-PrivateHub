@@ -107,6 +107,86 @@ export async function patchResultField(
   if (!res.ok) throw new Error(`更新欄位失敗 (${res.status})`)
 }
 
+// ── Evaluation Types ─────────────────────────────────────────────────────────
+
+export type EvalItemType = 'doc_checklist' | 'tech_matrix' | 'risk_matrix'
+export type EvalStatus = 'todo' | 'in_progress' | 'done'
+export type EvalCapability = 'meet' | 'custom' | 'outsource' | 'unknown'
+export type EvalRiskLevel = 'high' | 'medium' | 'low'
+
+export interface EvalItem {
+  id: number
+  item_type: EvalItemType
+  item_key: string
+  cite: string | null
+  sort_order: number
+  // doc_checklist
+  mandatory: boolean | null
+  assignee: string | null
+  due_date: string | null   // "YYYY-MM-DD"
+  status: EvalStatus | null
+  // tech_matrix
+  capability: EvalCapability | null
+  risk_level: EvalRiskLevel | null
+  // shared
+  note: string | null
+}
+
+export type EvalItemPatch = Partial<Pick<
+  EvalItem,
+  'mandatory' | 'assignee' | 'due_date' | 'status' | 'capability' | 'risk_level' | 'note'
+>>
+
+// ── Evaluation API ───────────────────────────────────────────────────────────
+
+function apiError(action: string, status: number): Error {
+  if (status === 401) return new Error('登入已過期，請重新整理頁面後再試')
+  return new Error(`${action}失敗 (${status})`)
+}
+
+export async function getEvaluation(resultId: number): Promise<EvalItem[]> {
+  const token = localStorage.getItem(TOKEN_KEY) ?? ''
+  const res = await fetch(`${API_BASE}/document-parse/results/${resultId}/evaluation`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!res.ok) throw apiError('取得評估', res.status)
+  return res.json() as Promise<EvalItem[]>
+}
+
+export async function classifyEvaluation(resultId: number): Promise<EvalItem[]> {
+  const token = localStorage.getItem(TOKEN_KEY) ?? ''
+  const res = await fetch(
+    `${API_BASE}/document-parse/results/${resultId}/evaluation/classify`,
+    {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    },
+  )
+  if (!res.ok) throw apiError('AI 分類', res.status)
+  return res.json() as Promise<EvalItem[]>
+}
+
+export async function patchEvalItem(
+  resultId: number,
+  itemId: number,
+  patch: EvalItemPatch,
+): Promise<EvalItem> {
+  const token = localStorage.getItem(TOKEN_KEY) ?? ''
+  const res = await fetch(
+    `${API_BASE}/document-parse/results/${resultId}/evaluation/${itemId}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(patch),
+    },
+  )
+  if (!res.ok) throw apiError('更新評估項目', res.status)
+  return res.json() as Promise<EvalItem>
+}
+
 export async function* parseDocumentStream(
   file: File,
   profileId: string,

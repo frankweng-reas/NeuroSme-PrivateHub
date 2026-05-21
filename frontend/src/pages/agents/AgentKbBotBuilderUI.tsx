@@ -987,19 +987,22 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
                   <div>
                     <label className="mb-1 block text-base font-medium text-gray-700">知識來源（KB）</label>
                     <p className="mb-2 text-base text-gray-400">
-                      僅顯示「{settingsAnswerMode === 'direct' ? '精準回答型' : 'AI生成回答型'}」知識庫
+                      {settingsAnswerMode === 'direct'
+                        ? '精確直答模式僅顯示純 FAQ 知識庫（所有文件皆為 FAQ 類型）'
+                        : '顯示所有可用知識庫'}
                     </p>
                     <div className="space-y-1.5 rounded-xl border border-gray-200 p-3">
                       {(() => {
-                        const filtered = kbs.filter(
-                          (kb) => kb.scope === 'company' && (kb.answer_mode ?? 'rag') === settingsAnswerMode
+                        const filtered = kbs.filter((kb) =>
+                          (kb.scope === 'company' || kb.scope === 'bot_only') &&
+                          (settingsAnswerMode === 'direct' ? kb.is_faq_only : true)
                         )
                         if (filtered.length === 0) {
                           return (
                             <p className="text-base text-gray-400">
-                              尚無符合條件的知識庫，請先至「KB 管理」建立
-                              {settingsAnswerMode === 'direct' ? '「精準回答型（FAQ）」' : '「AI生成回答型」'}
-                              知識庫
+                              {settingsAnswerMode === 'direct'
+                                ? '尚無純 FAQ 知識庫，請先至「KB 管理」建立知識庫並確保所有文件皆為 FAQ 類型'
+                                : '尚無可用知識庫，請先至「KB 管理」建立公司共用或 Bot 專用知識庫'}
                             </p>
                           )
                         }
@@ -1010,6 +1013,7 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
                               <input type="checkbox" checked={checked} onChange={() => toggleKb(kb.id)}
                                 className="h-4 w-4 shrink-0 cursor-pointer accent-emerald-600" />
                               <span className="flex-1 text-base text-gray-700">{kb.name}</span>
+                              {kb.scope === 'bot_only' && <span className="text-xs text-violet-400">Bot 專用</span>}
                               <span className="text-base text-gray-400">{kb.ready_count} 份</span>
                             </label>
                           )

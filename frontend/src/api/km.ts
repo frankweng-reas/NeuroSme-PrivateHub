@@ -16,7 +16,12 @@ export interface KmDocument {
   created_at: string
 }
 
-export type KbScope = 'personal' | 'company'
+export type KbScope = 'personal' | 'company' | 'bot_only'
+
+export interface ReferencedBot {
+  id: number
+  name: string
+}
 
 export interface KmKnowledgeBase {
   id: number
@@ -25,11 +30,12 @@ export interface KmKnowledgeBase {
   model_name: string | null
   system_prompt: string | null
   scope: KbScope
-  answer_mode: 'rag' | 'direct'
+  is_faq_only: boolean
   created_by: number | null
   doc_count: number
   ready_count: number
   bot_count: number
+  referenced_bots: ReferencedBot[]
   created_at: string
 }
 
@@ -50,7 +56,6 @@ export async function createKnowledgeBase(data: {
   description?: string
   model_name?: string
   system_prompt?: string
-  answer_mode?: 'rag' | 'direct'
   scope?: KbScope
 }): Promise<KmKnowledgeBase> {
   return apiFetch<KmKnowledgeBase>('/km/knowledge-bases', {
@@ -68,7 +73,6 @@ export async function updateKnowledgeBase(
     model_name?: string
     system_prompt?: string
     scope?: KbScope
-    answer_mode?: 'rag' | 'direct'
   }
 ): Promise<KmKnowledgeBase> {
   return apiFetch<KmKnowledgeBase>(`/km/knowledge-bases/${id}`, {

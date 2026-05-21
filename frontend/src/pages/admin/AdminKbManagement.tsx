@@ -12,12 +12,14 @@ import {
 import { useToast } from '@/contexts/ToastContext'
 
 const SCOPE_BADGE: Record<KbScope, string> = {
-  company: 'bg-teal-100 text-teal-700',
+  company:  'bg-teal-100 text-teal-700',
   personal: 'bg-gray-100 text-gray-600',
+  bot_only: 'bg-violet-100 text-violet-700',
 }
 const SCOPE_LABEL: Record<KbScope, string> = {
-  company: '公司共用',
+  company:  '公司共用',
   personal: '個人',
+  bot_only: 'Bot 專用',
 }
 
 export default function AdminKbManagement() {

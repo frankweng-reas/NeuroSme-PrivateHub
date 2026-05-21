@@ -75,6 +75,10 @@ ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".doc"}
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 
 
+def _is_kb_owner_or_admin(kb: KmKnowledgeBase, current: User) -> bool:
+    return current.role in ("admin", "super_admin") or kb.created_by == current.id
+
+
 def _check_file_type(filename: str, content_type: str | None) -> None:
     name = (filename or "").lower()
     ct = (content_type or "").lower().split(";")[0].strip()
@@ -128,19 +132,26 @@ async def upload_km_document(
         ).first()
         if not kb:
             raise HTTPException(status_code=404, detail="知識庫不存在")
-        # direct 模式知識庫只接受 faq 文件類型
-        if getattr(kb, 'answer_mode', 'rag') == 'direct' and doc_type != 'faq':
-            raise HTTPException(
-                status_code=400,
-                detail="此知識庫為「精確直答」模式，只能上傳 FAQ 類型文件",
+        # 若此 KB 被任何「精確直答」Bot 引用，只允許上傳 faq 類型文件
+        if doc_type != "faq":
+            from app.models.bot import Bot, BotKnowledgeBase
+            direct_bot_cnt = (
+                db.query(BotKnowledgeBase)
+                .join(Bot, Bot.id == BotKnowledgeBase.bot_id)
+                .filter(
+                    BotKnowledgeBase.knowledge_base_id == kb.id,
+                    Bot.answer_mode == "direct",
+                )
+                .count()
             )
-        # 權限：company KB 需 manager+；personal KB 只有 KB 建立者或 admin+ 可上傳
-        is_admin = current.role in ("admin", "super_admin")
-        can_manage = current.role in ("admin", "super_admin", "manager")
-        if kb.scope == "company" and not can_manage:
-            raise HTTPException(status_code=403, detail="只有管理員可以上傳到公司共用知識庫")
-        if kb.scope == "personal" and kb.created_by != current.id and not is_admin:
-            raise HTTPException(status_code=403, detail="只能上傳到自己的知識庫")
+            if direct_bot_cnt > 0:
+                raise HTTPException(
+                    status_code=403,
+                    detail="此知識庫已被「精確直答」模式的 Bot 引用，只能上傳 FAQ 格式文件",
+                )
+        # 只有 KB 建立者（owner）或 admin / super_admin 可以上傳文件
+        if not _is_kb_owner_or_admin(kb, current):
+            raise HTTPException(status_code=403, detail="只能上傳文件到自己建立的知識庫")
         # 文件 scope 自動繼承 KB scope（company → public，personal → private）
         scope = "public" if kb.scope == "company" else "private"
     else:
@@ -279,10 +290,16 @@ def delete_km_document(
     if not doc:
         raise HTTPException(status_code=404, detail="文件不存在")
 
-    if doc.scope == "public" and current.role not in ("admin", "super_admin"):
-        raise HTTPException(status_code=403, detail="只有管理員可以刪除公共知識庫文件")
-    if doc.scope == "private" and doc.owner_user_id != current.id:
-        raise HTTPException(status_code=403, detail="無法刪除他人的私有文件")
+    if doc.knowledge_base_id:
+        kb = db.get(KmKnowledgeBase, doc.knowledge_base_id)
+        if kb and not _is_kb_owner_or_admin(kb, current):
+            raise HTTPException(status_code=403, detail="只能刪除自己建立的知識庫中的文件")
+    else:
+        # 無 KB 的 legacy 文件：沿用原本規則
+        if doc.scope == "public" and current.role not in ("admin", "super_admin"):
+            raise HTTPException(status_code=403, detail="只有管理員可以刪除公共知識庫文件")
+        if doc.scope == "private" and doc.owner_user_id != current.id:
+            raise HTTPException(status_code=403, detail="無法刪除他人的私有文件")
 
     db.delete(doc)
     db.commit()
@@ -332,12 +349,8 @@ def _get_doc_and_check_kb_permission(
     if not kb:
         raise HTTPException(status_code=404, detail="所屬知識庫不存在")
 
-    if kb.scope == "personal":
-        if kb.created_by != current.id:
-            raise HTTPException(status_code=403, detail="只有知識庫建立者可以編輯內容")
-    else:  # company
-        if current.role not in ("admin", "super_admin", "manager"):
-            raise HTTPException(status_code=403, detail="公司共用知識庫需要管理員權限才能編輯內容")
+    if not _is_kb_owner_or_admin(kb, current):
+        raise HTTPException(status_code=403, detail="只有知識庫建立者可以編輯內容")
 
     return doc
 

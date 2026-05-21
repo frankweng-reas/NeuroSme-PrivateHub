@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.bot import BotKnowledgeBase
+from app.models.bot import Bot, BotKnowledgeBase
 from app.models.km_document import KmDocument
 from app.models.km_knowledge_base import KmKnowledgeBase
 from app.models.user import User
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-KB_SCOPES = {"personal", "company"}
+KB_SCOPES = {"personal", "company", "bot_only"}
 
 
 class KbCreate(BaseModel):
@@ -32,7 +32,6 @@ class KbCreate(BaseModel):
     model_name: str | None = None
     system_prompt: str | None = None
     scope: str = "personal"
-    answer_mode: str = "rag"  # 'rag' | 'direct'
 
 
 class KbUpdate(BaseModel):
@@ -41,7 +40,11 @@ class KbUpdate(BaseModel):
     model_name: str | None = None
     system_prompt: str | None = None
     scope: str | None = None
-    answer_mode: str | None = None  # 'rag' | 'direct'
+
+
+class ReferencedBot(BaseModel):
+    id: int
+    name: str
 
 
 class KbResponse(BaseModel):
@@ -51,11 +54,12 @@ class KbResponse(BaseModel):
     model_name: str | None
     system_prompt: str | None
     scope: str
-    answer_mode: str
+    is_faq_only: bool
     created_by: int | None
     doc_count: int
     ready_count: int
     bot_count: int
+    referenced_bots: list[ReferencedBot]
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -63,7 +67,15 @@ class KbResponse(BaseModel):
 
 def _to_response(kb: KmKnowledgeBase, db: Session) -> KbResponse:
     all_docs = db.query(KmDocument).filter(KmDocument.knowledge_base_id == kb.id).all()
-    bot_count = db.query(BotKnowledgeBase).filter(BotKnowledgeBase.knowledge_base_id == kb.id).count()
+    bot_refs = (
+        db.query(Bot.id, Bot.name)
+        .join(BotKnowledgeBase, Bot.id == BotKnowledgeBase.bot_id)
+        .filter(BotKnowledgeBase.knowledge_base_id == kb.id)
+        .all()
+    )
+    # 動態計算：所有 ready 文件都是 faq 類型才算純 FAQ KB
+    ready_docs = [d for d in all_docs if d.status == "ready"]
+    is_faq_only = len(ready_docs) > 0 and all(d.doc_type == "faq" for d in ready_docs)
     return KbResponse(
         id=kb.id,
         name=kb.name,
@@ -71,11 +83,12 @@ def _to_response(kb: KmKnowledgeBase, db: Session) -> KbResponse:
         model_name=kb.model_name,
         system_prompt=kb.system_prompt,
         scope=kb.scope or "personal",
-        answer_mode=kb.answer_mode or "rag",
+        is_faq_only=is_faq_only,
         created_by=kb.created_by,
         doc_count=len(all_docs),
         ready_count=sum(1 for d in all_docs if d.status == "ready"),
-        bot_count=bot_count,
+        bot_count=len(bot_refs),
+        referenced_bots=[ReferencedBot(id=b.id, name=b.name) for b in bot_refs],
         created_at=kb.created_at.isoformat() if kb.created_at else "",
     )
 
@@ -103,9 +116,9 @@ def create_knowledge_base(
     scope = (body.scope or "personal").strip()
     if scope not in KB_SCOPES:
         raise HTTPException(status_code=400, detail=f"scope 必須是 {KB_SCOPES} 之一")
-    # member 只能建立 personal KB；company scope 需要 manager+
-    if scope == "company" and not _can_manage(current.role):
-        raise HTTPException(status_code=403, detail="只有管理員可以建立公司共用知識庫")
+    # member 只能建立 personal KB；company / bot_only scope 需要 manager+
+    if scope in ("company", "bot_only") and not _can_manage(current.role):
+        raise HTTPException(status_code=403, detail="只有管理員可以建立公司共用或 Bot Only 知識庫")
     # 強制 member 的 scope 永遠是 personal
     if not _can_manage(current.role):
         scope = "personal"
@@ -124,7 +137,6 @@ def create_knowledge_base(
         model_name=body.model_name or None,
         system_prompt=body.system_prompt or None,
         scope=scope,
-        answer_mode=body.answer_mode if body.answer_mode in ("rag", "direct") else "rag",
         created_by=current.id,
     )
     db.add(kb)
@@ -168,14 +180,9 @@ def update_knowledge_base(
     ).first()
     if not kb:
         raise HTTPException(status_code=404, detail="知識庫不存在")
-    # admin+：可修改任意 KB
-    # manager：只能修改自己建立的 KB
-    # member：只能修改自己的 personal KB
-    if not _is_admin(current.role):
-        if kb.created_by != current.id:
-            raise HTTPException(status_code=403, detail="只能修改自己建立的知識庫")
-        if not _can_manage(current.role) and kb.scope != "personal":
-            raise HTTPException(status_code=403, detail="只能修改自己的個人知識庫")
+    # 只有 owner（建立者）或 admin / super_admin 可以修改
+    if not _is_admin(current.role) and kb.created_by != current.id:
+        raise HTTPException(status_code=403, detail="只能修改自己建立的知識庫")
 
     if body.name is not None:
         kb.name = body.name.strip()
@@ -188,12 +195,8 @@ def update_knowledge_base(
         if new_scope not in KB_SCOPES:
             raise HTTPException(status_code=400, detail=f"scope 必須是 {KB_SCOPES} 之一")
         if not _can_manage(current.role):
-            raise HTTPException(status_code=403, detail="只有管理員可以變更知識庫範圍")
+            raise HTTPException(status_code=403, detail="只有管理員可以變更知識庫範圍（company / bot_only）")
         kb.scope = new_scope
-    if body.answer_mode is not None:
-        if body.answer_mode not in ("rag", "direct"):
-            raise HTTPException(status_code=400, detail="answer_mode 必須是 'rag' 或 'direct'")
-        kb.answer_mode = body.answer_mode
     db.commit()
     db.refresh(kb)
     return _to_response(kb, db)
@@ -212,14 +215,9 @@ def delete_knowledge_base(
     ).first()
     if not kb:
         raise HTTPException(status_code=404, detail="知識庫不存在")
-    # admin+：可刪除任意 KB
-    # manager：只能刪除自己建立的 KB
-    # member：只能刪除自己的 personal KB
-    if not _is_admin(current.role):
-        if kb.created_by != current.id:
-            raise HTTPException(status_code=403, detail="只能刪除自己建立的知識庫")
-        if not _can_manage(current.role) and kb.scope != "personal":
-            raise HTTPException(status_code=403, detail="只能刪除自己的個人知識庫")
+    # 只有 owner（建立者）或 admin / super_admin 可以刪除
+    if not _is_admin(current.role) and kb.created_by != current.id:
+        raise HTTPException(status_code=403, detail="只能刪除自己建立的知識庫")
 
     # 刪文件（chunks 由 DB ondelete=CASCADE 自動清除）
     for doc in db.query(KmDocument).filter(KmDocument.knowledge_base_id == kb_id).all():

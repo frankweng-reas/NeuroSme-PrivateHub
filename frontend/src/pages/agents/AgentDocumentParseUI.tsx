@@ -7,6 +7,7 @@ import { AlertCircle, CheckCircle2, Clock, Download, FileSearch, Loader2, Settin
 import AgentHeader from '@/components/AgentHeader'
 import HelpModal from '@/components/HelpModal'
 import DocParseProfileManager from './DocParseProfileManager'
+import DocParseEvaluationPanel from './DocParseEvaluationPanel'
 import LLMModelSelect from '@/components/LLMModelSelect'
 import { getMe } from '@/api/users'
 import {
@@ -159,6 +160,9 @@ export default function AgentDocumentParseUI({ agent }: Props) {
     setSavedFileName('')
     setActiveHistoryId(null)
   }
+
+  // ── 右欄 Tab ──────────────────────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState<'result' | 'evaluation'>('result')
 
   // ── 原文依據顯示 ──────────────────────────────────────────────────────────
   const [showCite, setShowCite] = useState(false)
@@ -404,68 +408,103 @@ export default function AgentDocumentParseUI({ agent }: Props) {
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-gray-300/50 bg-white shadow-md">
 
           {/* 右欄標題 */}
-          <div className="flex shrink-0 items-center justify-between border-b border-gray-100 px-5 py-3">
-            <div className="flex flex-col gap-0.5">
-              <span className="text-lg font-semibold text-gray-700">解析結果</span>
+          <div className="flex shrink-0 items-center justify-between border-b border-gray-100 px-5 py-2">
+            {/* Tab 切換 */}
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setActiveTab('result')}
+                className={`rounded-lg px-3 py-1.5 text-base font-medium transition-colors ${
+                  activeTab === 'result'
+                    ? 'bg-sky-50 text-sky-700'
+                    : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
+                }`}
+              >
+                解析結果
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('evaluation')}
+                disabled={!activeHistoryId}
+                className={`rounded-lg px-3 py-1.5 text-base font-medium transition-colors disabled:opacity-40 ${
+                  activeTab === 'evaluation'
+                    ? 'bg-indigo-50 text-indigo-700'
+                    : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
+                }`}
+                title={!activeHistoryId ? '請先完成一次解析' : ''}
+              >
+                投標評估
+              </button>
               {sections && savedFileName && (
-                <span className="text-xs text-gray-400 truncate max-w-xs" title={savedFileName}>
+                <span className="ml-2 text-xs text-gray-400 truncate max-w-xs hidden sm:block" title={savedFileName}>
                   {savedFileName}
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-2">
-              {sections && (
-                <span className="flex items-center gap-1.5 text-base text-gray-500">
-                  <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                  找到 {foundCount} / {totalCount} 欄位
-                  {usedModel && <span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-sm text-gray-400">{usedModel}</span>}
-                  <button
-                    onClick={clearResult}
-                    className="ml-2 rounded px-2 py-0.5 text-xs text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-                    title="清除結果"
-                  >
-                    清除
-                  </button>
-                </span>
-              )}
-              {sections && (
-                <>
-                  <label className="flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-gray-500 hover:bg-gray-50 select-none">
-                    <input
-                      type="checkbox"
-                      checked={showCite}
-                      onChange={(e) => setShowCite(e.target.checked)}
-                      className="rounded accent-sky-500"
-                    />
-                    原文依據
-                  </label>
-                  <button
-                    type="button"
-                    onClick={exportMarkdown}
-                    title="匯出 Markdown"
-                    className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-                  >
-                    <Download className="h-4 w-4" />
-                  </button>
-                </>
-              )}
-              {savingField && <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />}
-              <button
-                type="button"
-                onClick={() => setHistoryOpen((o) => !o)}
-                title="歷史記錄"
-                className={`rounded-lg p-1.5 transition-colors ${historyOpen ? 'bg-sky-100 text-sky-600' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'}`}
-              >
-                <Clock className="h-4 w-4" />
-              </button>
-            </div>
+
+            {/* 右側工具（只在解析結果 Tab 顯示） */}
+            {activeTab === 'result' && (
+              <div className="flex items-center gap-2">
+                {sections && (
+                  <span className="flex items-center gap-1.5 text-base text-gray-500">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                    找到 {foundCount} / {totalCount} 欄位
+                    {usedModel && <span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-sm text-gray-400">{usedModel}</span>}
+                    <button
+                      onClick={clearResult}
+                      className="ml-2 rounded px-2 py-0.5 text-xs text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                      title="清除結果"
+                    >
+                      清除
+                    </button>
+                  </span>
+                )}
+                {sections && (
+                  <>
+                    <label className="flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-gray-500 hover:bg-gray-50 select-none">
+                      <input
+                        type="checkbox"
+                        checked={showCite}
+                        onChange={(e) => setShowCite(e.target.checked)}
+                        className="rounded accent-sky-500"
+                      />
+                      原文依據
+                    </label>
+                    <button
+                      type="button"
+                      onClick={exportMarkdown}
+                      title="匯出 Markdown"
+                      className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                    >
+                      <Download className="h-4 w-4" />
+                    </button>
+                  </>
+                )}
+                {savingField && <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />}
+                <button
+                  type="button"
+                  onClick={() => setHistoryOpen((o) => !o)}
+                  title="歷史記錄"
+                  className={`rounded-lg p-1.5 transition-colors ${historyOpen ? 'bg-sky-100 text-sky-600' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'}`}
+                >
+                  <Clock className="h-4 w-4" />
+                </button>
+              </div>
+            )}
           </div>
 
           {/* 主體：結果 + 歷史側欄並排 */}
           <div className="flex min-h-0 flex-1 overflow-hidden">
 
-          {/* 內容區 */}
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          {/* 投標評估 Tab */}
+          {activeTab === 'evaluation' && activeHistoryId && (
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <DocParseEvaluationPanel resultId={activeHistoryId} fileName={savedFileName} />
+            </div>
+          )}
+
+          {/* 內容區（解析結果 Tab） */}
+          <div className={`min-h-0 flex-1 overflow-y-auto ${activeTab !== 'result' ? 'hidden' : ''}`}>
 
             {/* 解析中進度 */}
             {parsing && progress && (

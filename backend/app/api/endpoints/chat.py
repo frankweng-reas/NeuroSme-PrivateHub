@@ -287,7 +287,7 @@ def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> Ch
             _km_kb_id = req.knowledge_base_id
             logger.info("KM RAG: no relevant chunks found (tenant=%r, user=%s)", tenant_id, current.id)
 
-        # 讀取 KB 設定的 model、system_prompt、answer_mode
+        # 讀取 KB 設定的 model、system_prompt（KB Manager 統一走 RAG）
         if req.knowledge_base_id:
             from app.models.km_knowledge_base import KmKnowledgeBase
             kb = db.query(KmKnowledgeBase).filter(
@@ -298,40 +298,6 @@ def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> Ch
                 kb_model_name = (kb.model_name or "").strip() or None
                 kb_system_prompt = (kb.system_prompt or "").strip() or None
 
-                # direct 模式：RRF 撈候選 → 交給 async endpoint 做 LLM 選取
-                if getattr(kb, 'answer_mode', 'rag') == 'direct':
-                    from app.services.km_service import FAQ_TOP_K, km_faq_retrieve_sync
-
-                    direct_model = kb_model_name or (req.model or "").strip()
-                    direct_litellm, direct_key, direct_base = ("", None, None)
-                    if direct_model:
-                        direct_litellm, direct_key, direct_base = _get_llm_params(
-                            direct_model, db=db, tenant_id=tenant_id
-                        )
-
-                    candidates = km_faq_retrieve_sync(
-                        req.content, db, tenant_id, current.id,
-                        req.knowledge_base_id, top_k=FAQ_TOP_K,
-                    )
-                    return ChatCompletionPrepared(
-                        tenant_id=tenant_id,
-                        messages=[],
-                        model=direct_model,
-                        litellm_model=direct_litellm,
-                        api_key=direct_key or "__faq_direct__",
-                        api_base=direct_base,
-                        thread_uuid=thread_uuid,
-                        trace_raw=trace_raw,
-                        user_id=current.id,
-                        has_vision_user_content=False,
-                        agent_id=aid,
-                        sources=[
-                            {"filename": c.document.filename}
-                            for c, _ in candidates if c.document
-                        ],
-                        faq_candidates=candidates,
-                        knowledge_base_id=req.knowledge_base_id,
-                    )
     else:
         data = _get_selected_source_files_content(db, current.id, tenant_id, aid)
 

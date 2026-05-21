@@ -9,7 +9,6 @@ export interface BotKbResponse {
   knowledge_base_id: number
   name: string
   sort_order: number
-  answer_mode: 'rag' | 'direct'
 }
 
 export type BotContactLinkType = 'phone' | 'email' | 'line' | 'form' | 'url'
@@ -57,6 +56,7 @@ export interface Bot {
   contact_links: string | null         // JSON BotContactLink[]
   access_mode: 'public' | 'authenticated'
   knowledge_bases: BotKbResponse[]
+  created_by: number | null
   created_at: string
 }
 

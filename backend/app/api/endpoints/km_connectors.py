@@ -87,11 +87,13 @@ def _get_kb_or_404(kb_id: int, tenant_id: str, db: Session) -> KmKnowledgeBase:
     return kb
 
 
+def _is_kb_owner_or_admin(kb: KmKnowledgeBase, current: User) -> bool:
+    return current.role in ("admin", "super_admin") or kb.created_by == current.id
+
+
 def _check_kb_manage_permission(kb: KmKnowledgeBase, current: User) -> None:
-    if kb.scope == "personal" and kb.created_by != current.id:
-        raise HTTPException(status_code=403, detail="無權限管理此知識庫的連接器")
-    if kb.scope == "company" and current.role not in ("admin", "super_admin", "manager"):
-        raise HTTPException(status_code=403, detail="需要管理員或主管權限")
+    if not _is_kb_owner_or_admin(kb, current):
+        raise HTTPException(status_code=403, detail="只有知識庫建立者可以管理連接器")
 
 
 def _get_connector_or_404(connector_id: int, tenant_id: str, db: Session) -> KmConnector:

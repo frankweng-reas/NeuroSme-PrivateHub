@@ -30,10 +30,10 @@ from app.services.llm_caller import LLMCallError, LLMProviderNotConfigured, call
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-_MAX_PDF_BYTES    = 20 * 1024 * 1024   # 20 MB
-_CHUNK_SIZE       = 8_000              # 每段最大字數；中文約 1 char≈1 token，加 prompt overhead 需控制在 8k 以內
-_CHUNK_OVERLAP    = 400                # 相鄰段落重疊字數
-_LOCAL_NUM_CTX    = 32_768            # Ollama 預設 num_ctx 過小（常只有 2048），文件解析需明確擴大
+_MAX_PDF_BYTES  = 20 * 1024 * 1024  # 20 MB
+_CHUNK_SIZE     = 24_000             # 每段字數；減少 LLM 呼叫次數，品質由模型決定
+_CHUNK_OVERLAP  = 500                # 相鄰段落重疊字數
+_LOCAL_NUM_CTX  = 131_072            # Ollama context window（128K；gemma4:26b 原生 256K）
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -470,6 +470,7 @@ async def parse_document(
         if not use_model:
             raise HTTPException(status_code=400, detail="請指定 model 參數，或在 AI 設定中設定 LLM Provider")
 
+    is_local = use_model.startswith("local/") or use_model.startswith("ollama_chat/")
     chunks = _split_text(raw_text)
     chunk_total = len(chunks)
     char_count = len(raw_text)
@@ -481,29 +482,27 @@ async def parse_document(
     )
 
     async def generate():
-        is_local = use_model.startswith("local/") or use_model.startswith("ollama_chat/")
         yield _sse({
             "type": "meta",
             "profile_name": profile["profile_name"],
             "page_count": page_count,
             "char_count": char_count,
             "chunk_total": chunk_total,
-            "chunk_size": _CHUNK_SIZE,
             "num_ctx": _LOCAL_NUM_CTX if is_local else None,
         })
 
         results = _init_results(profile)
         total_pt = total_ct = total_tt = 0
 
+        extra_kwargs: dict = {}
+        if is_local:
+            extra_kwargs["options"] = {"num_ctx": _LOCAL_NUM_CTX}
+
         for idx, chunk_text in enumerate(chunks, 1):
-            yield _sse({"type": "progress", "chunk": idx, "chunk_total": chunk_total, "status": f"解析第 {idx}/{chunk_total} 段…"})
+            yield _sse({"type": "progress", "chunk": idx, "chunk_total": chunk_total,
+                        "status": f"解析第 {idx}/{chunk_total} 段…"})
 
             messages = _build_prompt(profile, chunk_text, idx, chunk_total)
-            # 本地 Ollama 模型：明確設定 num_ctx 避免預設值（通常 2048）截斷長文件
-            extra_kwargs: dict = {}
-            if use_model.startswith("local/") or use_model.startswith("ollama_chat/"):
-                extra_kwargs["options"] = {"num_ctx": _LOCAL_NUM_CTX}
-
             try:
                 answer, llm_usage, _ = await call_llm(
                     model=use_model,
@@ -683,3 +682,300 @@ def patch_result_field(
     flag_modified(r, "result_json")
     db.commit()
     return {"detail": "已更新"}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 投標評估 API（Evaluation）
+# ──────────────────────────────────────────────────────────────────────────────
+
+from datetime import date as _date
+from app.models.doc_parse_evaluation import DocParseEvaluation
+
+
+class EvalItemOut(BaseModel):
+    id: int
+    item_type: str
+    item_key: str
+    cite: str | None
+    sort_order: int
+    mandatory: bool | None
+    assignee: str | None
+    due_date: str | None        # ISO date string
+    status: str | None
+    capability: str | None
+    risk_level: str | None
+    note: str | None
+
+
+class EvalItemPatch(BaseModel):
+    mandatory:  bool | None = None
+    assignee:   str | None  = None
+    due_date:   str | None  = None   # ISO date "YYYY-MM-DD"
+    status:     str | None  = None
+    capability: str | None  = None
+    risk_level: str | None  = None
+    note:       str | None  = None
+
+
+def _result_or_404(db: Session, result_id: int, user_id: int) -> DocParseResult:
+    r = db.query(DocParseResult).filter(
+        DocParseResult.id == result_id,
+        DocParseResult.user_id == user_id,
+    ).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="找不到此解析結果")
+    return r
+
+
+def _eval_row_to_out(row: DocParseEvaluation) -> EvalItemOut:
+    return EvalItemOut(
+        id=row.id,
+        item_type=row.item_type,
+        item_key=row.item_key,
+        cite=row.cite,
+        sort_order=row.sort_order,
+        mandatory=row.mandatory,
+        assignee=row.assignee,
+        due_date=row.due_date.isoformat() if row.due_date else None,
+        status=row.status,
+        capability=row.capability,
+        risk_level=row.risk_level,
+        note=row.note,
+    )
+
+
+@router.get(
+    "/results/{result_id}/evaluation",
+    response_model=list[EvalItemOut],
+    summary="取得投標評估項目",
+)
+def get_evaluation(
+    result_id: int,
+    db: Session = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = ...,
+):
+    _result_or_404(db, result_id, current_user.id)
+    rows = (
+        db.query(DocParseEvaluation)
+        .filter(DocParseEvaluation.result_id == result_id)
+        .order_by(DocParseEvaluation.item_type, DocParseEvaluation.sort_order)
+        .all()
+    )
+    return [_eval_row_to_out(r) for r in rows]
+
+
+@router.patch(
+    "/results/{result_id}/evaluation/{item_id}",
+    response_model=EvalItemOut,
+    summary="修改單一評估項目",
+)
+def patch_evaluation_item(
+    result_id: int,
+    item_id: int,
+    body: EvalItemPatch,
+    db: Session = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = ...,
+):
+    _result_or_404(db, result_id, current_user.id)
+    row = db.query(DocParseEvaluation).filter(
+        DocParseEvaluation.id == item_id,
+        DocParseEvaluation.result_id == result_id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="找不到此評估項目")
+
+    for field, val in body.model_dump(exclude_unset=True).items():
+        if field == "due_date":
+            setattr(row, field, _date.fromisoformat(val) if val else None)
+        else:
+            setattr(row, field, val)
+
+    db.commit()
+    db.refresh(row)
+    return _eval_row_to_out(row)
+
+
+@router.post(
+    "/results/{result_id}/evaluation/classify",
+    response_model=list[EvalItemOut],
+    summary="AI 初始化投標評估（必附/選附分類 + 技術矩陣建立）",
+)
+async def classify_evaluation(
+    result_id: int,
+    db: Session = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """從已儲存的解析結果自動建立評估項目。
+
+    - doc_checklist：取 required_docs，以 AI 判斷必附/選附
+    - tech_matrix：取 tech_highlights，全部預設 capability=unknown
+    - 若評估已存在，清空重新建立
+    """
+    r = _result_or_404(db, result_id, current_user.id)
+
+    # 取出 required_docs 與 tech_highlights
+    sections: list[dict] = r.result_json or []
+    doc_items: list[dict] = []    # {"value": str, "cite": str|None}
+    tech_items: list[dict] = []
+    risk_items: list[dict] = []
+
+    for sec in sections:
+        for field in sec.get("fields", []):
+            key = field.get("key", "")
+            val = field.get("value")
+            cite = field.get("cite")
+            if key == "required_docs" and isinstance(val, list):
+                for item in val:
+                    if item:
+                        doc_items.append({"value": str(item), "cite": cite})
+            elif key == "tech_highlights" and isinstance(val, list):
+                for item in val:
+                    if item:
+                        tech_items.append({"value": str(item), "cite": cite})
+            elif key == "risk_items" and isinstance(val, list):
+                for item in val:
+                    if item:
+                        risk_items.append({"value": str(item), "cite": cite})
+
+    # 決定截止日預設值（投標截止日 -2 天）
+    deadline_str: str | None = None
+    for sec in sections:
+        for field in sec.get("fields", []):
+            if field.get("key") == "deadline" and field.get("value"):
+                deadline_str = str(field["value"])
+                break
+
+    # AI 分類必附/選附
+    mandatory_map: dict[str, bool] = {}
+    if doc_items:
+        mandatory_map = await _classify_mandatory(doc_items, db, current_user.tenant_id)
+
+    # 清除舊評估資料
+    db.query(DocParseEvaluation).filter(
+        DocParseEvaluation.result_id == result_id
+    ).delete()
+
+    new_rows: list[DocParseEvaluation] = []
+
+    for i, item in enumerate(doc_items):
+        val = item["value"]
+        new_rows.append(DocParseEvaluation(
+            result_id=result_id,
+            item_type="doc_checklist",
+            item_key=val,
+            cite=item["cite"],
+            sort_order=i,
+            mandatory=mandatory_map.get(val),
+            status="todo",
+        ))
+
+    for i, item in enumerate(tech_items):
+        new_rows.append(DocParseEvaluation(
+            result_id=result_id,
+            item_type="tech_matrix",
+            item_key=item["value"],
+            cite=item["cite"],
+            sort_order=i,
+            capability="unknown",
+        ))
+
+    for i, item in enumerate(risk_items):
+        new_rows.append(DocParseEvaluation(
+            result_id=result_id,
+            item_type="risk_matrix",
+            item_key=item["value"],
+            cite=item["cite"],
+            sort_order=i,
+        ))
+
+    for row in new_rows:
+        db.add(row)
+    db.commit()
+
+    rows = (
+        db.query(DocParseEvaluation)
+        .filter(DocParseEvaluation.result_id == result_id)
+        .order_by(DocParseEvaluation.item_type, DocParseEvaluation.sort_order)
+        .all()
+    )
+    return [_eval_row_to_out(r) for r in rows]
+
+
+async def _classify_mandatory(
+    doc_items: list[dict],
+    db: Session,
+    tenant_id: str | None,
+) -> dict[str, bool]:
+    """使用 LLM 一次性分類所有文件項目為必附(true)或選附(false)。"""
+    cfg = (
+        db.query(LLMProviderConfig)
+        .filter(
+            LLMProviderConfig.tenant_id == tenant_id,
+            LLMProviderConfig.is_active.is_(True),
+        )
+        .order_by(LLMProviderConfig.id)
+        .first()
+    )
+    if not cfg:
+        # 無 LLM 設定時全部標為必附
+        return {item["value"]: True for item in doc_items}
+
+    dm = (cfg.default_model or "").strip()
+    provider = cfg.provider
+    if provider == "gemini":
+        model = dm if dm.startswith("gemini/") else f"gemini/{dm}" if dm else "gemini/gemini-2.0-flash"
+    elif provider == "local":
+        model = dm if dm.startswith("local/") else f"local/{dm}" if dm else ""
+    elif provider == "twcc":
+        model = dm if dm.startswith("twcc/") else f"twcc/{dm}" if dm else ""
+    else:
+        model = dm or "gpt-4o-mini"
+
+    if not model:
+        return {item["value"]: True for item in doc_items}
+
+    # 組裝 prompt：一次送全部項目
+    items_text = "\n".join(
+        f'{i+1}. 文件：{item["value"]}\n   原文依據：{item["cite"] or "（無）"}'
+        for i, item in enumerate(doc_items)
+    )
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是政府採購標案文件分析助手。"
+                "請根據「原文依據」判斷每份文件是「必附」還是「選附」。\n"
+                "判斷依據：\n"
+                "- 必附：出現「應檢附」「須繳交」「必須」「強制」「應附」「應提供」等強制字眼\n"
+                "- 選附：出現「得免附」「視需要」「選擇性」「如有」「得提供」等選擇字眼\n"
+                "- 無法判斷時預設為「必附」\n\n"
+                "僅輸出 JSON array，每個元素為 {\"idx\": <編號>, \"mandatory\": true|false}，"
+                "禁止輸出任何其他說明文字。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"請分類以下文件項目：\n\n{items_text}",
+        },
+    ]
+
+    try:
+        answer, _, _ = await call_llm(
+            model=model,
+            messages=messages,
+            db=db,
+            tenant_id=tenant_id,
+            temperature=0.0,
+        )
+        parsed = _extract_json(answer)
+        result: dict[str, bool] = {}
+        if isinstance(parsed, list):
+            for entry in parsed:
+                idx = entry.get("idx", 0) - 1
+                if 0 <= idx < len(doc_items):
+                    result[doc_items[idx]["value"]] = bool(entry.get("mandatory", True))
+        return result
+    except Exception as exc:
+        logger.warning("mandatory 分類 LLM 失敗，全部預設必附: %s", exc)
+        return {item["value"]: True for item in doc_items}

@@ -52,7 +52,7 @@ function authHeader() {
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...authHeader(), ...(init?.headers ?? {}) },
+    headers: { 'Content-Type': 'application/json', ...authHeader(), ...(init?.headers ?? {}) } as HeadersInit,
   })
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { detail?: string }

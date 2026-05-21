@@ -64,7 +64,7 @@ import ConfirmModal from '@/components/ConfirmModal'
 import ErrorModal from '@/components/ErrorModal'
 import HelpModal from '@/components/HelpModal'
 import LLMModelSelect from '@/components/LLMModelSelect'
-import type { Agent, UserRole } from '@/types'
+import type { Agent, User } from '@/types'
 
 interface Props { agent: Agent }
 
@@ -92,16 +92,21 @@ function StatusBadge({ status }: { status: KmDocument['status'] }) {
 export default function AgentKbManagerUI({ agent }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const [userRole, setUserRole] = useState<UserRole>('member')
-  const canManage = userRole === 'admin' || userRole === 'super_admin' || userRole === 'manager'
+  const [currentUser, setCurrentUser] = useState<User | null>(null)
+  const userRole = currentUser?.role ?? 'member'
+  const isAdmin = userRole === 'admin' || userRole === 'super_admin'
+  const canManage = isAdmin || userRole === 'manager'
+
+  // 判斷目前使用者是否可修改指定 KB（只有 owner 或 admin 可寫）
+  const canModifyKb = (kb: KmKnowledgeBase) => isAdmin || kb.created_by === currentUser?.id
 
   useEffect(() => {
-    getMe().then((me) => setUserRole(me.role as UserRole)).catch(() => {})
+    getMe().then((me) => setCurrentUser(me)).catch(() => {})
   }, [])
 
   // ── 左欄：KB 列表 ─────────────────────────────────────────────────────────
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [midExpanded, setMidExpanded] = useState(false)
+  const [midExpanded, setMidExpanded] = useState(true)
   const [kbs, setKbs] = useState<KmKnowledgeBase[]>([])
   const [kbsLoading, setKbsLoading] = useState(true)
   const [selectedKbId, setSelectedKbId] = useState<number | null>(null)
@@ -125,7 +130,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
   const [settingsModel, setSettingsModel] = useState('')
   const [settingsPrompt, setSettingsPrompt] = useState('')
   const [settingsScope, setSettingsScope] = useState<KbScope>('personal')
-  const [settingsAnswerMode, setSettingsAnswerMode] = useState<'rag' | 'direct'>('rag')
   const [settingsSaving, setSettingsSaving] = useState(false)
 
   const loadKbs = useCallback(() => {
@@ -158,7 +162,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
     setSettingsModel('')
     setSettingsPrompt('')
     setSettingsScope('personal')
-    setSettingsAnswerMode('rag')
     setCreatingKbModal(true)
   }
 
@@ -192,7 +195,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
         const kb = await createKnowledgeBase({
           name: settingsName.trim(),
           model_name: settingsModel,
-          answer_mode: settingsAnswerMode,
           scope: settingsScope,
           system_prompt: settingsPrompt,
         })
@@ -207,7 +209,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
           model_name: settingsModel,
           system_prompt: settingsPrompt,
           scope: settingsScope,
-          answer_mode: settingsAnswerMode,
         })
         setKbs((prev) => prev.map((kb) => kb.id === updated.id ? updated : kb))
         setSettingsKb(null)
@@ -597,9 +598,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
       setStatsOffset(0)
       setStatsDays(30)
       setStatsView('top_queries')
-      // direct 模式知識庫自動鎖定 faq 文件類型
-      const kb = kbs.find((k) => k.id === selectedKbId)
-      if (kb?.answer_mode === 'direct') setUploadDocType('faq')
       // 嘗試復原舊 thread；沒有則建新的
       const savedThreadId = localStorage.getItem(threadStorageKey(selectedKbId))
       if (savedThreadId) {
@@ -802,9 +800,8 @@ export default function AgentKbManagerUI({ agent }: Props) {
 
   const selectedKb = kbs.find((kb) => kb.id === selectedKbId) ?? null
   const readyCount = docs.filter((d) => d.status === 'ready').length
-  // personal KB：後端只回傳建立者自己的，所以 member 看到的 personal KB 一定是自己的，可上傳
-  // company KB：只有 manager+ 才能上傳
-  const canUploadToSelectedKb = selectedKb != null && (selectedKb.scope === 'personal' || canManage)
+  // 只有 KB owner 或 admin 可以修改（上傳、刪除文件、設定等）
+  const canUploadToSelectedKb = selectedKb != null && canModifyKb(selectedKb)
 
   return (
     <div className="relative flex h-full flex-col p-4 text-[18px]">
@@ -994,11 +991,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
               <div>
                 <p className="mb-1 text-base font-semibold text-gray-700">文件類型</p>
                 <p className="mb-3 text-base text-gray-400">選擇適合類型可提升搜尋準確度</p>
-                {selectedKb?.answer_mode === 'direct' && (
-                  <p className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-base text-amber-700">
-                    精確直答模式只支援 FAQ 問答集類型
-                  </p>
-                )}
                 <div className="grid grid-cols-2 gap-3">
                   {([
                     { value: 'article',   emoji: '📄', label: '一般文章',   sub: '說明文件、公告' },
@@ -1007,13 +999,11 @@ export default function AgentKbManagerUI({ agent }: Props) {
                     { value: 'spec',      emoji: '🔧', label: '技術規格',   sub: '參數表、Datasheet' },
                     { value: 'policy',    emoji: '📋', label: '政策 / 條款', sub: '合約、規章' },
                     { value: 'reference', emoji: '📑', label: '參考資料',   sub: '菜單、價目表、術語表' },
-                  ] as const).map(({ value, emoji, label, sub }) => {
-                    const isDirectLocked = selectedKb?.answer_mode === 'direct' && value !== 'faq'
-                    return (
+                  ] as const).map(({ value, emoji, label, sub }) => (
                     <button key={value} type="button"
-                      disabled={uploading || isDirectLocked}
-                      onClick={() => !isDirectLocked && setUploadDocType(value)}
-                      className={`flex items-start gap-3 rounded-xl border-2 px-4 py-3 text-left transition-all ${isDirectLocked ? 'cursor-not-allowed opacity-30' : 'disabled:opacity-60'} ${uploadDocType === value ? 'border-sky-400 bg-sky-50 ring-2 ring-sky-200' : 'border-gray-200 bg-gray-50 hover:border-sky-200'}`}>
+                      disabled={uploading}
+                      onClick={() => setUploadDocType(value)}
+                      className={`flex items-start gap-3 rounded-xl border-2 px-4 py-3 text-left transition-all disabled:opacity-60 ${uploadDocType === value ? 'border-sky-400 bg-sky-50 ring-2 ring-sky-200' : 'border-gray-200 bg-gray-50 hover:border-sky-200'}`}>
                       <span className="mt-0.5 text-2xl leading-none">{emoji}</span>
                       <div>
                         <p className={`text-base font-medium ${uploadDocType === value ? 'text-sky-700' : 'text-gray-800'}`}>{label}</p>
@@ -1021,8 +1011,7 @@ export default function AgentKbManagerUI({ agent }: Props) {
                       </div>
                       {uploadDocType === value && <Check className="ml-auto mt-0.5 h-4 w-4 shrink-0 text-sky-500" />}
                     </button>
-                    )
-                  })}
+                  ))}
                 </div>
               </div>
               {uploading && (
@@ -1079,8 +1068,9 @@ export default function AgentKbManagerUI({ agent }: Props) {
                 <p className="mb-2 text-base text-gray-400">公司共用需 manager 以上權限才能設定</p>
                 <div className="flex gap-3">
                   {([
-                    { value: 'personal', label: '🔒 個人私有', sub: '只有建立者可見' },
-                    { value: 'company',  label: '🏢 公司共用', sub: '同公司全員可引用' },
+                    { value: 'personal', label: '🔒 個人私有',  sub: '只有建立者可見' },
+                    { value: 'company',  label: '🏢 公司共用',  sub: '同公司全員可引用' },
+                    { value: 'bot_only', label: '🤖 Bot 專用',  sub: '僅 Bot 可引用，員工不可見' },
                   ] as const).map(({ value, label, sub }) => (
                     <button key={value} type="button"
                       disabled={!canManage}
@@ -1091,27 +1081,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
                           : 'border-gray-200 bg-gray-50 hover:border-sky-200'
                       }`}>
                       <span className={`text-base font-medium ${settingsScope === value ? 'text-sky-700' : 'text-gray-800'}`}>{label}</span>
-                      <span className="text-base text-gray-400">{sub}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <label className="mb-1.5 block text-base font-medium text-gray-700">回答模式</label>
-                <p className="mb-2 text-base text-gray-400">FAQ 模式會直接回傳原文答案，不經 AI 改寫，建議搭配 Doc Refiner 整理的 Q&A 內容</p>
-                <div className="flex gap-3">
-                  {([
-                    { value: 'rag', label: '✨ AI 整合回答', sub: '整合多份文件，彈性回答' },
-                    { value: 'direct', label: '🎯 精確直答', sub: '直接回傳原文，100% 忠實' },
-                  ] as const).map(({ value, label, sub }) => (
-                    <button key={value} type="button"
-                      onClick={() => setSettingsAnswerMode(value)}
-                      className={`flex flex-1 flex-col items-start rounded-xl border-2 px-4 py-3 text-left transition-all ${
-                        settingsAnswerMode === value
-                          ? 'border-sky-400 bg-sky-50 ring-2 ring-sky-200'
-                          : 'border-gray-200 bg-gray-50 hover:border-sky-200'
-                      }`}>
-                      <span className={`text-base font-medium ${settingsAnswerMode === value ? 'text-sky-700' : 'text-gray-800'}`}>{label}</span>
                       <span className="text-base text-gray-400">{sub}</span>
                     </button>
                   ))}
@@ -1204,7 +1173,7 @@ export default function AgentKbManagerUI({ agent }: Props) {
                 {kbsLoading ? (
                   <div className="flex justify-center py-6"><Loader2 className="h-4 w-4 animate-spin text-white/50" /></div>
                 ) : (() => {
-                  const myKbs = kbs.filter((kb) => kb.scope === 'personal')
+                  const myKbs = kbs.filter((kb) => kb.scope === 'personal' || kb.scope === 'bot_only')
                   const companyKbs = kbs.filter((kb) => kb.scope === 'company')
 
                   const renderKbItem = (kb: KmKnowledgeBase) => (
@@ -1213,7 +1182,12 @@ export default function AgentKbManagerUI({ agent }: Props) {
                         className={`group flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-lg transition-colors ${selectedKbId === kb.id ? 'bg-sky-500/30 text-white' : 'text-white/75 hover:bg-white/10 hover:text-white'}`}>
                         <span className="min-w-0 flex-1 truncate font-medium">{kb.name}</span>
                         <span className={`shrink-0 text-lg ${selectedKbId === kb.id ? 'text-sky-200/80' : 'text-white/40'}`}>{kb.ready_count}/{kb.doc_count}</span>
-                        {kb.scope === 'company' && (
+                        {kb.scope === 'bot_only' && (
+                          <span className="shrink-0 rounded-full bg-violet-500/30 px-1.5 py-0.5 text-xs font-medium text-violet-200" title="Bot 專用">
+                            🤖
+                          </span>
+                        )}
+                        {(kb.scope === 'company' || kb.scope === 'bot_only') && (
                           <span
                             className={`shrink-0 rounded-full px-1.5 py-0.5 text-xs font-medium ${kb.bot_count > 0 ? 'bg-emerald-500/30 text-emerald-200' : 'bg-white/10 text-white/30'}`}
                             title={kb.bot_count > 0 ? `${kb.bot_count} 個 Bot 使用中` : '尚無 Bot 使用'}
@@ -1221,7 +1195,7 @@ export default function AgentKbManagerUI({ agent }: Props) {
                             {kb.bot_count}
                           </span>
                         )}
-                        {canManage && (
+                        {canModifyKb(kb) && (
                           <button type="button" onClick={(e) => { e.stopPropagation(); setKbMenuId(kbMenuId === kb.id ? null : kb.id) }}
                             className="shrink-0 rounded p-0.5 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/20">
                             <MoreHorizontal className="h-3.5 w-3.5" />
@@ -1230,7 +1204,7 @@ export default function AgentKbManagerUI({ agent }: Props) {
                       </button>
                       {kbMenuId === kb.id && (
                         <div className="absolute right-0 top-full z-20 mt-0.5 w-24 overflow-hidden rounded-lg border border-white/20 bg-[#1a3a52] shadow-xl">
-                          <button type="button" onClick={() => { setSettingsKb(kb); setSettingsName(kb.name); setSettingsModel(kb.model_name ?? ''); setSettingsPrompt(kb.system_prompt ?? ''); setSettingsScope(kb.scope ?? 'personal'); setSettingsAnswerMode(kb.answer_mode ?? 'rag'); setKbMenuId(null) }}
+                          <button type="button" onClick={() => { setSettingsKb(kb); setSettingsName(kb.name); setSettingsModel(kb.model_name ?? ''); setSettingsPrompt(kb.system_prompt ?? ''); setSettingsScope(kb.scope ?? 'personal'); setKbMenuId(null) }}
                             className="flex w-full items-center gap-2 px-3 py-2 text-left text-lg text-white/80 hover:bg-white/10 hover:text-white">
                             <Settings className="h-3 w-3" />設定
                           </button>
@@ -1391,6 +1365,19 @@ export default function AgentKbManagerUI({ agent }: Props) {
           {/* ── 文件管理內容 ── */}
           {centerTab === 'docs' && (
             <>
+              {/* Bot 引用警示 */}
+              {selectedKb && selectedKb.referenced_bots.length > 0 && (
+                <div className="shrink-0 flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2.5">
+                  <span className="mt-0.5 shrink-0 text-amber-500">⚠️</span>
+                  <p className="text-base text-amber-700">
+                    此知識庫已被以下 Bot 引用：
+                    <span className="font-medium">
+                      {selectedKb.referenced_bots.map((b) => b.name).join('、')}
+                    </span>
+                    ，修改將立即影響線上服務。
+                  </p>
+                </div>
+              )}
               <div className="min-h-0 flex-1 overflow-y-auto">
                 {!selectedKbId ? (
                   <div className="flex h-full items-center justify-center">
@@ -1446,6 +1433,18 @@ export default function AgentKbManagerUI({ agent }: Props) {
                             <p className="line-clamp-2 break-all text-base font-medium text-gray-700">{doc.filename}</p>
                             <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
                               <StatusBadge status={doc.status} />
+                              {doc.doc_type && (() => {
+                                const typeMap: Record<string, { label: string; color: string }> = {
+                                  article:   { label: '文章',   color: 'bg-blue-50 text-blue-600' },
+                                  faq:       { label: 'FAQ',    color: 'bg-emerald-50 text-emerald-600' },
+                                  chat:      { label: '對話',   color: 'bg-purple-50 text-purple-600' },
+                                  spec:      { label: '規格',   color: 'bg-orange-50 text-orange-600' },
+                                  policy:    { label: '政策',   color: 'bg-amber-50 text-amber-600' },
+                                  reference: { label: '參考',   color: 'bg-gray-100 text-gray-500' },
+                                }
+                                const t = typeMap[doc.doc_type] ?? { label: doc.doc_type, color: 'bg-gray-100 text-gray-500' }
+                                return <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${t.color}`}>{t.label}</span>
+                              })()}
                               {doc.chunk_count != null && doc.status === 'ready' && <span className="text-base text-gray-400">{doc.chunk_count} 段</span>}
                               {doc.size_bytes != null && <span className="text-base text-gray-300">{formatBytes(doc.size_bytes)}</span>}
                             </div>

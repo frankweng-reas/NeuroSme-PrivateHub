@@ -69,7 +69,6 @@ class BotKbResponse(BaseModel):
     knowledge_base_id: int
     name: str
     sort_order: int
-    answer_mode: str = "rag"
 
     model_config = {"from_attributes": True}
 
@@ -111,6 +110,7 @@ class BotResponse(BaseModel):
     contact_links: str | None
     access_mode: str
     knowledge_bases: list[BotKbResponse]
+    created_by: int | None
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -118,7 +118,7 @@ class BotResponse(BaseModel):
 
 def _to_response(bot: Bot, db: Session) -> BotResponse:
     kb_rows = (
-        db.query(BotKnowledgeBase, KmKnowledgeBase.name, KmKnowledgeBase.answer_mode)
+        db.query(BotKnowledgeBase, KmKnowledgeBase.name)
         .join(KmKnowledgeBase, BotKnowledgeBase.knowledge_base_id == KmKnowledgeBase.id)
         .filter(BotKnowledgeBase.bot_id == bot.id)
         .order_by(BotKnowledgeBase.sort_order)
@@ -129,7 +129,6 @@ def _to_response(bot: Bot, db: Session) -> BotResponse:
             knowledge_base_id=row.BotKnowledgeBase.knowledge_base_id,
             name=row.name,
             sort_order=row.BotKnowledgeBase.sort_order,
-            answer_mode=row.answer_mode or "rag",
         )
         for row in kb_rows
     ]
@@ -159,6 +158,7 @@ def _to_response(bot: Bot, db: Session) -> BotResponse:
         contact_links=bot.contact_links,
         access_mode=bot.access_mode or "public",
         knowledge_bases=kbs,
+        created_by=bot.created_by,
         created_at=bot.created_at.isoformat() if bot.created_at else "",
     )
 
@@ -169,6 +169,10 @@ def _can_manage(role: str) -> bool:
 
 def _is_admin(role: str) -> bool:
     return role in ("admin", "super_admin")
+
+
+def _is_bot_owner_or_admin(bot: Bot, current: User) -> bool:
+    return current.role in ("admin", "super_admin") or bot.created_by == current.id
 
 
 def _sync_kb_relations(bot_id: int, kb_items: list[BotKbItem], db: Session) -> None:
@@ -224,12 +228,11 @@ def list_bots(
     db: Session = Depends(get_db),
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):
-    bots = (
-        db.query(Bot)
-        .filter(Bot.tenant_id == current.tenant_id)
-        .order_by(Bot.created_at.asc())
-        .all()
-    )
+    q = db.query(Bot).filter(Bot.tenant_id == current.tenant_id)
+    # 非 admin 只能看到自己建立的 Bot
+    if not _is_admin(current.role):
+        q = q.filter(Bot.created_by == current.id)
+    bots = q.order_by(Bot.created_at.asc()).all()
     return [_to_response(b, db) for b in bots]
 
 
@@ -240,7 +243,7 @@ def get_bot(
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):
     bot = db.query(Bot).filter(Bot.id == bot_id, Bot.tenant_id == current.tenant_id).first()
-    if not bot:
+    if not bot or not _is_bot_owner_or_admin(bot, current):
         raise HTTPException(status_code=404, detail="Bot 不存在")
     return _to_response(bot, db)
 
@@ -253,7 +256,7 @@ def update_bot(
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):
     bot = db.query(Bot).filter(Bot.id == bot_id, Bot.tenant_id == current.tenant_id).first()
-    if not bot:
+    if not bot or not _is_bot_owner_or_admin(bot, current):
         raise HTTPException(status_code=404, detail="Bot 不存在")
 
     if body.name is not None:
@@ -315,7 +318,7 @@ def delete_bot(
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):
     bot = db.query(Bot).filter(Bot.id == bot_id, Bot.tenant_id == current.tenant_id).first()
-    if not bot:
+    if not bot or not _is_bot_owner_or_admin(bot, current):
         raise HTTPException(status_code=404, detail="Bot 不存在")
 
     db.delete(bot)
@@ -405,7 +408,7 @@ def get_bot_query_stats(
     from sqlalchemy import func as sqlfunc, text as sqtext
 
     bot = db.query(Bot).filter(Bot.id == bot_id, Bot.tenant_id == current.tenant_id).first()
-    if not bot:
+    if not bot or not _is_bot_owner_or_admin(bot, current):
         raise HTTPException(status_code=404, detail="Bot 不存在")
 
     from app.models.bot_query_log import BotQueryLog
@@ -507,7 +510,7 @@ class FaqReorderItem(BaseModel):
 
 def _get_bot_for_manage(bot_id: int, current: User, db: Session) -> Bot:
     bot = db.query(Bot).filter(Bot.id == bot_id, Bot.tenant_id == current.tenant_id).first()
-    if not bot:
+    if not bot or not _is_bot_owner_or_admin(bot, current):
         raise HTTPException(status_code=404, detail="Bot 不存在")
     return bot
 
