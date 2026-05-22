@@ -1,4 +1,5 @@
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -39,6 +40,9 @@ class Bot(Base):
 
     # 存取控制：public | authenticated
     access_mode = Column(String(20), nullable=False, default="public")
+
+    # 訊息平台整合（JSONB，統一存放 fb / line / custom 等設定）
+    messaging_integrations = Column(JSONB, nullable=False, server_default="{}")
 
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

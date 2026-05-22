@@ -52,6 +52,7 @@ import HelpModal from '@/components/HelpModal'
 import LLMModelSelect from '@/components/LLMModelSelect'
 import type { Agent, UserRole } from '@/types'
 import AgentKbBotApiKeys from './AgentKbBotApiKeys'
+import AgentKbBotMessaging from './AgentKbBotMessaging'
 
 // ── 嵌入碼產生器 ──────────────────────────────────────────────────────────────
 const makeEmbedCode = (origin: string, token: string, color: string) =>
@@ -98,7 +99,7 @@ const DEFAULT_BOT_SYSTEM_PROMPT =
 
 const threadStorageKey = (botId: number) => `kb-bot-thread-${botId}`
 
-type RightTab = 'chat' | 'history' | 'api' | 'settings' | 'deploy' | 'stats'
+type RightTab = 'chat' | 'history' | 'api' | 'settings' | 'deploy' | 'stats' | 'messaging'
 
 export default function AgentKbBotBuilderUI({ agent }: Props) {
   const [userRole, setUserRole] = useState<UserRole>('member')
@@ -705,6 +706,7 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
                 { key: 'history',  label: '訪客對話' },
                 { key: 'divider',  label: '' },
                 { key: 'api',      label: 'API 整合' },
+                { key: 'messaging', label: '訊息整合' },
               ] as const
             ).map(({ key, label }) => {
               if (key === 'divider' || key === 'divider2') {
@@ -886,6 +888,11 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
           {/* ── API 整合 ── */}
           {rightTab === 'api' && (
             <AgentKbBotApiKeys canManage={canManage} bots={bots} selectedBotId={selectedBotId} selectedBot={selectedBot} />
+          )}
+
+          {/* ── 訊息整合 ── */}
+          {rightTab === 'messaging' && (
+            <AgentKbBotMessaging canManage={canManage} selectedBot={selectedBot} />
           )}
 
           {/* ── Bot 設定 ── */}

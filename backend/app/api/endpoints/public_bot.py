@@ -6,11 +6,12 @@
 認證：X-API-Key header
 """
 import logging
-from datetime import date, timezone
+from datetime import date, datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.api_key_auth import get_api_key
@@ -18,6 +19,7 @@ from app.core.database import get_db
 from app.core.limiter import limiter
 from app.models.api_key import ApiKey, ApiKeyUsage
 from app.models.bot import Bot, BotKnowledgeBase
+from app.models.bot_external_user import BotExternalUser
 from app.services.agent_usage import log_agent_usage
 from app.services.bot_content_service import BotContentData, build_bot_content
 from app.services.bot_rag_service import apply_bot_fallback, prepare_bot_rag_messages, rag_hit
@@ -53,6 +55,21 @@ class BotQueryRequest(BaseModel):
     model: str = Field(
         default="",
         description="覆寫模型名稱。留空時使用 Bot 設定的模型。",
+    )
+    external_user_id: str | None = Field(
+        None,
+        max_length=200,
+        description="外部平台的使用者 ID（如 FB PSID、LINE UID）。選填，用於追蹤使用者對話記錄。",
+    )
+    external_platform: str | None = Field(
+        None,
+        max_length=30,
+        description="來源平台，例如 fb / line / custom。與 external_user_id 同時提供才會記錄。",
+    )
+    external_display_name: str | None = Field(
+        None,
+        max_length=200,
+        description="使用者顯示名稱（如 FB 的 first_name + last_name）。選填。",
     )
 
 
@@ -132,6 +149,59 @@ def _record_usage(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# External user upsert helper
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _upsert_external_user(
+    db: Session,
+    *,
+    tenant_id: str,
+    bot_id: int,
+    external_platform: str,
+    external_user_id: str,
+    display_name: str | None,
+) -> "BotExternalUser":
+    """外部使用者 upsert：已存在則更新 display_name / last_seen_at，否則新建。
+
+    使用「先查再寫」策略；DB 的 UNIQUE constraint 保護並發時的重複寫入。
+    """
+    now = datetime.now(timezone.utc)
+    user = db.query(BotExternalUser).filter_by(
+        bot_id=bot_id,
+        external_platform=external_platform,
+        external_user_id=external_user_id,
+    ).first()
+
+    if user:
+        if display_name is not None:
+            user.display_name = display_name
+        user.last_seen_at = now
+    else:
+        user = BotExternalUser(
+            tenant_id=tenant_id,
+            bot_id=bot_id,
+            external_platform=external_platform,
+            external_user_id=external_user_id,
+            display_name=display_name,
+            first_seen_at=now,
+            last_seen_at=now,
+        )
+        db.add(user)
+        try:
+            db.flush()
+        except IntegrityError:
+            # 並發時另一個 request 已先寫入，rollback 後重新查詢
+            db.rollback()
+            user = db.query(BotExternalUser).filter_by(
+                bot_id=bot_id,
+                external_platform=external_platform,
+                external_user_id=external_user_id,
+            ).first()
+    return user
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Routes
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -179,6 +249,22 @@ async def bot_query(
     tenant_id = api_key.tenant_id
     resolved_bot_id = _resolve_bot_id(api_key, body.bot_id)
     bot = _get_tenant_bot(db, tenant_id, resolved_bot_id)
+
+    # 外部使用者 upsert（選填，靜默失敗不影響主流程）
+    _external_user_fk = None
+    if body.external_user_id and body.external_platform:
+        try:
+            ext_user = _upsert_external_user(
+                db,
+                tenant_id=tenant_id,
+                bot_id=bot.id,
+                external_platform=body.external_platform,
+                external_user_id=body.external_user_id,
+                display_name=body.external_display_name,
+            )
+            _external_user_fk = ext_user.id if ext_user else None
+        except Exception as e:
+            logger.warning("external user upsert 失敗（不影響主流程）: %s", e)
 
     # 取得 Bot 關聯的 KB ID 列表
     kb_links = (
@@ -231,6 +317,13 @@ async def bot_query(
             faq_answer = apply_bot_fallback("\n\n---\n\n".join(parts), bot)
         _hit = bool(selected)
         logger.info("public bot_query (faq-direct): hit=%s (bot_id=%s)", _hit, bot.id)
+        from app.services.km_service import log_bot_query
+        log_bot_query(
+            db, tenant_id=tenant_id, bot_id=bot.id, session_id=None,
+            query=body.question, hit=_hit,
+            api_key_id=api_key.id, external_user_fk=_external_user_fk,
+        )
+        db.commit()
         return BotQueryResponse(answer=faq_answer, sources=sources, usage=None, hit=_hit)
 
     # 決定模型（Bot 設定 > request body > 報錯）
@@ -280,13 +373,20 @@ async def bot_query(
         latency_ms=latency_ms,
         status=llm_status,
     )
-    db.commit()
 
     _hit = rag_hit(answer, bot_ctx.context_chunk_ids)
     logger.info(
         "public bot_query: hit=%s, chunks=%d (bot_id=%s)",
         _hit, len(bot_ctx.context_chunk_ids), bot.id,
     )
+    from app.services.km_service import log_bot_query
+    log_bot_query(
+        db, tenant_id=tenant_id, bot_id=bot.id, session_id=None,
+        query=body.question, hit=_hit,
+        api_key_id=api_key.id, external_user_fk=_external_user_fk,
+    )
+    db.commit()
+
     clean_answer = apply_bot_fallback(answer, bot)
 
     return BotQueryResponse(

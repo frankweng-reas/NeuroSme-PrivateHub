@@ -62,6 +62,8 @@ services:
       # 若客戶從其他網域嵌入 API，請將該網域加入此清單
       # 例："http://localhost", "http://localhost:80", "https://erp.acme.com"
       EXPOSE_COMPUTE_ERROR_DETAIL: "false"
+      # 若 Webhook URL 顯示不正確，請填入客戶的對外網址（含 https://，不加結尾斜線）
+      # SERVER_BASE_URL: "https://your-domain.com"
     volumes:
       - ${HOME}/neurosme-data/stored_files:/app/data/stored_files
       - ${HOME}/neurosme-data/duckdb:/app/data/duckdb

@@ -195,6 +195,32 @@ export async function reorderBotFaqs(botId: number, items: { id: number; sort_or
   })
 }
 
+// ── FB Messenger 整合 ──────────────────────────────────────────────────────────
+
+export interface FbIntegration {
+  enabled: boolean
+  webhook_url: string
+  verify_token: string
+  page_access_token_masked?: string | null
+  connected_at?: string | null
+}
+
+export async function getFbIntegration(botId: number): Promise<FbIntegration> {
+  return apiFetch<FbIntegration>(`/bots/${botId}/messaging/fb`)
+}
+
+export async function saveFbIntegration(botId: number, pageAccessToken: string): Promise<FbIntegration> {
+  return apiFetch<FbIntegration>(`/bots/${botId}/messaging/fb`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ page_access_token: pageAccessToken }),
+  })
+}
+
+export async function deleteFbIntegration(botId: number): Promise<void> {
+  return apiFetch<void>(`/bots/${botId}/messaging/fb`, { method: 'DELETE' })
+}
+
 // ── Bot Query Stats ────────────────────────────────────────────────────────────
 
 export async function getBotQueryStats(

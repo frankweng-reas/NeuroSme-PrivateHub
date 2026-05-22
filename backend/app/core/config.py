@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
 
+    # 對外公開的 base URL，用於產生 Webhook URL 等對外連結
+    # 不設定時從 request.base_url 自動取得（需 Nginx 傳遞 X-Forwarded-* headers）
+    # 範例：https://demo.ee.neurosme.ai
+    SERVER_BASE_URL: str = ""
+
     # Database
     DATABASE_URL: str = "postgresql://user:password@localhost:5432/neurosme"
 

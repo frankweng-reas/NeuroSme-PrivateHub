@@ -1,4 +1,5 @@
 from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -30,7 +31,13 @@ class BotWidgetMessage(Base):
     session_id = Column(
         String(64),
         ForeignKey("bot_widget_sessions.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,   # Widget 訊息有值；外部平台訊息為 NULL
+        index=True,
+    )
+    external_user_fk = Column(
+        UUID(as_uuid=True),
+        ForeignKey("bot_external_users.id", ondelete="CASCADE"),
+        nullable=True,   # 外部平台訊息有值；Widget 訊息為 NULL
         index=True,
     )
     role = Column(String(20), nullable=False, comment="user | assistant")

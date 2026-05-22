@@ -30,6 +30,7 @@ from app.models.bot import Bot, BotKnowledgeBase
 from app.models.bot_widget_session import BotWidgetSession, BotWidgetMessage
 from app.models.km_query_log import KmQueryLog
 from app.models.bot_query_log import BotQueryLog
+from app.models.bot_external_user import BotExternalUser
 from app.models.km_connector import KmConnector
 from app.models.doc_parse_profile import DocParseProfile
 from app.models.doc_parse_result import DocParseResult
@@ -48,6 +49,7 @@ __all__ = [
     "BotWidgetSession", "BotWidgetMessage",
     "KmQueryLog",
     "BotQueryLog",
+    "BotExternalUser",
     "KmConnector",
     "DocParseProfile",
     "DocParseResult",

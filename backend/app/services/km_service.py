@@ -1144,8 +1144,13 @@ def log_bot_query(
     session_id: str | None,
     query: str,
     hit: bool,
+    api_key_id: int | None = None,
+    external_user_fk=None,
 ) -> None:
-    """記錄一次 Bot Widget 查詢結果，供零命中統計與 Bot 品質分析使用。
+    """記錄一次 Bot 查詢結果，供零命中統計與 Bot 品質分析使用。
+
+    Widget 呼叫：傳入 session_id，api_key_id / external_user_fk 留 None。
+    Public API 呼叫：傳入 api_key_id；若有外部使用者資訊則同時傳入 external_user_fk。
 
     此函式設計為「靜默失敗」—— 任何例外都只 warning log，不影響主流程。
     """
@@ -1155,6 +1160,8 @@ def log_bot_query(
             tenant_id=tenant_id,
             bot_id=bot_id,
             session_id=session_id or None,
+            api_key_id=api_key_id,
+            external_user_fk=external_user_fk,
             query=query,
             hit=hit,
         )

@@ -1,13 +1,17 @@
 """Bot API：Knowledge Bot Agent 的 Bot CRUD + token 管理"""
 import logging
+import secrets
 import uuid
+from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.database import get_db
+from app.core.encryption import decrypt_api_key, encrypt_api_key, mask_api_key
 from app.core.security import get_current_user
 from app.models.bot import Bot, BotFaq, BotKnowledgeBase
 from app.models.km_knowledge_base import KmKnowledgeBase
@@ -607,4 +611,139 @@ def reorder_faqs(
         db.query(BotFaq).filter(BotFaq.id == item.id, BotFaq.bot_id == bot_id).update(
             {"sort_order": item.sort_order}
         )
+    db.commit()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# FB Messenger 整合
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class FbIntegrationSaveRequest(BaseModel):
+    page_access_token: str = Field(..., min_length=10, description="FB 粉專 Page Access Token")
+
+
+class FbIntegrationResponse(BaseModel):
+    enabled: bool
+    webhook_url: str
+    verify_token: str
+    page_access_token_masked: str | None = None
+    connected_at: str | None = None
+
+
+@router.put(
+    "/{bot_id}/messaging/fb",
+    response_model=FbIntegrationResponse,
+    summary="儲存 FB Messenger 整合設定",
+)
+def save_fb_integration(
+    bot_id: int,
+    body: FbIntegrationSaveRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """儲存（或更新）FB Messenger 整合：加密存放 page_access_token，產生 verify_token。"""
+    bot = _get_bot_for_manage(bot_id, current, db)
+
+    if not bot.public_token:
+        raise HTTPException(status_code=400, detail="此 Bot 尚未開通 Widget Token，請先產生 public token")
+
+    integrations: dict = dict(bot.messaging_integrations or {})
+    existing_fb = integrations.get("fb", {})
+
+    # 保留既有 verify_token，首次設定才產生新的
+    verify_token = existing_fb.get("verify_token") or f"nsm_{secrets.token_urlsafe(16)}"
+
+    integrations["fb"] = {
+        "enabled": True,
+        "page_access_token": encrypt_api_key(body.page_access_token),
+        "verify_token": verify_token,
+        "connected_at": datetime.now(timezone.utc).isoformat(),
+    }
+    bot.messaging_integrations = integrations
+    db.commit()
+
+    base_url = (settings.SERVER_BASE_URL or str(request.base_url)).rstrip("/")
+    webhook_url = f"{base_url}/api/v1/webhook/fb/{bot.public_token}"
+
+    return FbIntegrationResponse(
+        enabled=True,
+        webhook_url=webhook_url,
+        verify_token=verify_token,
+        page_access_token_masked=mask_api_key(body.page_access_token),
+        connected_at=integrations["fb"]["connected_at"],
+    )
+
+
+@router.get(
+    "/{bot_id}/messaging/fb",
+    response_model=FbIntegrationResponse,
+    summary="取得 FB Messenger 整合狀態",
+)
+def get_fb_integration(
+    bot_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """取得 FB 整合設定（token 僅回傳遮罩版本）。
+
+    無論是否已設定 PAGE_ACCESS_TOKEN，都會立即回傳 webhook_url 與 verify_token，
+    讓客戶可以先把這兩個值填回 FB Developer Console。
+    """
+    bot = _get_bot_for_manage(bot_id, current, db)
+    integrations: dict = dict(bot.messaging_integrations or {})
+    fb: dict = dict(integrations.get("fb", {}))
+
+    base_url = (settings.SERVER_BASE_URL or str(request.base_url)).rstrip("/")
+    webhook_url = f"{base_url}/api/v1/webhook/fb/{bot.public_token}" if bot.public_token else ""
+
+    # 首次查詢：自動產生並儲存 verify_token（不需要等 PAGE_ACCESS_TOKEN）
+    if bot.public_token and not fb.get("verify_token"):
+        fb["verify_token"] = f"nsm_{secrets.token_urlsafe(16)}"
+        fb.setdefault("enabled", False)
+        integrations["fb"] = fb
+        bot.messaging_integrations = integrations
+        db.commit()
+
+    verify_token = fb.get("verify_token", "")
+
+    if not fb.get("enabled"):
+        return FbIntegrationResponse(
+            enabled=False,
+            webhook_url=webhook_url,
+            verify_token=verify_token,
+        )
+
+    try:
+        plain_token = decrypt_api_key(fb["page_access_token"])
+        masked = mask_api_key(plain_token)
+    except Exception:
+        masked = "（解密失敗）"
+
+    return FbIntegrationResponse(
+        enabled=True,
+        webhook_url=webhook_url,
+        verify_token=verify_token,
+        page_access_token_masked=masked,
+        connected_at=fb.get("connected_at"),
+    )
+
+
+@router.delete(
+    "/{bot_id}/messaging/fb",
+    status_code=204,
+    summary="移除 FB Messenger 整合",
+)
+def delete_fb_integration(
+    bot_id: int,
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """移除 FB 整合設定（清空 fb key）。"""
+    bot = _get_bot_for_manage(bot_id, current, db)
+    integrations: dict = dict(bot.messaging_integrations or {})
+    integrations.pop("fb", None)
+    bot.messaging_integrations = integrations
     db.commit()
