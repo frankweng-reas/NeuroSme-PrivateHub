@@ -10,10 +10,12 @@ class LLMProviderConfig(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     tenant_id = Column(String(100), ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
-    provider = Column(String(50), nullable=False, index=True)      # openai | gemini | twcc
+    provider = Column(String(50), nullable=False, index=True)      # openai | gemini | vertex | twcc
     label = Column(String(255), nullable=True)                     # 顯示名稱，例：OpenAI（公司帳號）
-    api_key_encrypted = Column(Text, nullable=True)                # Fernet 加密後的 API Key
+    api_key_encrypted = Column(Text, nullable=True)                # Fernet 加密後的 API Key（Vertex AI 時存 Service Account JSON）
     api_base_url = Column(Text, nullable=True)                     # 台智雲等需要自訂 base URL
+    gcp_project_id = Column(String(255), nullable=True)            # Vertex AI：GCP Project ID
+    gcp_region = Column(String(100), nullable=True)                # Vertex AI：GCP Region，例：us-central1
     default_model = Column(String(255), nullable=True)             # 預設模型，例：gpt-4o-mini
     available_models = Column(JSONB, nullable=True)                # 可選模型清單（JSON array of strings）
     is_active = Column(Boolean, nullable=False, server_default="true", index=True)

@@ -1,6 +1,6 @@
 /** Admin：知識庫管理 — 列出所有 KB、修改 scope、刪除 */
-import { useCallback, useEffect, useState } from 'react'
-import { BookOpen, Pencil, Trash2, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { BookOpen, Pencil, Search, Trash2, X } from 'lucide-react'
 import { ApiError } from '@/api/client'
 import {
   adminListKnowledgeBases,
@@ -36,7 +36,31 @@ export default function AdminKbManagement() {
   const [editError, setEditError] = useState('')
   const [editLoading, setEditLoading] = useState(false)
 
+  // ── Filters ──
+  const [filterScope, setFilterScope] = useState<KbScope | ''>('')
+  const [filterUser, setFilterUser] = useState('')
+  const [filterName, setFilterName] = useState('')
+
   const { showToast } = useToast()
+
+  // 從 kbs 中抽取不重複的建立者清單
+  const userOptions = useMemo(() => {
+    const names = kbs.map((k) => k.created_by_name).filter(Boolean) as string[]
+    return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b, 'zh-TW'))
+  }, [kbs])
+
+  // 套用 filter
+  const filteredKbs = useMemo(() => {
+    return kbs.filter((kb) => {
+      if (filterScope && kb.scope !== filterScope) return false
+      if (filterUser && kb.created_by_name !== filterUser) return false
+      if (filterName.trim()) {
+        const q = filterName.trim().toLowerCase()
+        if (!kb.name.toLowerCase().includes(q)) return false
+      }
+      return true
+    })
+  }, [kbs, filterScope, filterUser, filterName])
 
   const loadKbs = useCallback(() => {
     setLoading(true)
@@ -111,6 +135,68 @@ export default function AdminKbManagement() {
         以下列出本租戶所有知識庫，管理員可修改名稱、範圍或刪除任意知識庫。
       </p>
 
+      {/* Filters */}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        {/* 名稱搜尋 */}
+        <div className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 focus-within:border-gray-400 focus-within:ring-1 focus-within:ring-gray-400">
+          <Search className="h-4 w-4 shrink-0 text-gray-400" />
+          <input
+            type="text"
+            value={filterName}
+            onChange={(e) => setFilterName(e.target.value)}
+            placeholder="搜尋名稱…"
+            className="w-40 bg-transparent text-sm text-gray-700 outline-none placeholder:text-gray-400"
+          />
+          {filterName && (
+            <button type="button" onClick={() => setFilterName('')}>
+              <X className="h-3.5 w-3.5 text-gray-400 hover:text-gray-600" />
+            </button>
+          )}
+        </div>
+
+        {/* 範圍篩選 */}
+        <select
+          value={filterScope}
+          onChange={(e) => setFilterScope(e.target.value as KbScope | '')}
+          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-1 focus:ring-gray-400"
+        >
+          <option value="">全部範圍</option>
+          <option value="company">公司共用</option>
+          <option value="personal">個人</option>
+          <option value="bot_only">Bot 專用</option>
+        </select>
+
+        {/* 建立者篩選 */}
+        <select
+          value={filterUser}
+          onChange={(e) => setFilterUser(e.target.value)}
+          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-1 focus:ring-gray-400"
+        >
+          <option value="">全部建立者</option>
+          {userOptions.map((u) => (
+            <option key={u} value={u}>{u}</option>
+          ))}
+        </select>
+
+        {/* 結果數量 */}
+        {(filterScope || filterUser || filterName) && (
+          <span className="text-sm text-gray-400">
+            共 {filteredKbs.length} 筆
+          </span>
+        )}
+
+        {/* 清除 filter */}
+        {(filterScope || filterUser || filterName) && (
+          <button
+            type="button"
+            onClick={() => { setFilterScope(''); setFilterUser(''); setFilterName('') }}
+            className="rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-500 hover:bg-gray-50"
+          >
+            清除篩選
+          </button>
+        )}
+      </div>
+
       {/* Table */}
       {loading ? (
         <div className="flex flex-1 items-center justify-center">
@@ -123,7 +209,7 @@ export default function AdminKbManagement() {
           <p className="text-base text-gray-500">尚無知識庫</p>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-gray-200 shadow-sm">
+        <div className="overflow-auto rounded-lg border border-gray-200 shadow-sm">
           <table className="w-full text-base">
             <thead className="bg-gray-50">
               <tr>
@@ -137,7 +223,13 @@ export default function AdminKbManagement() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 bg-white">
-              {kbs.map((kb) => (
+              {filteredKbs.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-4 py-10 text-center text-sm text-gray-400">
+                    無符合條件的知識庫
+                  </td>
+                </tr>
+              ) : filteredKbs.map((kb) => (
                 <tr key={kb.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium text-gray-800">{kb.name}</td>
                   <td className="px-4 py-3">
@@ -186,6 +278,7 @@ export default function AdminKbManagement() {
                 </tr>
               ))}
             </tbody>
+
           </table>
         </div>
       )}

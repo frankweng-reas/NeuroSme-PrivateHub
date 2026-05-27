@@ -54,6 +54,11 @@ PROVIDER_DEFAULT_MODELS: dict[str, list[str]] = {
         "anthropic/claude-sonnet-4-5",
         "anthropic/claude-3-5-haiku-20241022",
     ],
+    "vertex": [
+        "vertex_ai/gemini-2.5-flash",
+        "vertex_ai/gemini-2.5-pro",
+        "vertex_ai/claude-3-5-sonnet@20241022",
+    ],
     "twcc": ["twcc/Llama3.3-FFM-70B-32K"],
     "local": [
         "local/gemma4:26b",
@@ -218,6 +223,8 @@ def _to_response(cfg: LLMProviderConfig) -> LLMProviderConfigResponse:
         label=cfg.label,
         api_key_masked=masked,
         api_base_url=cfg.api_base_url,
+        gcp_project_id=cfg.gcp_project_id,
+        gcp_region=cfg.gcp_region,
         default_model=cfg.default_model,
         available_models=_parse_available_models(cfg.available_models),
         is_active=cfg.is_active,
@@ -331,6 +338,8 @@ def create_llm_config(
         label=body.label,
         api_key_encrypted=encrypt_api_key(body.api_key) if body.api_key else None,
         api_base_url=body.api_base_url,
+        gcp_project_id=body.gcp_project_id,
+        gcp_region=body.gcp_region,
         default_model=body.default_model,
         available_models=[e.model_dump() for e in body.available_models] if body.available_models else None,
         is_active=body.is_active,
@@ -358,6 +367,10 @@ def update_llm_config(
         cfg.api_key_encrypted = encrypt_api_key(body.api_key)
     if body.api_base_url is not None:
         cfg.api_base_url = body.api_base_url
+    if body.gcp_project_id is not None:
+        cfg.gcp_project_id = body.gcp_project_id
+    if body.gcp_region is not None:
+        cfg.gcp_region = body.gcp_region
     if body.available_models is not None:
         old_models: set[str] = {
             str(item.get("model", "")) if isinstance(item, dict) else str(item)

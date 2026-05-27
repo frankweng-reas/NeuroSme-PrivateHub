@@ -5,7 +5,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
-VALID_PROVIDERS = {"openai", "gemini", "twcc", "local", "anthropic"}
+VALID_PROVIDERS = {"openai", "gemini", "vertex", "twcc", "local", "anthropic"}
 
 
 class LLMModelEntry(BaseModel):
@@ -23,10 +23,12 @@ class LLMModelOption(BaseModel):
 
 
 class LLMProviderConfigCreate(BaseModel):
-    provider: str = Field(..., description="LLM provider：openai | gemini | twcc")
+    provider: str = Field(..., description="LLM provider：openai | gemini | vertex | twcc | local | anthropic")
     label: Optional[str] = Field(None, description="顯示名稱，例：OpenAI（公司帳號）")
-    api_key: Optional[str] = Field(None, description="API Key 明文（儲存時將加密）")
+    api_key: Optional[str] = Field(None, description="API Key 明文（儲存時將加密）；Vertex AI 時傳 Service Account JSON")
     api_base_url: Optional[str] = Field(None, description="自訂 base URL，台智雲必填")
+    gcp_project_id: Optional[str] = Field(None, description="Vertex AI：GCP Project ID")
+    gcp_region: Optional[str] = Field(None, description="Vertex AI：GCP Region，例：us-central1")
     default_model: Optional[str] = Field(None, description="預設模型字串")
     available_models: Optional[List[LLMModelEntry]] = Field(None, description="可供使用者選擇的模型清單")
     is_active: bool = Field(True, description="是否啟用")
@@ -36,6 +38,8 @@ class LLMProviderConfigUpdate(BaseModel):
     label: Optional[str] = None
     api_key: Optional[str] = Field(None, description="新 API Key 明文；傳 null 表示不更新")
     api_base_url: Optional[str] = None
+    gcp_project_id: Optional[str] = None
+    gcp_region: Optional[str] = None
     available_models: Optional[List[LLMModelEntry]] = None
     is_active: Optional[bool] = None
 
@@ -47,6 +51,8 @@ class LLMProviderConfigResponse(BaseModel):
     label: Optional[str]
     api_key_masked: Optional[str] = Field(None, description="遮蔽後的 API Key，例：sk-a****bcde")
     api_base_url: Optional[str]
+    gcp_project_id: Optional[str]
+    gcp_region: Optional[str]
     default_model: Optional[str]
     available_models: Optional[List[LLMModelEntry]]
     is_active: bool

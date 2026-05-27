@@ -69,6 +69,8 @@ export interface LLMProviderConfigCreate {
   label?: string | null
   api_key?: string | null
   api_base_url?: string | null
+  gcp_project_id?: string | null
+  gcp_region?: string | null
   available_models?: LLMModelEntry[] | null
   is_active?: boolean
 }
@@ -77,6 +79,8 @@ export interface LLMProviderConfigUpdate {
   label?: string | null
   api_key?: string | null
   api_base_url?: string | null
+  gcp_project_id?: string | null
+  gcp_region?: string | null
   available_models?: LLMModelEntry[] | null
   is_active?: boolean | null
 }

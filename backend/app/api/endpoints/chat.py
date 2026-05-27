@@ -1,4 +1,5 @@
 """Chat API：POST /chat/completions（LiteLLM 統一支援 OpenAI / Gemini / 台智雲）"""
+import asyncio
 import json
 import logging
 import os
@@ -16,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.api.endpoints.source_files import _check_agent_access
 from app.core.config import settings
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
 from app.core.security import get_current_user
 from app.models.user import User
 from app.services.chat_service import (
@@ -382,6 +383,27 @@ def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> Ch
     )
 
 
+async def _prepare_chat_completion_async(
+    req: ChatRequest,
+    current: User,
+) -> ChatCompletionPrepared:
+    """在 thread pool 執行同步 prepare（RAG/embedding），避免阻塞 event loop。"""
+
+    def _run() -> ChatCompletionPrepared:
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == current.id).first()
+            if not user:
+                raise HTTPException(status_code=401, detail="使用者不存在")
+            prepared = _prepare_chat_completion(req, db, user)
+            db.commit()
+            return prepared
+        finally:
+            db.close()
+
+    return await asyncio.to_thread(_run)
+
+
 def _sse_line(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
@@ -448,7 +470,7 @@ async def chat_completions(
 ):
     logger.info(f"chat_completions: model={req.model!r}, content_len={len(req.content) if req.content else 0}")
     try:
-        prepared = _prepare_chat_completion(req, db, current)
+        prepared = await _prepare_chat_completion_async(req, current)
 
         # direct 模式：LLM 選取 FAQ → 原文回傳
         if prepared.faq_candidates is not None:
@@ -732,7 +754,7 @@ async def chat_completions_stream(
         len(req.content) if req.content else 0,
     )
     try:
-        prepared = _prepare_chat_completion(req, db, current)
+        prepared = await _prepare_chat_completion_async(req, current)
     except HTTPException:
         raise
 

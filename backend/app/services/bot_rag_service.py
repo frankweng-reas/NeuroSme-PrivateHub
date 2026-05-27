@@ -92,12 +92,16 @@ def prepare_bot_rag_messages(
     # ── 2a. 精準 FAQ 檢索（bot.answer_mode == "direct"）──────────────────────
     faq_candidates: list = []   # list[tuple[_DetachedChunk, float]]
     if is_direct and all_kb_ids:
+        from app.services.km_service import EmbeddingError
+
         for kb_id in all_kb_ids:
             try:
                 results = km_faq_retrieve_sync(
                     question, db, tenant_id, user_id, knowledge_base_id=kb_id, top_k=3,
                 )
                 faq_candidates.extend(results)
+            except EmbeddingError:
+                raise
             except Exception as exc:
                 logger.warning("Bot FAQ 檢索失敗 (kb_id=%s): %s", kb_id, exc)
         # 依 RRF 分數降序，取 top 3
@@ -109,19 +113,16 @@ def prepare_bot_rag_messages(
     # ── 2b. 一般 RAG 檢索（bot.answer_mode == "rag"）──────────────────────────
     all_chunks: list = []
     if not is_direct and all_kb_ids:
-        try:
-            chunks = km_retrieve_sync(
-                question,
-                db,
-                tenant_id,
-                user_id=user_id,
-                knowledge_base_ids=all_kb_ids,
-                skip_scope_check=skip_scope_check,
-                agent_id=agent_id,
-            )
-            all_chunks = chunks or []
-        except Exception as exc:
-            logger.warning("Bot RAG 檢索失敗，略過參考資料 (bot_id=%s): %s", bot.id, exc)
+        chunks = km_retrieve_sync(
+            question,
+            db,
+            tenant_id,
+            user_id=user_id,
+            knowledge_base_ids=all_kb_ids,
+            skip_scope_check=skip_scope_check,
+            agent_id=agent_id,
+        )
+        all_chunks = chunks or []
     all_chunks.sort(key=lambda c: getattr(c, "score", 0), reverse=True)
     all_chunks = all_chunks[:12]
 

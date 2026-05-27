@@ -39,10 +39,11 @@ import { listKnowledgeBases, type KmKnowledgeBase } from '@/api/km'
 import { getMe } from '@/api/users'
 import { appendChatMessage, createChatThread, listChatMessages } from '@/api/chatThreads'
 import {
-  listBotWidgetSessions,
-  getBotWidgetSessionMessages,
-  type WidgetSessionItem,
-  type WidgetSessionDetail,
+  listBotConversations,
+  getConversationDetail,
+  type ConversationChannel,
+  type ConversationThreadDetail,
+  type ConversationThreadItem,
 } from '@/api/widget_admin'
 import AgentChat, { type Message, type ResponseMeta } from '@/components/AgentChat'
 import AgentHeader from '@/components/AgentHeader'
@@ -168,11 +169,21 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
   const [faqAddOpen, setFaqAddOpen] = useState<Record<BotFaqType, boolean>>({ popular: false, common: false })
 
   // ── 訪客對話 ──────────────────────────────────────────────────────────────
-  const [wSessions, setWSessions] = useState<WidgetSessionItem[]>([])
-  const [wSessionsLoading, setWSessionsLoading] = useState(false)
-  const [wDetail, setWDetail] = useState<WidgetSessionDetail | null>(null)
+  const [wChannelFilter, setWChannelFilter] = useState<ConversationChannel>('all')
+  const [wThreads, setWThreads] = useState<ConversationThreadItem[]>([])
+  const [wThreadsLoading, setWThreadsLoading] = useState(false)
+  const [wDetail, setWDetail] = useState<ConversationThreadDetail | null>(null)
   const [wDetailLoading, setWDetailLoading] = useState(false)
   const [wCopied, setWCopied] = useState(false)
+
+  const loadVisitorConversations = useCallback((botId: number, channel: ConversationChannel) => {
+    setWThreadsLoading(true)
+    setWDetail(null)
+    listBotConversations(botId, channel)
+      .then(setWThreads)
+      .catch(() => setWThreads([]))
+      .finally(() => setWThreadsLoading(false))
+  }, [])
 
   // ── 部署 tab：嵌入碼複製狀態 ─────────────────────────────────────────────
   const [deployCopied, setDeployCopied] = useState<'url' | 'embed' | 'iframe' | null>(null)
@@ -262,7 +273,7 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
     setFaqNewA({ popular: '', common: '' })
     setMessages([])
     setWDetail(null)
-    setWSessions([])
+    setWThreads([])
     setStatsData(null)
     setStatsOffset(0)
 
@@ -296,16 +307,11 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
     }
   }, [selectedBotId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 切換到 history tab 時載入 sessions
+  // 切換到 history tab 時載入訪客對話
   useEffect(() => {
     if (rightTab !== 'history' || !selectedBot) return
-    setWSessionsLoading(true)
-    setWDetail(null)
-    listBotWidgetSessions(selectedBot.id)
-      .then(setWSessions)
-      .catch(() => setWSessions([]))
-      .finally(() => setWSessionsLoading(false))
-  }, [rightTab, selectedBot])
+    loadVisitorConversations(selectedBot.id, wChannelFilter)
+  }, [rightTab, selectedBot, wChannelFilter, loadVisitorConversations])
 
   // 選 Bot 時載入 FAQ 清單（兩組並行）
   useEffect(() => {
@@ -745,14 +751,7 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
               </>
             )}
             {rightTab === 'history' && selectedBot && (
-              <button type="button" onClick={() => {
-                setWSessionsLoading(true)
-                setWDetail(null)
-                listBotWidgetSessions(selectedBot.id)
-                  .then(setWSessions)
-                  .catch(() => setWSessions([]))
-                  .finally(() => setWSessionsLoading(false))
-              }}
+              <button type="button" onClick={() => loadVisitorConversations(selectedBot.id, wChannelFilter)}
                 className="ml-auto rounded-lg border border-gray-300 bg-white p-2 text-gray-700 hover:bg-gray-50"
                 aria-label="重新整理">
                 <RefreshCw className="h-5 w-5" />
@@ -784,43 +783,70 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
           {/* ── 訪客對話 ── */}
           {rightTab === 'history' && (
             <div className="flex min-h-0 flex-1 overflow-hidden">
-              {/* session 列表 */}
-              <div className="w-64 shrink-0 overflow-y-auto border-r border-gray-100">
-                {!selectedBot ? (
-                  <p className="p-4 text-base text-gray-400">請先選擇 Bot</p>
-                ) : wSessionsLoading ? (
-                  <div className="flex items-center justify-center py-12">
-                    <Loader2 className="h-6 w-6 animate-spin text-gray-300" />
-                  </div>
-                ) : wSessions.length === 0 ? (
-                  <p className="p-4 text-base text-gray-400">尚無訪客對話紀錄</p>
-                ) : (
-                  <ul>
-                    {wSessions.map((s) => (
-                      <li key={s.session_id}>
-                        <button type="button"
-                          onClick={() => {
-                            setWDetailLoading(true)
-                            getBotWidgetSessionMessages(s.session_id)
-                              .then(setWDetail)
-                              .catch(() => setWDetail(null))
-                              .finally(() => setWDetailLoading(false))
-                          }}
-                          className={`w-full px-4 py-3 text-left transition-colors hover:bg-gray-50 ${wDetail?.session_id === s.session_id ? 'bg-sky-50' : ''}`}>
-                          <p className="truncate text-base font-medium text-gray-700">
-                            {s.visitor_name || '匿名訪客'}
-                          </p>
-                          {s.visitor_email && (
-                            <p className="truncate text-base text-gray-400">{s.visitor_email}</p>
-                          )}
-                          <p className="mt-0.5 text-base text-gray-400">
-                            {s.message_count} 則 · {new Date(s.last_active_at).toLocaleDateString('zh-TW')}
-                          </p>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+              {/* 對話列表 */}
+              <div className="flex w-72 shrink-0 flex-col border-r border-gray-100">
+                <div className="flex flex-wrap gap-1.5 border-b border-gray-100 p-3">
+                  {([
+                    ['all', '全部'],
+                    ['widget', 'Widget'],
+                    ['fb', 'FB'],
+                  ] as const).map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setWChannelFilter(key)}
+                      className={`rounded-full px-2.5 py-1 text-sm transition-colors ${
+                        wChannelFilter === key
+                          ? 'bg-sky-100 text-sky-700'
+                          : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  {!selectedBot ? (
+                    <p className="p-4 text-base text-gray-400">請先選擇 Bot</p>
+                  ) : wThreadsLoading ? (
+                    <div className="flex items-center justify-center py-12">
+                      <Loader2 className="h-6 w-6 animate-spin text-gray-300" />
+                    </div>
+                  ) : wThreads.length === 0 ? (
+                    <p className="p-4 text-base text-gray-400">尚無訪客對話紀錄</p>
+                  ) : (
+                    <ul>
+                      {wThreads.map((t) => (
+                        <li key={t.thread_key}>
+                          <button type="button"
+                            onClick={() => {
+                              setWDetailLoading(true)
+                              getConversationDetail(t.thread_key)
+                                .then(setWDetail)
+                                .catch(() => setWDetail(null))
+                                .finally(() => setWDetailLoading(false))
+                            }}
+                            className={`w-full px-4 py-3 text-left transition-colors hover:bg-gray-50 ${wDetail?.thread_key === t.thread_key ? 'bg-sky-50' : ''}`}>
+                            <div className="flex items-center gap-2">
+                              <p className="truncate text-base font-medium text-gray-700">{t.title}</p>
+                              <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-xs ${
+                                t.channel === 'widget' ? 'bg-violet-100 text-violet-700' : 'bg-blue-100 text-blue-700'
+                              }`}>
+                                {t.channel_label}
+                              </span>
+                            </div>
+                            {t.subtitle && (
+                              <p className="truncate text-base text-gray-400">{t.subtitle}</p>
+                            )}
+                            <p className="mt-0.5 text-base text-gray-400">
+                              {t.message_count} 則 · {new Date(t.last_active_at).toLocaleDateString('zh-TW')}
+                            </p>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </div>
 
               {/* 對話內容 */}
@@ -836,9 +862,17 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
                     <div className="mb-4 rounded-xl border border-gray-100 bg-gray-50 p-3 text-base text-gray-600">
                       <div className="flex items-start justify-between gap-2">
                         <div className="space-y-0.5">
-                          <p><span className="font-medium">訪客：</span>{wDetail.visitor_name || '匿名'}</p>
+                          <p>
+                            <span className="font-medium">訪客：</span>{wDetail.title}
+                            <span className="ml-2 rounded-full bg-gray-200 px-2 py-0.5 text-xs text-gray-600">
+                              {wDetail.channel_label}
+                            </span>
+                          </p>
                           {wDetail.visitor_email && <p><span className="font-medium">Email：</span>{wDetail.visitor_email}</p>}
                           {wDetail.visitor_phone && <p><span className="font-medium">電話：</span>{wDetail.visitor_phone}</p>}
+                          {wDetail.external_user_id && (
+                            <p><span className="font-medium">使用者 ID：</span>{wDetail.external_user_id}</p>
+                          )}
                           <p><span className="font-medium">開始時間：</span>{new Date(wDetail.created_at).toLocaleString('zh-TW')}</p>
                         </div>
                         <button
@@ -848,7 +882,7 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
                               `${m.role === 'user' ? '訪客' : 'Bot'}：${m.content}`
                             )
                             const text = [
-                              `【訪客對話】${wDetail.visitor_name || '匿名'}`,
+                              `【訪客對話 · ${wDetail.channel_label}】${wDetail.title}`,
                               `時間：${new Date(wDetail.created_at).toLocaleString('zh-TW')}`,
                               '',
                               ...lines,

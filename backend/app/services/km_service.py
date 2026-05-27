@@ -31,6 +31,52 @@ EMBEDDING_DIM = 768
 CHUNK_SIZE = 1500
 CHUNK_OVERLAP = 200
 
+
+class EmbeddingError(Exception):
+    """Embedding API 呼叫失敗，訊息為使用者可讀說明。"""
+
+
+def format_embedding_error(
+    exc: Exception,
+    *,
+    provider: str,
+    model: str,
+    api_base: str | None = None,
+) -> str:
+    """將底層連線/API 錯誤轉成可顯示的 embedding 錯誤說明。"""
+    import httpx
+
+    endpoint = api_base or ("http://localhost:11434" if provider == "local" else "（預設）")
+    head = f"Embedding 失敗（provider={provider}, model={model}, endpoint={endpoint}）"
+
+    if isinstance(exc, httpx.ConnectTimeout):
+        return f"{head}：連線逾時，無法連上 embedding 伺服器。"
+    if isinstance(exc, httpx.ConnectError):
+        url = getattr(getattr(exc, "request", None), "url", None)
+        detail = f"（{url}）" if url else ""
+        return f"{head}：無法連線{detail}。"
+    if isinstance(exc, httpx.HTTPStatusError):
+        body = (exc.response.text or "").strip()[:200]
+        suffix = f" — {body}" if body else ""
+        return f"{head}：HTTP {exc.response.status_code}{suffix}"
+    if isinstance(exc, httpx.TimeoutException):
+        return f"{head}：請求逾時（{type(exc).__name__}）。"
+
+    msg = str(exc).strip() or type(exc).__name__
+    return f"{head}：{msg}"
+
+
+def _raise_embedding_error(
+    exc: Exception,
+    *,
+    provider: str,
+    model: str,
+    api_base: str | None,
+) -> None:
+    raise EmbeddingError(
+        format_embedding_error(exc, provider=provider, model=model, api_base=api_base)
+    ) from exc
+
 # Embedding model litellm 前綴對應（provider → litellm model 字串前綴）
 # 各文件類型的 chunking 策略與檢索 top_k
 # chunk_size 越小 → top_k 越大（總 context 字元數約 3000–6000）
@@ -445,37 +491,50 @@ def embed_texts_sync(
     model 直接使用設定值，不自動加前綴。
     task_type：retrieval_document（上傳文件）或 retrieval_query（搜尋查詢）
     """
-    if provider == "gemini":
-        litellm_model = model if model.startswith("gemini/") else f"gemini/{model}"
-        kwargs: dict = dict(
-            model=litellm_model,
-            input=texts,
-            api_key=api_key,
-            timeout=15,
-            extra_body={"task_type": task_type, "output_dimensionality": EMBEDDING_DIM},
-        )
-        response = litellm.embedding(**kwargs)
-        prompt_tokens: int | None = getattr(getattr(response, "usage", None), "prompt_tokens", None)
-        return [item["embedding"] for item in response.data], prompt_tokens
+    try:
+        if provider == "gemini":
+            litellm_model = model if model.startswith("gemini/") else f"gemini/{model}"
+            kwargs: dict = dict(
+                model=litellm_model,
+                input=texts,
+                api_key=api_key,
+                timeout=15,
+                extra_body={"task_type": task_type, "output_dimensionality": EMBEDDING_DIM},
+            )
+            response = litellm.embedding(**kwargs)
+            prompt_tokens: int | None = getattr(getattr(response, "usage", None), "prompt_tokens", None)
+            return [item["embedding"] for item in response.data], prompt_tokens
 
-    if provider == "local":
-        # Ollama embedding：LiteLLM 需要 ollama/ 前綴；api_base 不加 /v1
-        litellm_model = model if model.startswith("ollama/") else f"ollama/{model}"
-        kwargs = dict(model=litellm_model, input=texts, api_key=api_key or "local", timeout=15)
+        if provider == "local":
+            # 直接呼叫 Ollama /api/embeddings，避免 LiteLLM 在服務未啟動時長時間阻塞
+            import httpx
+
+            model_name = model.removeprefix("ollama/")
+            base = (api_base or "http://localhost:11434").rstrip("/")
+            timeout = httpx.Timeout(5.0, read=15.0)
+            embeddings: list[list[float]] = []
+            with httpx.Client(timeout=timeout) as client:
+                for text in texts:
+                    resp = client.post(
+                        f"{base}/api/embeddings",
+                        json={"model": model_name, "prompt": text},
+                    )
+                    resp.raise_for_status()
+                    embeddings.append(resp.json()["embedding"])
+            return embeddings, None
+
+        kwargs = dict(model=model, input=texts, api_key=api_key, timeout=15)
         if api_base:
-            kwargs["api_base"] = api_base.rstrip("/")
+            kwargs["api_base"] = api_base
+        if provider == "openai" and "text-embedding-3-small" in model:
+            kwargs["dimensions"] = EMBEDDING_DIM
         response = litellm.embedding(**kwargs)
         prompt_tokens = getattr(getattr(response, "usage", None), "prompt_tokens", None)
         return [item["embedding"] for item in response.data], prompt_tokens
-
-    kwargs = dict(model=model, input=texts, api_key=api_key, timeout=15)
-    if api_base:
-        kwargs["api_base"] = api_base
-    if provider == "openai" and "text-embedding-3-small" in model:
-        kwargs["dimensions"] = EMBEDDING_DIM
-    response = litellm.embedding(**kwargs)
-    prompt_tokens = getattr(getattr(response, "usage", None), "prompt_tokens", None)
-    return [item["embedding"] for item in response.data], prompt_tokens
+    except EmbeddingError:
+        raise
+    except Exception as e:
+        _raise_embedding_error(e, provider=provider, model=model, api_base=api_base)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -646,8 +705,10 @@ def km_retrieve_sync(
         knowledge_base_id = None
     embed_params = _get_embed_params(db, tenant_id)
     if not embed_params:
-        logger.warning("KM 檢索失敗：tenant_id=%s 無可用 Embedding provider", tenant_id)
-        return []
+        raise EmbeddingError(
+            f"尚未設定 Embedding provider（tenant={tenant_id}）。"
+            "請至 NeuroSme 管理介面 → 租戶 LLM 設定，設定 embedding 模型與對應 API Key。"
+        )
     embed_provider, embed_model, embed_key, embed_base = embed_params
 
     # 動態決定 top_k：依 KB 內文件類型取最大值（混合類型保守取多）
@@ -685,10 +746,14 @@ def km_retrieve_sync(
             task_type="retrieval_query",
         )
         query_embedding = vectors[0]
+    except EmbeddingError:
+        embed_status = "error"
+        raise
     except Exception as e:
         embed_status = "error"
-        logger.warning("KM embedding 失敗: %s", e)
-        return []
+        _raise_embedding_error(
+            e, provider=embed_provider, model=embed_model, api_base=embed_base
+        )
     finally:
         log_agent_usage(
             db=db,
@@ -895,8 +960,10 @@ def km_faq_retrieve_sync(
 
     embed_params = _get_embed_params(db, tenant_id)
     if not embed_params:
-        logger.warning("FAQ 檢索失敗：tenant_id=%s 無 Embedding provider", tenant_id)
-        return []
+        raise EmbeddingError(
+            f"尚未設定 Embedding provider（tenant={tenant_id}）。"
+            "請至 NeuroSme 管理介面 → 租戶 LLM 設定，設定 embedding 模型與對應 API Key。"
+        )
 
     embed_provider, embed_model, embed_key, embed_base = embed_params
     try:
@@ -911,9 +978,12 @@ def km_faq_retrieve_sync(
         if not vectors:
             return []
         query_embedding = vectors[0]
+    except EmbeddingError:
+        raise
     except Exception as e:
-        logger.warning("FAQ embedding 失敗: %s", e)
-        return []
+        _raise_embedding_error(
+            e, provider=embed_provider, model=embed_model, api_base=embed_base
+        )
 
     base_filter = [
         KmDocument.knowledge_base_id == knowledge_base_id,

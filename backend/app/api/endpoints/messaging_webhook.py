@@ -171,6 +171,7 @@ async def _call_bot_rag(
     """呼叫 Bot RAG 服務，回傳 AI 回答。"""
     from app.models.bot import BotKnowledgeBase
     from app.services.bot_rag_service import apply_bot_fallback, prepare_bot_rag_messages, rag_hit
+    from app.services.km_service import EmbeddingError
     from app.services.llm_caller import LLMCallError, LLMProviderNotConfigured, call_llm
 
     kb_links = (
@@ -182,12 +183,16 @@ async def _call_bot_rag(
     if not kb_links:
         return bot.fallback_message or "抱歉，目前無法回答您的問題。"
 
-    bot_ctx = prepare_bot_rag_messages(
-        bot, question, history, db, bot.tenant_id,
-        skip_scope_check=True,
-        agent_id="fb-webhook",
-        max_history_turns=MAX_HISTORY_TURNS,
-    )
+    try:
+        bot_ctx = prepare_bot_rag_messages(
+            bot, question, history, db, bot.tenant_id,
+            skip_scope_check=True,
+            agent_id="fb-webhook",
+            max_history_turns=MAX_HISTORY_TURNS,
+        )
+    except EmbeddingError as e:
+        logger.error("FB webhook embedding 錯誤 (bot_id=%s): %s", bot.id, e)
+        return bot.fallback_message or f"抱歉，知識庫檢索服務暫時不可用。\n（{e}）"
 
     # FAQ direct 模式
     if bot_ctx.is_faq_direct and bot_ctx.faq_candidates:
@@ -293,8 +298,11 @@ async def fb_webhook_receive(
                     await _send_fb_message(sender_id, faq.answer, page_access_token)
                 continue
 
-            # 文字訊息
-            text = event.get("message", {}).get("text", "").strip()
+            # 文字訊息（跳過 echo：粉專自己發出的訊息）
+            msg = event.get("message", {})
+            if msg.get("is_echo"):
+                continue
+            text = msg.get("text", "").strip()
             if not text:
                 continue
 

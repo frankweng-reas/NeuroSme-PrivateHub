@@ -14,6 +14,7 @@ import {
   Lock,
   Users,
   Wifi,
+  Zap,
 } from 'lucide-react'
 import { getMe } from '@/api/users'
 import type { User } from '@/types'
@@ -31,6 +32,7 @@ const SIDEBAR_ITEMS = [
   { to: '/admin/agent-insights', label: 'Agents 用量洞察', icon: BarChart3, superAdminOnly: false },
   { to: '/admin/kb-management', label: '知識庫管理', icon: BookOpen, superAdminOnly: false },
   { to: '/admin/widget-management', label: 'Bot 部署管理', icon: Wifi, superAdminOnly: false },
+  { to: '/admin/llm-skills', label: 'LLM Skills', icon: Zap, superAdminOnly: false },
 ] as const
 
 const SIDEBAR_ITEMS_SECONDARY: Array<{

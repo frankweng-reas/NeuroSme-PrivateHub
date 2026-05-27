@@ -1,6 +1,30 @@
 import { TOKEN_KEY } from '@/contexts/AuthContext'
 import { apiFetch } from './client'
 
+// 共用 client.ts 的 tryRefreshToken，避免重複實作
+async function tryRefreshForStream(): Promise<string | null> {
+  // 直接走 apiFetch GET /users/me 觸發一次 refresh 流程（client.ts 內已實作）
+  // 但避免引入循環依賴，直接複製輕量版本
+  const { REFRESH_TOKEN_KEY } = await import('@/contexts/AuthContext')
+  const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY)
+  if (!refreshToken) return null
+  const AUTH_BASE = (import.meta.env.VITE_AUTH_API_URL as string | undefined)?.replace(/\/$/, '') ?? ''
+  try {
+    const res = await fetch(`${AUTH_BASE}/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    })
+    if (!res.ok) return null
+    const data = await res.json() as { access_token: string; refresh_token?: string }
+    localStorage.setItem(TOKEN_KEY, data.access_token)
+    if (data.refresh_token) localStorage.setItem(REFRESH_TOKEN_KEY, data.refresh_token)
+    return data.access_token
+  } catch {
+    return null
+  }
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
@@ -136,35 +160,56 @@ export async function chatCompletionsStream(
     return false
   }
 
-  try {
-    const res = await fetch(`${API_BASE}/chat/completions-stream`, {
+  async function doFetch(accessToken: string | null) {
+    return fetch(`${API_BASE}/chat/completions-stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       },
       body: JSON.stringify(req),
       signal: controller.signal,
     })
+  }
+
+  async function extractDetail(res: Response): Promise<string> {
+    try {
+      const text = await res.text()
+      try {
+        const body = JSON.parse(text) as { detail?: unknown }
+        if (typeof body?.detail === 'string') return body.detail
+        if (Array.isArray(body?.detail) && body.detail[0] && typeof (body.detail[0] as { msg?: string }).msg === 'string') {
+          return (body.detail[0] as { msg: string }).msg
+        }
+      } catch { if (text) return text }
+    } catch { /* ignore */ }
+    return `HTTP ${res.status}`
+  }
+
+  try {
+    let res = await doFetch(token)
     clearTimeout(timeoutId)
 
-    if (!res.ok) {
-      let detail = `HTTP ${res.status}`
-      try {
-        const text = await res.text()
-        try {
-          const body = JSON.parse(text) as { detail?: unknown }
-          if (typeof body?.detail === 'string') detail = body.detail
-          else if (Array.isArray(body?.detail) && body.detail[0] && typeof (body.detail[0] as { msg?: string }).msg === 'string') {
-            detail = (body.detail[0] as { msg: string }).msg
-          }
-        } catch {
-          if (text) detail = text
-        }
-      } catch {
-        /* ignore */
+    // 401 → 嘗試 refresh token 後重試一次
+    if (res.status === 401) {
+      const newToken = await tryRefreshForStream()
+      if (newToken) {
+        res = await doFetch(newToken)
+      } else {
+        // refresh 失敗 → 清除 token 並導回登入頁
+        const { REFRESH_TOKEN_KEY } = await import('@/contexts/AuthContext')
+        localStorage.removeItem(TOKEN_KEY)
+        localStorage.removeItem(REFRESH_TOKEN_KEY)
+        localStorage.removeItem('neurosme_user')
+        const returnPath = window.location.pathname + window.location.search
+        if (returnPath && returnPath !== '/login') sessionStorage.setItem('login_return_url', returnPath)
+        window.location.href = '/login?expired=1'
+        return
       }
-      callbacks.onError(detail)
+    }
+
+    if (!res.ok) {
+      callbacks.onError(await extractDetail(res))
       return
     }
 

@@ -18,6 +18,7 @@ import AdminUsers from './pages/admin/AdminUsers'
 import AdminAgentInsights from './pages/admin/AdminAgentInsights'
 import AdminWidgetManagement from './pages/admin/AdminWidgetManagement'
 import AdminKbManagement from './pages/admin/AdminKbManagement'
+import AdminLlmSkills from './pages/admin/AdminLlmSkills'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import ChangePasswordPage from './pages/ChangePasswordPage'
@@ -88,6 +89,7 @@ function App() {
                 <Route path="users" element={<AdminUsers />} />
                 <Route path="kb-management" element={<AdminKbManagement />} />
                 <Route path="widget-management" element={<AdminWidgetManagement />} />
+                <Route path="llm-skills" element={<AdminLlmSkills />} />
               </Route>
               <Route
                 path="change-password"

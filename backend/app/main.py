@@ -26,6 +26,7 @@ from app.services.startup_seed import (
     seed_default_tenant,
 )
 from app.services.stored_files_store import get_stored_files_base_dir
+from app.services.km_service import EmbeddingError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -129,6 +130,12 @@ async def log_requests(request, call_next):
     response = await call_next(request)
     logger.info(f"Response: {response.status_code} for {request.url.path}")
     return response
+
+
+@app.exception_handler(EmbeddingError)
+async def embedding_error_handler(request: Request, exc: EmbeddingError):
+    logger.warning("EmbeddingError @ %s: %s", request.url.path, exc)
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 @app.exception_handler(Exception)

@@ -49,7 +49,8 @@ import ConfirmModal from '@/components/ConfirmModal'
 
 const PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
-  gemini: 'Google Gemini',
+  gemini: 'Google AI Studio',
+  vertex: 'Google Vertex AI',
   twcc: '台智雲 TWCC',
   local: '本機模型 (Local)',
   anthropic: 'Anthropic',
@@ -58,6 +59,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 const PROVIDER_COLORS: Record<string, string> = {
   openai: 'bg-green-200 text-green-900',
   gemini: 'bg-blue-200 text-blue-900',
+  vertex: 'bg-cyan-200 text-cyan-900',
   twcc: 'bg-orange-200 text-orange-900',
   local: 'bg-purple-200 text-purple-900',
   anthropic: 'bg-amber-200 text-amber-900',
@@ -66,6 +68,7 @@ const PROVIDER_COLORS: Record<string, string> = {
 const PROVIDER_CARD_COLORS: Record<string, string> = {
   openai: 'border-green-100 bg-green-50/50',
   gemini: 'border-blue-100 bg-blue-50/50',
+  vertex: 'border-cyan-100 bg-cyan-50/50',
   twcc:   'border-orange-100 bg-orange-50/50',
   local:  'border-purple-100 bg-purple-50/50',
   anthropic: 'border-amber-100 bg-amber-50/50',
@@ -91,6 +94,8 @@ interface FormState {
   api_key: string
   api_key_masked: string
   api_base_url: string
+  gcp_project_id: string
+  gcp_region: string
   available_models_entries: LLMModelEntry[]
   is_active: boolean
 }
@@ -101,6 +106,8 @@ const EMPTY_FORM: FormState = {
   api_key: '',
   api_key_masked: '',
   api_base_url: '',
+  gcp_project_id: '',
+  gcp_region: '',
   available_models_entries: [],
   is_active: true,
 }
@@ -218,6 +225,8 @@ export default function AdminLLMSettings() {
       api_key: '',
       api_key_masked: cfg.api_key_masked ?? '',
       api_base_url: cfg.api_base_url ?? '',
+      gcp_project_id: cfg.gcp_project_id ?? '',
+      gcp_region: cfg.gcp_region ?? '',
       available_models_entries: cfg.available_models ?? [],
       is_active: cfg.is_active,
     })
@@ -243,6 +252,8 @@ export default function AdminLLMSettings() {
         const body: LLMProviderConfigUpdate = {
           label: form.label || null,
           api_base_url: form.api_base_url || null,
+          gcp_project_id: form.provider === 'vertex' ? (form.gcp_project_id || null) : undefined,
+          gcp_region: form.provider === 'vertex' ? (form.gcp_region || null) : undefined,
           available_models: availableModels,
           is_active: form.is_active,
         }
@@ -255,6 +266,8 @@ export default function AdminLLMSettings() {
           label: form.label || null,
           api_key: form.api_key.trim() || null,
           api_base_url: form.api_base_url || null,
+          gcp_project_id: form.provider === 'vertex' ? (form.gcp_project_id || null) : undefined,
+          gcp_region: form.provider === 'vertex' ? (form.gcp_region || null) : undefined,
           available_models: availableModels,
           is_active: true,
         }
@@ -693,7 +706,7 @@ export default function AdminLLMSettings() {
                           {cfg.label || `${PROVIDER_LABELS[cfg.provider] ?? cfg.provider} 設定`}
                         </span>
                         {!cfg.is_active && (
-                          <span className="shrink-0 rounded-full bg-gray-200 px-2.5 py-0.5 text-base font-medium text-gray-500">停用中</span>
+                          <span className="shrink-0 rounded-full bg-red-100 px-2.5 py-0.5 text-base font-medium text-red-600">停用中</span>
                         )}
                         {cfg.api_key_masked && (
                           <span className="shrink-0 rounded bg-gray-50 border border-gray-200 px-2 py-0.5 font-mono text-base text-gray-500">
@@ -769,6 +782,8 @@ export default function AdminLLMSettings() {
                       <div className="border-t border-gray-100 px-5 py-4 bg-gray-50 space-y-2 text-base">
                         <Row label="租戶 ID" value={cfg.tenant_id} mono />
                         {cfg.api_base_url && <Row label="API Base URL" value={cfg.api_base_url} mono />}
+                        {cfg.gcp_project_id && <Row label="GCP Project ID" value={cfg.gcp_project_id} mono />}
+                        {cfg.gcp_region && <Row label="GCP Region" value={cfg.gcp_region} mono />}
                         <Row label="建立時間" value={new Date(cfg.created_at).toLocaleString('zh-TW')} />
                         <Row label="更新時間" value={new Date(cfg.updated_at).toLocaleString('zh-TW')} />
                       </div>
@@ -796,7 +811,8 @@ export default function AdminLLMSettings() {
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-gray-400 disabled:bg-gray-50"
                 >
                   <option value="openai">OpenAI</option>
-                  <option value="gemini">Google Gemini</option>
+                  <option value="gemini">Google AI Studio</option>
+                  <option value="vertex">Google Vertex AI</option>
                   <option value="anthropic">Anthropic</option>
                   <option value="twcc">台智雲 TWCC</option>
                   <option value="local">本機模型 (Local / Ollama / LM Studio)</option>
@@ -813,30 +829,78 @@ export default function AdminLLMSettings() {
                 />
               </Field>
 
+              {/* Vertex AI 專屬欄位 */}
+              {form.provider === 'vertex' && (
+                <>
+                  <Field label="GCP Project ID" required>
+                    <input
+                      type="text"
+                      placeholder="例：my-gcp-project-123"
+                      value={form.gcp_project_id}
+                      onChange={(e) => setForm((f) => ({ ...f, gcp_project_id: e.target.value }))}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base font-mono focus:outline-none focus:ring-2 focus:ring-gray-400"
+                    />
+                  </Field>
+                  <Field label="GCP Region" required hint="Vertex AI 服務所在區域，例：us-central1、asia-east1">
+                    <input
+                      type="text"
+                      placeholder="例：us-central1"
+                      value={form.gcp_region}
+                      onChange={(e) => setForm((f) => ({ ...f, gcp_region: e.target.value }))}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base font-mono focus:outline-none focus:ring-2 focus:ring-gray-400"
+                    />
+                  </Field>
+                </>
+              )}
+
               <Field
-                label={editingId !== null ? 'API Key（留空表示不變更）' : 'API Key'}
-                hint={form.provider === 'local' ? '本機服務通常不需要 API Key，可留空或填任意字串（如 local）' : editingId !== null && form.api_key_masked ? `目前：${form.api_key_masked}` : undefined}
+                label={
+                  form.provider === 'vertex'
+                    ? (editingId !== null ? 'Service Account JSON（留空表示不變更）' : 'Service Account JSON（選填）')
+                    : (editingId !== null ? 'API Key（留空表示不變更）' : 'API Key')
+                }
+                hint={
+                  form.provider === 'vertex'
+                    ? '貼上 Google Cloud Service Account 的 JSON 金鑰內容；若部署環境已設定 ADC（Application Default Credentials）可留空'
+                    : form.provider === 'local'
+                      ? '本機服務通常不需要 API Key，可留空或填任意字串（如 local）'
+                      : editingId !== null && form.api_key_masked
+                        ? `目前：${form.api_key_masked}`
+                        : undefined
+                }
               >
                 <div className="relative">
-                  <input
-                    type={showApiKey ? 'text' : 'password'}
-                    placeholder={editingId !== null ? '不填則保留原 Key' : 'sk-...'}
-                    value={form.api_key}
-                    onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value }))}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 pr-10 text-base font-mono focus:outline-none focus:ring-2 focus:ring-gray-400"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowApiKey((v) => !v)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                    tabIndex={-1}
-                  >
-                    {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
+                  {form.provider === 'vertex' ? (
+                    <textarea
+                      rows={5}
+                      placeholder={'{\n  "type": "service_account",\n  "project_id": "...",\n  ...\n}'}
+                      value={form.api_key}
+                      onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value }))}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-gray-400"
+                    />
+                  ) : (
+                    <input
+                      type={showApiKey ? 'text' : 'password'}
+                      placeholder={editingId !== null ? '不填則保留原 Key' : 'sk-...'}
+                      value={form.api_key}
+                      onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value }))}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 pr-10 text-base font-mono focus:outline-none focus:ring-2 focus:ring-gray-400"
+                    />
+                  )}
+                  {form.provider !== 'vertex' && (
+                    <button
+                      type="button"
+                      onClick={() => setShowApiKey((v) => !v)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      tabIndex={-1}
+                    >
+                      {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  )}
                 </div>
               </Field>
 
-              <Field
+              {form.provider !== 'vertex' && <Field
                 label="API Base URL"
                 required={form.provider === 'twcc' || form.provider === 'local'}
                 hint={
@@ -866,7 +930,7 @@ export default function AdminLLMSettings() {
                     <p>NeuroSme 與 Ollama 在同一台主機時請用：<code className="rounded bg-gray-100 px-1">http://host.docker.internal:11434</code></p>
                   </div>
                 )}
-              </Field>
+              </Field>}
 
               <Field label="可用 Models">
                 <div className="space-y-2">

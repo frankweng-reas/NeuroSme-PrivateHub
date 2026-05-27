@@ -29,8 +29,6 @@ from app.models.agent_usage_log import AgentUsageLog
 
 logger = logging.getLogger(__name__)
 
-VALID_AGENT_TYPES = frozenset({"chat", "ocr", "speech"})
-
 
 def log_agent_usage(
     db: Session,

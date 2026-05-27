@@ -1,11 +1,13 @@
 /** Writing Agent UI：左欄文件列表 + 中欄設定 + 右欄 TipTap 編輯器 */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useEditor, EditorContent } from '@tiptap/react'
+import { BubbleMenuPlugin } from '@tiptap/extension-bubble-menu'
 import StarterKit from '@tiptap/starter-kit'
 import { marked } from 'marked'
 import {
   Bold, ClipboardCopy, FileText, Heading2, Italic, List, ListOrdered,
-  Loader2, Pencil, Plus, RotateCcw, Save, Sparkles, Trash2, Undo2,
+  Loader2, Maximize2, Minimize2, Pencil, Plus, RotateCcw, Save, Search, Sparkles, Trash2, Undo2, X, Zap,
 } from 'lucide-react'
 import AgentHeader from '@/components/AgentHeader'
 import LLMModelSelect from '@/components/LLMModelSelect'
@@ -18,6 +20,7 @@ import {
   listWritingDocs, createWritingDoc, updateWritingDoc, deleteWritingDoc,
   type WritingDoc,
 } from '@/api/writing'
+import { listLlmSkills, type LlmSkill } from '@/api/llmSkills'
 import type { Agent } from '@/types'
 
 const HEADER_COLOR = '#1C3939'
@@ -66,7 +69,202 @@ const PROMPT_TEMPLATES: PromptTemplate[] = [
 公告對象：全體同仁
 其他要求：`,
   },
+  {
+    label: 'FAQ 生成',
+    prompt: `請將以上內容轉換成一組 Q&A，每個問題對應一個完整答案。格式如下：
+
+Q：（問題標題）
+A：（答案內容）
+
+規則：
+- 答案須忠實呈現原始內容，不得自行增加或刪減步驟與資訊
+- 每個 Q&A 為獨立完整的一組，可直接使用
+- 問題數量：
+- 問題：`,
+  },
 ]
+
+// ── Skill Picker Modal ────────────────────────────────────────────────────────
+
+interface SkillPickerModalProps {
+  skills: LlmSkill[]
+  onApply: (skill: LlmSkill) => void
+  onClose: () => void
+}
+
+function SkillPickerModal({ skills, onApply, onClose }: SkillPickerModalProps) {
+  const [search, setSearch] = useState('')
+  const [catFilter, setCatFilter] = useState<string>('全部')
+  const [previewSkill, setPreviewSkill] = useState<LlmSkill | null>(null)
+
+  // 分類列表
+  const categories = ['全部', ...Array.from(new Set(
+    skills.map((s) => s.category?.trim() || '未分類')
+  )).sort((a, b) => {
+    if (a === '未分類') return 1
+    if (b === '未分類') return -1
+    return a.localeCompare(b, 'zh-TW')
+  })]
+
+  // 過濾
+  const filtered = skills.filter((s) => {
+    const matchCat = catFilter === '全部' || (s.category?.trim() || '未分類') === catFilter
+    const q = search.trim().toLowerCase()
+    const matchSearch = !q || s.title.toLowerCase().includes(q) || (s.description ?? '').toLowerCase().includes(q)
+    return matchCat && matchSearch
+  })
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div
+        className="relative z-10 flex h-[72vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* 預覽 sub-modal */}
+        {previewSkill && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/30">
+            <div
+              className="relative flex w-[90%] max-w-lg flex-col rounded-2xl bg-white shadow-xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+                <div className="flex items-center gap-2">
+                  <Zap className="h-4 w-4 text-teal-600" />
+                  <span className="font-semibold text-gray-800">{previewSkill.title}</span>
+                  {previewSkill.category && (
+                    <span className="rounded-full bg-teal-50 px-2 py-0.5 text-xs font-medium text-teal-700">
+                      {previewSkill.category}
+                    </span>
+                  )}
+                </div>
+                <button type="button" onClick={() => setPreviewSkill(null)}
+                  className="rounded-lg p-1 text-gray-400 hover:bg-gray-100">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="overflow-y-auto px-5 py-4">
+                <pre className="whitespace-pre-wrap font-sans text-sm text-gray-700">{previewSkill.prompt}</pre>
+              </div>
+              <div className="flex justify-end gap-2 border-t border-gray-200 px-5 py-3">
+                <button type="button" onClick={() => setPreviewSkill(null)}
+                  className="rounded-xl border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">
+                  取消
+                </button>
+                <button type="button" onClick={() => { onApply(previewSkill); setPreviewSkill(null) }}
+                  className="rounded-xl bg-teal-700 px-4 py-2 text-sm font-medium text-white hover:bg-teal-800">
+                  套用
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+          <div className="flex items-center gap-2">
+            <Zap className="h-5 w-5 text-teal-600" />
+            <h2 className="text-base font-semibold text-gray-800">Skill 庫</h2>
+          </div>
+          <button type="button" onClick={onClose}
+            className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* 搜尋 */}
+        <div className="border-b border-gray-100 px-4 py-3">
+          <div className="flex items-center gap-2 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2">
+            <Search className="h-4 w-4 shrink-0 text-gray-400" />
+            <input
+              autoFocus
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="搜尋名稱或說明…"
+              className="flex-1 bg-transparent text-sm text-gray-700 outline-none placeholder:text-gray-400"
+            />
+            {search && (
+              <button type="button" onClick={() => setSearch('')}>
+                <X className="h-4 w-4 text-gray-400 hover:text-gray-600" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* 主體：左分類 + 右卡片 */}
+        <div className="flex min-h-0 flex-1">
+          {/* 左欄：分類 */}
+          <div className="flex w-32 shrink-0 flex-col overflow-y-auto border-r border-gray-100 py-2">
+            {categories.map((cat) => (
+              <button
+                key={cat}
+                type="button"
+                onClick={() => setCatFilter(cat)}
+                className={`px-4 py-2.5 text-left text-base transition-colors ${
+                  catFilter === cat
+                    ? 'bg-teal-50 font-semibold text-teal-700'
+                    : 'text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+
+          {/* 右欄：卡片 */}
+          <div className="flex-1 overflow-y-auto p-4">
+            {filtered.length === 0 ? (
+              <div className="flex flex-col items-center gap-2 py-16 text-gray-400">
+                <Zap className="h-8 w-8 opacity-30" />
+                <p className="text-sm">
+                  {skills.length === 0 ? '尚未建立任何 Skill，請聯絡管理員' : '找不到符合條件的 Skill'}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {filtered.map((skill) => (
+                  <div key={skill.id}
+                    className="group flex items-start justify-between rounded-xl border border-gray-200 bg-white p-4 hover:border-teal-300 hover:bg-teal-50/30 transition-colors">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-gray-800">{skill.title}</span>
+                        {skill.category && (
+                          <span className="rounded-full bg-teal-50 px-2 py-0.5 text-xs font-medium text-teal-700">
+                            {skill.category}
+                          </span>
+                        )}
+                      </div>
+                      {skill.description && (
+                        <p className="mt-0.5 text-sm text-gray-500">{skill.description}</p>
+                      )}
+                    </div>
+                    <div className="ml-3 flex shrink-0 items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPreviewSkill(skill)}
+                        className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs text-gray-500 hover:bg-white hover:border-gray-400"
+                      >
+                        預覽
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onApply(skill)}
+                        className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-800"
+                      >
+                        套用
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -94,7 +292,7 @@ function buildRewritePrompt(fullText: string, selectedText: string, instruction:
 
 function markdownToHtml(text: string): string {
   try {
-    const html = marked.parse(text, { async: false }) as string
+    const html = marked.parse(text, { async: false, breaks: true }) as string
     return html || '<p></p>'
   } catch {
     return text.split('\n\n').map((p) => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('') || '<p></p>'
@@ -133,15 +331,20 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
   // ── 生成狀態 ──
   const [isStreaming, setIsStreaming] = useState(false)
   const [isRewriting, setIsRewriting] = useState(false)
-  const [hasSelection, setHasSelection] = useState(false)
   const [rewriteInput, setRewriteInput] = useState('')
   const [showRewriteInput, setShowRewriteInput] = useState(false)
+  const [showInsertInput, setShowInsertInput] = useState(false)
+  const [insertInput, setInsertInput] = useState('')
   const [copyFeedback, setCopyFeedback] = useState(false)
   const [threadId, setThreadId] = useState<string | null>(null)
   const [lastMeta, setLastMeta] = useState<{
     model: string
     usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null
   } | null>(null)
+
+  // ── Skills ──
+  const [skills, setSkills] = useState<LlmSkill[]>([])
+  const [showSkillModal, setShowSkillModal] = useState(false)
 
   // ── UI ──
   const [errorModal, setErrorModal] = useState<{ title: string; message: string } | null>(null)
@@ -150,6 +353,7 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
   const [newDocLoading, setNewDocLoading] = useState(false)
   const [showNewDocModal, setShowNewDocModal] = useState(false)
   const [newDocTitle, setNewDocTitle] = useState('')
+  const [settingsExpanded, setSettingsExpanded] = useState(false)
 
   const fullTextRef = useRef('')
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -157,6 +361,14 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const isStreamingRef = useRef(false)
+  const draftDirtyRef = useRef(false)
+  const rewriteInputRef = useRef<HTMLInputElement>(null)
+  const insertInputRef = useRef<HTMLInputElement>(null)
+  const bubbleMenuElRef = useRef<HTMLDivElement | null>(null)
+  if (!bubbleMenuElRef.current) {
+    bubbleMenuElRef.current = document.createElement('div')
+  }
+  const savedSelectionRef = useRef<{ from: number; to: number } | null>(null)
 
   // ── Editor ──
   const editor = useEditor({
@@ -167,17 +379,31 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
         class: 'outline-none min-h-full px-8 py-6 prose prose-gray max-w-none text-base leading-relaxed',
       },
     },
-    onSelectionUpdate: ({ editor: e }) => {
-      const { from, to } = e.state.selection
-      setHasSelection(from !== to)
-    },
     onUpdate: () => {
       // 串流或載入草稿時的更新不算用戶修改
-      if (!isStreamingRef.current) {
+      // 只在第一次變 dirty 時才 setState，避免每次 keystroke 都觸發 re-render
+      if (!isStreamingRef.current && !draftDirtyRef.current) {
+        draftDirtyRef.current = true
         setDraftDirty(true)
       }
     },
   })
+
+  // BubbleMenu 自訂 input 出現時自動 focus
+  useEffect(() => {
+    if (showRewriteInput) {
+      const t = setTimeout(() => rewriteInputRef.current?.focus(), 20)
+      return () => clearTimeout(t)
+    }
+  }, [showRewriteInput])
+
+  // 插入 input 出現時自動 focus
+  useEffect(() => {
+    if (showInsertInput) {
+      const t = setTimeout(() => insertInputRef.current?.focus(), 20)
+      return () => clearTimeout(t)
+    }
+  }, [showInsertInput])
 
   // ── 初始化 ──
   useEffect(() => {
@@ -187,11 +413,36 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
     }
   }, [])
 
+  // BubbleMenuPlugin：editor 就緒後注冊
+  useEffect(() => {
+    if (!editor || !bubbleMenuElRef.current) return
+    const el = bubbleMenuElRef.current
+    editor.registerPlugin(
+      BubbleMenuPlugin({
+        pluginKey: 'writingBubbleMenu',
+        editor,
+        element: el,
+        shouldShow: ({ state }) => {
+          const { from, to } = state.selection
+          // 有選取，或 bubble menu 內部有 focus（custom input）
+          return from !== to || el.contains(document.activeElement)
+        },
+        options: { placement: 'top' },
+      }),
+    )
+    return () => { editor.unregisterPlugin('writingBubbleMenu') }
+  }, [editor])
+
   useEffect(() => {
     createChatThread({ agent_id: agent.id, title: null })
       .then((t) => setThreadId(t.id))
       .catch(() => {})
   }, [agent.id])
+
+  // 載入 LLM Skills（靜默失敗，不影響主功能）
+  useEffect(() => {
+    listLlmSkills().then(setSkills).catch(() => {})
+  }, [])
 
   // 載入文件列表
   useEffect(() => {
@@ -213,11 +464,14 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
   // ── 儲存草稿 ──
   const saveDraft = useCallback(async () => {
     if (!selectedDocId || !editor) return
-    const text = editor.getText().trim() ? fullTextRef.current || editor.getText() : ''
+    // 用 getHTML() 取得用戶目前實際編輯的內容，不使用可能過期的 fullTextRef
+    const html = editor.getText().trim() ? editor.getHTML() : ''
     setDraftSaving(true)
     try {
-      const updated = await updateWritingDoc(selectedDocId, { draft: text })
+      const updated = await updateWritingDoc(selectedDocId, { draft: html })
       setDocs((prev) => prev.map((d) => d.id === updated.id ? updated : d))
+      fullTextRef.current = html  // 同步 ref 避免下次存錯
+      draftDirtyRef.current = false
       setDraftDirty(false)
     } catch {
       setErrorModal({ title: '儲存失敗', message: '草稿儲存失敗，請重試。' })
@@ -233,6 +487,7 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
     setContent(doc.content ?? '')
     setUserPrompt(doc.user_prompt ?? '')
     setDirty(false)
+    draftDirtyRef.current = false
     setDraftDirty(false)
     setPendingDraft(doc.draft ?? '')
     try { localStorage.setItem(LAST_DOC_KEY, String(doc.id)) } catch { /* ignore */ }
@@ -250,10 +505,14 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
   useEffect(() => {
     if (!editor || pendingDraft === null) return
     isStreamingRef.current = true
-    const html = pendingDraft ? markdownToHtml(pendingDraft) : '<p></p>'
+    // 新格式存 HTML（以 < 開頭），舊格式存 markdown → 用 markdownToHtml 轉換
+    const html = pendingDraft
+      ? (pendingDraft.trimStart().startsWith('<') ? pendingDraft : markdownToHtml(pendingDraft))
+      : '<p></p>'
     editor.commands.setContent(html, { emitUpdate: false })
-    fullTextRef.current = pendingDraft
+    fullTextRef.current = html
     setPendingDraft(null)
+    draftDirtyRef.current = false
     setDraftDirty(false)
     isStreamingRef.current = false
   }, [editor, pendingDraft])
@@ -323,7 +582,7 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
     } finally {
       setNewDocLoading(false)
     }
-  }, [newDocTitle, selectDoc])
+  }, [newDocTitle, doSelectDoc])
 
   // ── 刪除文件 ──
   const handleDeleteDoc = useCallback(async (docId: number) => {
@@ -334,12 +593,17 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
         const next = prev.filter((d) => d.id !== docId)
         if (selectedDocId === docId) {
           if (next.length > 0) {
-            selectDoc(next[0])
+            // 直接用 doSelectDoc，跳過 draftDirty 檢查（當前文件已刪除）
+            doSelectDoc(next[0])
           } else {
             setSelectedDocId(null)
             setTitle('')
             setContent('')
             setUserPrompt('')
+            editor?.commands.setContent('<p></p>')
+            fullTextRef.current = ''
+            draftDirtyRef.current = false
+            setDraftDirty(false)
           }
         }
         return next
@@ -349,7 +613,7 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
     } finally {
       setDeletingId(null)
     }
-  }, [selectedDocId, selectDoc])
+  }, [selectedDocId, doSelectDoc, editor])
 
   // ── 生成草稿 ──
   const stopStreaming = useCallback(() => {
@@ -406,10 +670,13 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
             setLastMeta({ model: done.model ?? model, usage: done.usage ?? null })
             setIsStreaming(false)
             isStreamingRef.current = false
+            draftDirtyRef.current = false
             setDraftDirty(false)
-            // 存草稿到 DB，同時更新 in-memory docs state
+            // 存草稿到 DB（存 HTML 格式，與 saveDraft 一致）
             if (selectedDocId && finalContent) {
-              updateWritingDoc(selectedDocId, { draft: finalContent })
+              const draftHtml = markdownToHtml(finalContent)
+              fullTextRef.current = draftHtml
+              updateWritingDoc(selectedDocId, { draft: draftHtml })
                 .then((updated) => setDocs((prev) => prev.map((d) => d.id === updated.id ? updated : d)))
                 .catch(() => {/* silent */})
             }
@@ -432,11 +699,63 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
   // ── 複製 / 清除 ──
   const handleCopy = useCallback(async () => {
     if (!editor) return
-    const lines: string[] = []
-    editor.state.doc.forEach((node) => { lines.push(node.textContent) })
-    const text = lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()
+
+    // 從 TipTap state 產生乾淨的語義 HTML（不含 class/style）
+    function nodeToHtml(node: import('@tiptap/pm/model').Node): string {
+      if (node.isText) {
+        let text = node.text ?? ''
+        // XSS escape
+        text = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        if (node.marks) {
+          for (const mark of node.marks) {
+            if (mark.type.name === 'bold') text = `<b>${text}</b>`
+            else if (mark.type.name === 'italic') text = `<em>${text}</em>`
+            else if (mark.type.name === 'code') text = `<code>${text}</code>`
+          }
+        }
+        return text
+      }
+      const inner = (() => {
+        const parts: string[] = []
+        node.forEach((child) => parts.push(nodeToHtml(child)))
+        return parts.join('')
+      })()
+      switch (node.type.name) {
+        case 'paragraph': return `<p>${inner}</p>`
+        case 'heading': return `<h${node.attrs.level}>${inner}</h${node.attrs.level}>`
+        case 'bulletList': return `<ul>${inner}</ul>`
+        case 'orderedList': return `<ol>${inner}</ol>`
+        case 'listItem': return `<li>${inner}</li>`
+        case 'blockquote': return `<blockquote>${inner}</blockquote>`
+        case 'codeBlock': return `<pre><code>${inner}</code></pre>`
+        case 'horizontalRule': return '<hr>'
+        case 'hardBreak': return '<br>'
+        default: return inner
+      }
+    }
+
+    const parts: string[] = []
+    editor.state.doc.forEach((node) => parts.push(nodeToHtml(node)))
+    const html = parts.join('')
+
+    // 純文字 fallback
+    const textLines: string[] = []
+    editor.state.doc.forEach((node) => textLines.push(node.textContent))
+    const plainText = textLines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()
+
     try {
-      await navigator.clipboard.writeText(text)
+      // 優先用 ClipboardItem（同時提供 HTML + 純文字）
+      if (typeof ClipboardItem !== 'undefined') {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            'text/html': new Blob([html], { type: 'text/html' }),
+            'text/plain': new Blob([plainText], { type: 'text/plain' }),
+          }),
+        ])
+      } else {
+        // 舊瀏覽器 fallback：純文字
+        await navigator.clipboard.writeText(plainText)
+      }
       setCopyFeedback(true)
       setTimeout(() => setCopyFeedback(false), 2000)
     } catch {
@@ -448,15 +767,20 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
     if (!editor || isStreaming) return
     editor.commands.setContent('<p></p>')
     fullTextRef.current = ''
+    draftDirtyRef.current = false
+    setDraftDirty(false)
   }, [editor, isStreaming])
 
-  // ── AI 改寫 ──
+  // ── AI 改寫（BubbleMenu 呼叫）──
   const handleRewrite = useCallback(async (instruction: string) => {
     if (!editor || isRewriting || isStreaming) return
-    const { from, to } = editor.state.selection
+    // input 送出時 editor 可能失焦，從 savedSelectionRef 取
+    const sel = editor.state.selection
+    const from = sel.from !== sel.to ? sel.from : (savedSelectionRef.current?.from ?? sel.from)
+    const to = sel.from !== sel.to ? sel.to : (savedSelectionRef.current?.to ?? sel.to)
+    savedSelectionRef.current = null
     if (from === to) return
     const selectedText = editor.state.doc.textBetween(from, to, '\n')
-    const fullText = editor.getText()
     if (!selectedText.trim()) return
 
     rewriteRangeRef.current = { from, to }
@@ -464,28 +788,20 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
     setShowRewriteInput(false)
     setRewriteInput('')
 
-    const prompt = buildRewritePrompt(fullText, selectedText, instruction)
+    const prompt = buildRewritePrompt(editor.getText(), selectedText, instruction)
     let rewrittenText = ''
 
     try {
       await chatCompletionsStream(
-        {
-          agent_id: agent.id,
-          prompt_type: 'writing_rewrite',
-          system_prompt: '',
-          user_prompt: '',
-          data: '',
-          model,
-          messages: [],
-          content: prompt,
-          chat_thread_id: threadId ?? '',
-        },
+        { agent_id: agent.id, prompt_type: 'writing_rewrite', system_prompt: '', user_prompt: '', data: '', model, messages: [], content: prompt, chat_thread_id: threadId ?? '' },
         {
           onDelta: (chunk) => { rewrittenText += chunk },
           onDone: () => {
-            if (rewriteRangeRef.current && editor && rewrittenText) {
+            if (editor && rewrittenText && rewriteRangeRef.current) {
               const { from: f, to: t } = rewriteRangeRef.current
-              editor.chain().setTextSelection({ from: f, to: t }).deleteSelection().insertContent(rewrittenText).run()
+              editor.chain().focus().setTextSelection({ from: f, to: t }).deleteSelection().insertContent(markdownToHtml(rewrittenText)).run()
+              draftDirtyRef.current = true
+              setDraftDirty(true)
             }
             rewriteRangeRef.current = null
             setIsRewriting(false)
@@ -501,6 +817,46 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
       rewriteRangeRef.current = null
       setIsRewriting(false)
       setErrorModal({ title: '改寫失敗', message: e instanceof Error ? e.message : '發生未知錯誤' })
+    }
+  }, [agent.id, editor, isRewriting, isStreaming, model, threadId])
+
+  // ── AI 插入（游標位置）──
+  const handleInsert = useCallback(async (instruction: string) => {
+    if (!editor || isRewriting || isStreaming) return
+    const docText = editor.getText().trim()
+    const prompt = [
+      docText ? `以下是目前文件草稿：\n\n${docText}\n\n---\n\n` : '',
+      `指令：${instruction}\n\n`,
+      '請根據上述草稿與指令，生成一段新的段落文字。只輸出新段落文字，不要重複原有內容，不要加前言或後記。',
+    ].join('')
+
+    setIsRewriting(true)
+    setShowInsertInput(false)
+    setInsertInput('')
+
+    let result = ''
+    try {
+      await chatCompletionsStream(
+        { agent_id: agent.id, prompt_type: 'writing_rewrite', system_prompt: '', user_prompt: '', data: '', model, messages: [], content: prompt, chat_thread_id: threadId ?? '' },
+        {
+          onDelta: (chunk) => { result += chunk },
+          onDone: () => {
+            if (editor && result) {
+              editor.chain().focus().insertContent(markdownToHtml(result)).run()
+              draftDirtyRef.current = true
+              setDraftDirty(true)
+            }
+            setIsRewriting(false)
+          },
+          onError: (msg) => {
+            setIsRewriting(false)
+            setErrorModal({ title: '插入失敗', message: msg ?? '發生未知錯誤' })
+          },
+        },
+      )
+    } catch (e) {
+      setIsRewriting(false)
+      setErrorModal({ title: '插入失敗', message: e instanceof Error ? e.message : '發生未知錯誤' })
     }
   }, [agent.id, editor, isRewriting, isStreaming, model, threadId])
 
@@ -637,7 +993,7 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
         </div>
 
         {/* ── 中欄：設定面板 ────────────────────────────────────────────── */}
-        <div className="flex w-80 shrink-0 flex-col overflow-hidden rounded-xl border border-gray-300/50 shadow-md">
+        <div className={`flex shrink-0 flex-col overflow-hidden rounded-xl border border-gray-300/50 shadow-md transition-[width] duration-200 ${settingsExpanded ? 'w-[640px]' : 'w-80'}`}>
           {selectedDocId === null ? (
             <div
               className="flex flex-1 flex-col items-center justify-center gap-3"
@@ -650,13 +1006,26 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
             <>
               {/* 中欄 Header：文件標題（深色保持不變） */}
               <div className="shrink-0 border-b border-white/20 px-3 py-2" style={{ backgroundColor: HEADER_COLOR }}>
-                <input
-                  type="text"
-                  value={title}
-                  onChange={(e) => handleFieldChange('title', e.target.value)}
-                  placeholder="文件名稱"
-                  className="w-full bg-transparent text-lg font-semibold text-white placeholder:text-white/30 focus:outline-none"
-                />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={title}
+                    onChange={(e) => handleFieldChange('title', e.target.value)}
+                    placeholder="文件名稱"
+                    className="min-w-0 flex-1 bg-transparent text-lg font-semibold text-white placeholder:text-white/30 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setSettingsExpanded((v) => !v)}
+                    title={settingsExpanded ? '縮小設定欄' : '放大設定欄'}
+                    className="shrink-0 rounded p-1 text-white/50 transition-colors hover:bg-white/10 hover:text-white"
+                  >
+                    {settingsExpanded
+                      ? <Minimize2 className="h-3.5 w-3.5" />
+                      : <Maximize2 className="h-3.5 w-3.5" />
+                    }
+                  </button>
+                </div>
                 {saving && (
                   <span className="flex items-center gap-1 text-xs text-white/30">
                     <Loader2 className="h-3 w-3 animate-spin" />儲存中…
@@ -664,8 +1033,8 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
                 )}
               </div>
 
-              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto" style={{ backgroundColor: '#F0FFF0' }}>
-                <div className="flex-1 space-y-4 px-3 py-3">
+              <div className="flex min-h-0 flex-1 flex-col" style={{ backgroundColor: '#F0FFF0' }}>
+                <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-3 py-3">
 
                   {/* 輸出語言 */}
                   <div>
@@ -700,37 +1069,59 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
                   </div>
 
                   {/* 對 AI 的指令 */}
-                  <div>
+                  <div className="flex min-h-0 flex-1 flex-col">
                     <div className="mb-1.5 flex items-center justify-between">
                       <label className="text-sm font-medium text-gray-600">對 AI 的指令</label>
                       <span className={`text-xs ${userPrompt.length > PROMPT_MAX * 0.9 ? 'text-amber-500' : 'text-gray-400'}`}>
                         {userPrompt.length} / {PROMPT_MAX}
                       </span>
                     </div>
-                    {/* 指令範本下拉 */}
-                    <select
-                      defaultValue=""
-                      onChange={(e) => {
-                        if (!e.target.value) return
-                        handleFieldChange('userPrompt', e.target.value)
-                        e.target.value = ''
-                      }}
-                      className="mb-2 w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-500 focus:border-[#AE924C] focus:outline-none"
-                    >
-                      <option value="" disabled>套用範本…</option>
-                      {PROMPT_TEMPLATES.map((t) => (
-                        <option key={t.label} value={t.prompt}>
-                          {t.label}
-                        </option>
-                      ))}
-                    </select>
+                    {/* 指令範本下拉 + Skill 庫按鈕 */}
+                    <div className="mb-2 flex shrink-0 items-center gap-2">
+                      <select
+                        defaultValue=""
+                        onChange={(e) => {
+                          if (!e.target.value) return
+                          handleFieldChange('userPrompt', e.target.value)
+                          e.target.value = ''
+                        }}
+                        className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-500 focus:border-[#AE924C] focus:outline-none"
+                      >
+                        <option value="" disabled>套用範本…</option>
+                        {PROMPT_TEMPLATES.map((t) => (
+                          <option key={t.label} value={t.prompt}>
+                            {t.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setShowSkillModal(true)}
+                        title="開啟 Skill 庫"
+                        className="flex shrink-0 items-center gap-1.5 rounded-lg border border-teal-300 bg-teal-50 px-3 py-1.5 text-sm font-medium text-teal-700 hover:bg-teal-100 transition-colors"
+                      >
+                        <Zap className="h-3.5 w-3.5" />
+                        Skills
+                      </button>
+                    </div>
+
+                    {/* Skill 庫 Modal */}
+                    {showSkillModal && (
+                      <SkillPickerModal
+                        skills={skills}
+                        onApply={(skill) => {
+                          handleFieldChange('userPrompt', skill.prompt)
+                          setShowSkillModal(false)
+                        }}
+                        onClose={() => setShowSkillModal(false)}
+                      />
+                    )}
                     <textarea
-                      rows={4}
                       value={userPrompt}
                       maxLength={PROMPT_MAX}
                       onChange={(e) => handleFieldChange('userPrompt', e.target.value)}
                       placeholder="例：整理成報價跟進信，語氣友善；或：寫一份會議摘要"
-                      className="w-full resize-y rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 placeholder:text-gray-400 focus:border-[#AE924C] focus:outline-none"
+                      className="min-h-[80px] flex-1 resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 placeholder:text-gray-400 focus:border-[#AE924C] focus:outline-none"
                     />
                   </div>
                 </div>
@@ -844,56 +1235,114 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
                 <Undo2 className="h-4 w-4" />
               </button>
 
-              {/* AI 改寫：有選取時才顯示 */}
-              {hasSelection && !isStreaming && (
+              <div className="mx-1 h-4 w-px bg-amber-300" />
+
+              {/* 插入：固定顯示，在游標位置新增段落 */}
+              {!isStreaming && (
+                showInsertInput ? (
+                  <form
+                    className="flex items-center gap-1"
+                    onSubmit={(e) => { e.preventDefault(); if (insertInput.trim()) handleInsert(insertInput.trim()) }}
+                  >
+                    <input
+                      ref={insertInputRef}
+                      type="text"
+                      value={insertInput}
+                      onChange={(e) => setInsertInput(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Escape') { setShowInsertInput(false); setInsertInput('') } }}
+                      placeholder="描述要插入的內容…"
+                      className="w-44 rounded-lg border border-amber-300 bg-white px-2 py-1 text-sm focus:border-amber-500 focus:outline-none"
+                    />
+                    <button type="submit" disabled={!insertInput.trim() || isRewriting} className="rounded-lg px-2 py-1 text-sm font-medium text-amber-700 hover:bg-white/70 disabled:opacity-40">送出</button>
+                    <button type="button" onClick={() => { setShowInsertInput(false); setInsertInput('') }} className="rounded-lg px-1.5 py-1 text-sm text-amber-500 hover:bg-white/70">✕</button>
+                  </form>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowInsertInput(true)}
+                    disabled={isRewriting}
+                    className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-sm font-medium text-amber-700 transition-colors hover:bg-white/70 disabled:opacity-40"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                    插入
+                  </button>
+                )
+              )}
+
+              {/* 改寫中狀態提示 */}
+              {isRewriting && (
                 <>
                   <div className="mx-1 h-4 w-px bg-amber-300" />
-                  {[
-                    { label: '重寫', instruction: '重新改寫這段，保持語意但換一種表達方式' },
-                    { label: '縮短', instruction: '將這段縮短，保留核心意思' },
-                    { label: '正式化', instruction: '將這段改為更正式的語氣' },
-                    { label: '友善化', instruction: '將這段改為更親切友善的語氣' },
-                  ].map(({ label, instruction }) => (
-                    <button
-                      key={label}
-                      type="button"
-                      onClick={() => handleRewrite(instruction)}
-                      disabled={isRewriting}
-                      className="rounded-lg px-2.5 py-1 text-sm font-medium text-amber-700 transition-colors hover:bg-white/70 hover:text-amber-900 disabled:opacity-40"
-                    >
-                      {label}
-                    </button>
-                  ))}
-                  <div className="mx-1 h-4 w-px bg-amber-300" />
-                  {showRewriteInput ? (
+                  <span className="animate-pulse text-sm text-amber-600">AI 處理中…</span>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* BubbleMenu Portal：選取文字後浮出 */}
+          {bubbleMenuElRef.current && createPortal(
+            <div className="flex items-center gap-0.5 rounded-lg border border-amber-300 bg-white px-1.5 py-1 shadow-lg">
+              {!isStreaming && !isRewriting && [
+                { label: '重寫', instruction: '重新改寫這段，保持語意但換一種表達方式' },
+                { label: '縮短', instruction: '將這段縮短，保留核心意思' },
+                { label: '正式化', instruction: '將這段改為更正式的語氣' },
+                { label: '友善化', instruction: '將這段改為更親切友善的語氣' },
+              ].map(({ label, instruction }) => (
+                <button
+                  key={label}
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => handleRewrite(instruction)}
+                  className="rounded px-2 py-0.5 text-sm font-medium text-amber-800 hover:bg-amber-100"
+                >
+                  {label}
+                </button>
+              ))}
+              {!isStreaming && (
+                <>
+                  <div className="mx-1 h-4 w-px bg-amber-200" />
+                  {isRewriting ? (
+                    <span className="animate-pulse px-2 text-sm text-amber-600">AI 處理中…</span>
+                  ) : showRewriteInput ? (
                     <form
                       className="flex items-center gap-1"
-                      onSubmit={(e) => { e.preventDefault(); if (rewriteInput.trim()) handleRewrite(rewriteInput.trim()) }}
+                      onSubmit={(e) => {
+                        e.preventDefault()
+                        if (rewriteInput.trim()) {
+                          // 在送出前先保存 selection
+                          const sel = editor?.state.selection
+                          if (sel && sel.from !== sel.to) savedSelectionRef.current = { from: sel.from, to: sel.to }
+                          handleRewrite(rewriteInput.trim())
+                        }
+                      }}
                     >
                       <input
-                        autoFocus
+                        ref={rewriteInputRef}
                         type="text"
                         value={rewriteInput}
                         onChange={(e) => setRewriteInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Escape') { setShowRewriteInput(false); setRewriteInput('') } }}
                         placeholder="輸入改寫指令…"
-                        className="w-40 rounded-lg border border-amber-300 bg-white px-2 py-1 text-sm focus:border-amber-500 focus:outline-none"
+                        className="w-36 rounded border border-amber-300 px-2 py-0.5 text-sm focus:border-amber-500 focus:outline-none"
                       />
-                      <button type="submit" disabled={!rewriteInput.trim() || isRewriting} className="rounded-lg px-2 py-1 text-sm font-medium text-amber-700 hover:bg-white/70 disabled:opacity-40">送出</button>
-                      <button type="button" onClick={() => { setShowRewriteInput(false); setRewriteInput('') }} className="rounded-lg px-1.5 py-1 text-sm text-amber-500 hover:bg-white/70">✕</button>
+                      <button type="submit" disabled={!rewriteInput.trim()} className="rounded px-1.5 py-0.5 text-sm font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-40">送出</button>
+                      <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => { setShowRewriteInput(false); setRewriteInput('') }} className="rounded px-1 py-0.5 text-sm text-amber-400 hover:bg-amber-100">✕</button>
                     </form>
                   ) : (
                     <button
                       type="button"
+                      onMouseDown={(e) => e.preventDefault()}
                       onClick={() => setShowRewriteInput(true)}
-                      className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-sm font-medium text-amber-700 transition-colors hover:bg-white/70"
+                      className="flex items-center gap-1 rounded px-2 py-0.5 text-sm font-medium text-amber-700 hover:bg-amber-100"
                     >
-                      <Pencil className="h-3.5 w-3.5" />
+                      <Pencil className="h-3 w-3" />
                       自訂
                     </button>
                   )}
                 </>
               )}
-            </div>
+            </div>,
+            bubbleMenuElRef.current,
           )}
 
           {/* 編輯器主體 */}
