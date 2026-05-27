@@ -34,6 +34,7 @@ from app.models.bot_external_user import BotExternalUser
 from app.models.km_connector import KmConnector
 from app.models.doc_parse_profile import DocParseProfile
 from app.models.doc_parse_result import DocParseResult
+from app.models.writing_document import WritingDocument
 
 __all__ = [
     "Base", "Tenant", "User", "AgentCatalog", "TenantAgent", "UserAgent",
@@ -53,4 +54,5 @@ __all__ = [
     "KmConnector",
     "DocParseProfile",
     "DocParseResult",
+    "WritingDocument",
 ]

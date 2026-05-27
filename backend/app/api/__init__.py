@@ -1,6 +1,6 @@
 """API 路由彙總：掛載 users、agents、source_files、prompt_templates、bi_projects 等 endpoint"""
 from fastapi import APIRouter
-from app.api.endpoints import users, agents, agent_catalog, chat, chat_dev, chat_compute_tool, chat_threads, chat_insights, agent_insights, source_files, prompt_templates, tenants, companies, bi_projects, bi_sources, bi_schemas, bi_sample_qa, llm_configs, activation, km, km_kb, km_connectors, widget_admin, api_keys, public_bot, public_speech, speech, ocr, bots, widget_bot, doc_refiner, document_parse, messaging_webhook
+from app.api.endpoints import users, agents, agent_catalog, chat, chat_dev, chat_compute_tool, chat_threads, chat_insights, agent_insights, source_files, prompt_templates, tenants, companies, bi_projects, bi_sources, bi_schemas, bi_sample_qa, llm_configs, activation, km, km_kb, km_connectors, widget_admin, api_keys, public_bot, public_speech, speech, ocr, bots, widget_bot, doc_refiner, document_parse, messaging_webhook, writing
 
 router = APIRouter()
 router.include_router(users.router, prefix="/users", tags=["users"])
@@ -36,3 +36,4 @@ router.include_router(widget_bot.router, prefix="/widget/bot", tags=["widget-bot
 router.include_router(doc_refiner.router, prefix="/doc-refiner", tags=["doc-refiner"])
 router.include_router(document_parse.router, prefix="/document-parse", tags=["document-parse"])
 router.include_router(messaging_webhook.router, prefix="/webhook", tags=["messaging-webhook"])
+router.include_router(writing.router, prefix="/writing-documents", tags=["writing"])
