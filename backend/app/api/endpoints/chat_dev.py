@@ -60,13 +60,15 @@ async def chat_completions_dev(
         if not model:
             raise HTTPException(status_code=400, detail="未指定模型，請在 AI 設定中選擇模型")
         tid = str(getattr(current, "tenant_id", "") or "")
-        litellm_model, api_key, api_base = _get_llm_params(model, db=db, tenant_id=tid or None)
+        resolved = _get_llm_params(model, db=db, tenant_id=tid or None)
 
-        if not api_key:
+        if not resolved.is_configured():
             raise HTTPException(
                 status_code=503,
-                detail=f"{_get_provider_name(model)} API Key 未設定，請在管理介面（租戶 LLM 設定）設定對應的 key",
+                detail=f"{_get_provider_name(model)} 尚未設定完成，請在管理介面（租戶 LLM 設定）設定",
             )
+        api_key = resolved.api_key
+        api_base = resolved.api_base
         if model.startswith("twcc/") and not api_base:
             raise HTTPException(
                 status_code=503,

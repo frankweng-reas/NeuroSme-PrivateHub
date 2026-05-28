@@ -29,9 +29,11 @@ from app.schemas.tenant_config import (
     SpeechConfigUpdate,
     TenantConfigResponse,
 )
+from app.services.llm_service import LLMResolveResult
 from app.services.llm_utils import (
     apply_api_base,
     ensure_local_prefix,
+    normalize_gcp_region,
     resolve_litellm_model,
     set_env_api_key,
 )
@@ -57,7 +59,6 @@ PROVIDER_DEFAULT_MODELS: dict[str, list[str]] = {
     "vertex": [
         "vertex_ai/gemini-2.5-flash",
         "vertex_ai/gemini-2.5-pro",
-        "vertex_ai/claude-3-5-sonnet@20241022",
     ],
     "twcc": ["twcc/Llama3.3-FFM-70B-32K"],
     "local": [
@@ -414,6 +415,7 @@ _TEST_DEFAULT_MODELS: dict[str, str] = {
     "openai": "gpt-4o-mini",
     "gemini": "gemini/gemini-2.5-flash",
     "anthropic": "anthropic/claude-3-5-haiku-20241022",
+    "vertex": "vertex_ai/gemini-2.5-flash",
     "twcc": "twcc/Llama3.3-FFM-70B-32K",
 }
 
@@ -443,11 +445,22 @@ async def test_llm_config(
     cfg = _get_config_for_tenant(db, config_id, tenant_id)
 
     # local provider（Ollama / LM Studio / vLLM）不需要真實 API Key
-    if cfg.provider != "local" and not cfg.api_key_encrypted:
+    # Vertex：GCP VM 可用 ADC（預設 SA），只需 Project ID + Region；亦可貼 Service Account JSON
+    if cfg.provider == "vertex":
+        if not (cfg.gcp_project_id or "").strip() or not (cfg.gcp_region or "").strip():
+            raise HTTPException(status_code=400, detail="Vertex AI 需設定 GCP Project ID 與 Region")
+        if not cfg.api_key_encrypted:
+            vertex_creds: str | None = None
+        else:
+            try:
+                vertex_creds = decrypt_api_key(cfg.api_key_encrypted)
+            except ValueError as e:
+                raise HTTPException(status_code=500, detail=f"Service Account JSON 解密失敗：{e}") from e
+    elif cfg.provider != "local" and not cfg.api_key_encrypted:
         raise HTTPException(status_code=400, detail="尚未設定 API Key，無法測試")
 
     api_key = "local"
-    if cfg.api_key_encrypted:
+    if cfg.api_key_encrypted and cfg.provider != "vertex":
         try:
             api_key = decrypt_api_key(cfg.api_key_encrypted)
         except ValueError as e:
@@ -484,6 +497,27 @@ async def test_llm_config(
                     reply = data.get("choices", [{}])[0].get("message", {}).get("content", "")
                     return {"ok": True, "elapsed_ms": elapsed_ms, "reply": reply.strip()[:100]}
 
+        elif cfg.provider == "vertex":
+            litellm_model = model if model.startswith("vertex_ai/") else f"vertex_ai/{model}"
+            resolved = LLMResolveResult(
+                litellm_model=litellm_model,
+                vertex_project=cfg.gcp_project_id,
+                vertex_location=normalize_gcp_region(cfg.gcp_region or ""),
+                vertex_credentials=vertex_creds,
+            )
+            kwargs: dict = {
+                "model": resolved.litellm_model,
+                "messages": _TEST_MESSAGES,
+                "max_tokens": 20,
+                "timeout": 30,
+                "temperature": 0,
+            }
+            resolved.apply_to_kwargs(kwargs)
+            resp = await litellm.acompletion(**kwargs)
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            reply = (resp.choices[0].message.content or "").strip()
+            return {"ok": True, "elapsed_ms": elapsed_ms, "reply": reply[:100]}
+
         elif cfg.provider == "local":
             # 本機模型（Ollama）：使用原生 /api/chat，支援 think 參數
             api_base_raw = (cfg.api_base_url or "").rstrip("/")
@@ -507,16 +541,17 @@ async def test_llm_config(
             return {"ok": True, "elapsed_ms": elapsed_ms, "reply": reply[:100]}
 
         else:
-            # OpenAI / Gemini（LiteLLM）
+            # OpenAI / Gemini / Anthropic（LiteLLM）
             kwargs = {
                 "model": model,
                 "messages": _TEST_MESSAGES,
-                "api_key": api_key,
                 "max_tokens": 20,
                 "timeout": 30,
                 "temperature": 0,
             }
-            set_env_api_key(model, api_key)
+            if api_key and api_key != "local":
+                kwargs["api_key"] = api_key
+                set_env_api_key(model, api_key)
             resp = await litellm.acompletion(**kwargs)
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             reply = (resp.choices[0].message.content or "").strip()

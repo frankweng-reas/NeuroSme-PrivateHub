@@ -237,11 +237,10 @@ export default function AdminLlmSkills() {
         open={deleteTarget !== null}
         title="刪除 Skill"
         message={`確定要刪除「${deleteTarget?.title}」？此操作無法復原。`}
-        confirmLabel="刪除"
-        danger
-        loading={deleteLoading}
+        confirmText={deleteLoading ? '刪除中...' : '刪除'}
+        variant="danger"
         onConfirm={handleDelete}
-        onClose={() => setDeleteTarget(null)}
+        onCancel={() => setDeleteTarget(null)}
       />
 
       {/* 頁首 */}

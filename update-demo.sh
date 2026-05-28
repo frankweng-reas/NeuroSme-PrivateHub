@@ -93,13 +93,15 @@ update_backend() {
   echo "[backend] 啟動新容器..."
   docker compose -f docker-compose.demo.yml up -d --force-recreate demo-backend
 
-  echo "[backend] 執行 DB migration..."
-  docker compose -f docker-compose.demo.yml exec -T demo-backend \
-    alembic upgrade head 2>&1 || {
-      echo "  ⚠️  Migration 失敗"
-      rollback "demo-backend" "$IMAGE"
-      return 1
-    }
+  echo "[backend] 等待 entrypoint migration 完成..."
+  local elapsed=0
+  while [ $elapsed -lt 60 ]; do
+    if docker compose -f docker-compose.demo.yml logs demo-backend 2>&1 | grep -q "Starting uvicorn"; then
+      break
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
 
   if ! wait_healthy "demo-backend" "https://demo.ee.neurosme.ai/health" ; then
     rollback "demo-backend" "$IMAGE"

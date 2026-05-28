@@ -9,7 +9,6 @@ import AgentChatUI from './agents/AgentChatUI'
 import AgentCustomerUI from './agents/AgentCustomerUI'
 import AgentQuotationUI from './agents/AgentQuotationUI'
 import AgentWritingUI from './agents/AgentWritingUI'
-import AgentMarketingUI from './agents/AgentMarketingUI'
 import AgentOcrUI from './agents/AgentOcrUI'
 import AgentKbManagerUI from './agents/AgentKbManagerUI'
 import AgentKbBotBuilderUI from './agents/AgentKbBotBuilderUI'
@@ -26,7 +25,6 @@ function getAgentUI(agent: Agent) {
   if (id === 'doc-refiner') return AgentDocRefinerUI
   if (id === 'document-parse') return AgentDocumentParseUI
   if (id === 'writing') return AgentWritingUI
-  if (id === 'marketing') return AgentMarketingUI
   if (id.includes('business')) return AgentBusinessUI
   if (id.includes('customer')) return AgentCustomerUI
   if (id.includes('quotation')) return AgentQuotationUI

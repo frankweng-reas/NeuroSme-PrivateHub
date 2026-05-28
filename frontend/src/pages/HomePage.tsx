@@ -12,28 +12,26 @@ import AgentIcon from '@/components/AgentIcon'
 
 const AGENT_DESCRIPTIONS: Record<string, string> = {
   chat:      '通用對話，協助思考、草擬文件與說明',
-  writing:   'AI 輔助撰寫商業文書，一鍵生成草稿',
+  writing:   'AI 輔助撰寫文案與商業文書，支援 Skills 範本',
   knowledge: '根據企業知識庫文件精準回答問題',
   cs:           '基於知識庫，提供精準客服問答',
   'kb-manager':     '建立與管理企業知識庫，上傳文件並測試查詢效果',
   'kb-bot-builder': '以知識庫為基礎建立 AI Bot，並部署為 Widget 供外部使用',
   'doc-refiner':    '上傳 PDF，AI 自動萃取 Q&A 知識條目，一鍵匯入知識庫',
   business:  '數據分析與商業洞察報告',
-  marketing: '社群貼文、廣告文案、EDM 一鍵生成',
   customer:  '客戶行為分析與洞察',
   ocr:       '上傳圖片，自動抽取結構化欄位資料',
 }
 
 const AGENT_SCENARIOS: Record<string, string> = {
   chat:      '日常問答、文件草稿、腦力激盪',
-  writing:   '企劃書、提案報告、商業電子郵件',
+  writing:   '企劃書、提案報告、社群貼文、行銷文案',
   knowledge: '文件查詢、政策解讀、FAQ、履歷分析',
   cs:           '客服回覆、問題解答、投訴處理',
   'kb-manager':     '文件上傳、知識庫建立、查詢測試',
   'kb-bot-builder': 'Bot 建立與設定、Widget 部署、語音啟用',
   'doc-refiner':    'PDF 整理、Q&A 萃取、知識庫匯入',
   business:  '銷售分析、市場趨勢、績效報告',
-  marketing: '社群貼文、廣告文案、電子報',
   customer:  '客戶分群、購買行為、留存分析',
   ocr:       '名片、發票、收據、合約掃描',
 }

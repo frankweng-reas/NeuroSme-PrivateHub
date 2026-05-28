@@ -67,7 +67,7 @@
 |---|---|---|
 | OpenAI | API Key | 雲端模型（GPT 系列） |
 | Google AI Studio | API Key | Gemini 模型，開發與小型部署 |
-| Google Vertex AI | GCP Project ID + Region + Service Account JSON（選填） | Gemini / Claude 企業版，支援 HIPAA/SOC2 |
+| Google Vertex AI | GCP Project ID + Region + Service Account JSON（選填） | Gemini 企業版，支援 HIPAA/SOC2 |
 | Anthropic | API Key | Claude 系列模型 |
 | 台智雲 TWCC | API Key + API Base URL | 台灣自主 AI 算力 |
 | 本機模型 (Local) | API Base URL | Ollama / LM Studio 自架模型 |

@@ -127,8 +127,6 @@ export default function AdminLLMSettings() {
   const [tenantConfig, setTenantConfig] = useState<TenantConfig | null>(null)
   const [configs, setConfigs] = useState<LLMProviderConfig[]>([])
   const [providerOptions, setProviderOptions] = useState<Record<string, string[]>>({})
-  const [currentTenantId, setCurrentTenantId] = useState<string | null>(null)
-
   // loading / error
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -187,7 +185,6 @@ export default function AdminLLMSettings() {
     Promise.all([listLLMConfigs(), getLLMProviderOptions(), getMe(), getTenantConfig()])
       .then(([cfgs, opts, me, tc]) => {
         const tid = (me.tenant_id ?? '').trim()
-        setCurrentTenantId(tid || null)
         const raw = Array.isArray(cfgs) ? cfgs : []
         const scoped = tid ? raw.filter((c) => (c.tenant_id ?? '').trim() === tid) : raw
         setConfigs(scoped)
@@ -490,11 +487,6 @@ export default function AdminLLMSettings() {
           <KeyRound className="h-6 w-6 text-gray-600" />
           <div>
             <h2 className="text-lg font-bold text-gray-800">LLM 設定</h2>
-            {currentTenantId && (
-              <p className="text-base text-gray-500 mt-0.5">
-                租戶 ID：<code className="rounded bg-gray-100 px-1.5 py-0.5">{currentTenantId}</code>
-              </p>
-            )}
           </div>
         </div>
         <button
@@ -856,12 +848,12 @@ export default function AdminLLMSettings() {
               <Field
                 label={
                   form.provider === 'vertex'
-                    ? (editingId !== null ? 'Service Account JSON（留空表示不變更）' : 'Service Account JSON（選填）')
+                    ? (editingId !== null ? 'Service Account JSON（留空表示不變更；GCP VM 可留空用 ADC）' : 'Service Account JSON（選填，GCP VM 可留空）')
                     : (editingId !== null ? 'API Key（留空表示不變更）' : 'API Key')
                 }
                 hint={
                   form.provider === 'vertex'
-                    ? '貼上 Google Cloud Service Account 的 JSON 金鑰內容；若部署環境已設定 ADC（Application Default Credentials）可留空'
+                    ? '貼上 Service Account JSON（選填）。部署在 GCP VM 且已掛預設 SA 時可留空，改以 VM 的 Application Default Credentials 連線'
                     : form.provider === 'local'
                       ? '本機服務通常不需要 API Key，可留空或填任意字串（如 local）'
                       : editingId !== null && form.api_key_masked

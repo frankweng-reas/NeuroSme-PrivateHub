@@ -12,6 +12,8 @@ import os
 def get_provider_from_model(model: str) -> str:
     """從 model 字串推斷 provider 名稱（與 llm_provider_configs.provider 欄位對應）"""
     m = (model or "").strip()
+    if m.startswith("vertex_ai/"):
+        return "vertex"
     if m.startswith("gemini/"):
         return "gemini"
     if m.startswith("twcc/"):
@@ -21,6 +23,32 @@ def get_provider_from_model(model: str) -> str:
     if m.startswith("anthropic/") or m.startswith("claude-"):
         return "anthropic"
     return "openai"
+
+
+def normalize_gcp_region(region: str) -> str:
+    """將 GCP zone（例 asia-northeast1-b）正規化為 Vertex region（asia-northeast1）。"""
+    r = (region or "").strip()
+    if not r:
+        return r
+    parts = r.rsplit("-", 1)
+    if len(parts) == 2 and len(parts[1]) == 1 and parts[1].isalpha():
+        return parts[0]
+    return r
+
+
+def apply_vertex_to_kwargs(
+    kwargs: dict,
+    *,
+    project: str,
+    location: str,
+    credentials: str | None = None,
+) -> None:
+    """注入 LiteLLM Vertex AI 參數；credentials 為 None 時使用 ADC（GCP VM 預設 SA）。"""
+    kwargs["vertex_project"] = project.strip()
+    kwargs["vertex_location"] = normalize_gcp_region(location)
+    if credentials:
+        kwargs["vertex_credentials"] = credentials
+    kwargs.pop("api_key", None)
 
 
 def resolve_litellm_model(model: str) -> str:
@@ -38,6 +66,8 @@ def resolve_litellm_model(model: str) -> str:
         return f"openai/{model[5:]}"
     if model.startswith("local/"):
         return f"ollama_chat/{model[6:]}"
+    if model.startswith("vertex_ai/"):
+        return model
     return model
 
 

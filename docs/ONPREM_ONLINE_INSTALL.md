@@ -54,18 +54,16 @@ PORTAL_BASE_URL=https://ee.neurosme.ai:3000
 ### 2. Build + Push Images 到 GHCR
 
 ```bash
-bash ~/scripts/build-onprem.sh --push
+bash ~/scripts/build-onprem.sh
 ```
 
-> **`--push` 說明**：`--push` 只是在原本的 build 流程最後多加一步 push，**不需要分開執行**。
-> 腳本執行順序為：build 4 個 images → 打包成 offline 交付包（`.tar.gz`）→ push 到 GHCR → 清理本機 build images。
+> **預設行為**：腳本預設會 build + push 到 GHCR，同時也產出 offline 交付包（`.tar.gz`）。
+> 若只想產 offline 包而不 push（少見），加上 `--no-push`：
 >
 > | 指令 | 效果 |
 > |---|---|
-> | `bash ~/scripts/build-onprem.sh` | 只產 offline 交付包 |
-> | `bash ~/scripts/build-onprem.sh --push` | 產 offline 交付包 **＋** push 到 GHCR |
->
-> 要發行 Online 版時，跑一次 `--push` 即可同時完成兩件事。
+> | `bash ~/scripts/build-onprem.sh` | 產 offline 交付包 **＋** push 到 GHCR（預設） |
+> | `bash ~/scripts/build-onprem.sh --no-push` | 只產 offline 交付包，不 push |
 
 這會 build 4 個自建 images 並 push 到 GHCR（`:VERSION` + `:latest`）：
 
@@ -89,6 +87,22 @@ bash ~/scripts/build-onprem.sh --push
 ## 升版
 
 重新執行相同指令即可。腳本會自動沿用已設定的 domain/IP，拉取最新 image 並重啟。資料目錄 `~/neurosme-data/` 不受影響。
+
+## 日常重啟
+
+```bash
+bash ~/neurosme/restart.sh
+```
+
+## 換網路環境（搬遷展場、更換 IP）
+
+若機器搬到新環境導致 IP 或 domain 改變：
+
+```bash
+bash ~/neurosme/restart.sh --reconfigure
+```
+
+腳本會列出目前機器偵測到的 IP，重新詢問並更新設定後再重啟。
 
 ---
 

@@ -5,7 +5,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Annotated, cast
+from typing import Annotated
 from uuid import UUID
 
 import aiohttp
@@ -29,6 +29,7 @@ from app.services.chat_service import (
 )
 from app.services.agent_usage import log_agent_usage
 from app.services.llm_service import (
+    LLMResolveResult,
     UsageMeta,
     _get_llm_params,
     _get_provider_name,
@@ -185,9 +186,7 @@ class ChatCompletionPrepared:
     tenant_id: str
     messages: list[dict]
     model: str
-    litellm_model: str
-    api_key: str
-    api_base: str | None
+    resolved: LLMResolveResult
     thread_uuid: UUID | None
     trace_raw: str | None
     user_id: int
@@ -339,14 +338,19 @@ def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> Ch
             status_code=400,
             detail="未指定模型，請在知識庫設定中選擇模型，或在 AI 設定中選擇模型",
         )
-    litellm_model, api_key, api_base = _get_llm_params(model, db=db, tenant_id=tenant_id)
+    resolved = _get_llm_params(model, db=db, tenant_id=tenant_id)
 
-    if not api_key:
-        raise HTTPException(
-            status_code=503,
-            detail=f"{_get_provider_name(model)} API Key 未設定，請在管理介面（租戶 LLM 設定）設定對應的 key",
+    if not resolved.is_configured():
+        detail = (
+            f"{_get_provider_name(model)} 尚未設定完成，請在管理介面（租戶 LLM 設定）設定"
+            + (
+                " GCP Project ID 與 Region（GCP VM 可使用預設 Service Account）"
+                if model.startswith("vertex_ai/")
+                else "對應的 API Key"
+            )
         )
-    if model.startswith("twcc/") and not api_base:
+        raise HTTPException(status_code=503, detail=detail)
+    if model.startswith("twcc/") and not resolved.api_base:
         raise HTTPException(
             status_code=503,
             detail="台智雲 TWCC_API_BASE 未設定，請在管理介面（租戶 LLM 設定）設定",
@@ -366,9 +370,7 @@ def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> Ch
         tenant_id=tenant_id,
         messages=messages,
         model=model,
-        litellm_model=litellm_model,
-        api_key=cast(str, api_key),
-        api_base=api_base,
+        resolved=resolved,
         thread_uuid=thread_uuid,
         trace_raw=trace_raw,
         user_id=current.id,
@@ -578,9 +580,10 @@ async def chat_completions(
         thread_uuid = prepared.thread_uuid
         trace_raw = prepared.trace_raw
         model = prepared.model
-        litellm_model = prepared.litellm_model
-        api_key = prepared.api_key
-        api_base = prepared.api_base
+        resolved = prepared.resolved
+        api_key = resolved.api_key
+        api_base = resolved.api_base
+        litellm_model = resolved.litellm_model
         messages = prepared.messages
         vision_timeout = 180 if prepared.has_vision_user_content else 60
 
@@ -646,9 +649,7 @@ async def chat_completions(
             )
 
         completion_kwargs = build_llm_kwargs_resolved(
-            litellm_model=litellm_model,
-            api_key=api_key,
-            api_base=api_base,
+            resolved=resolved,
             original_model=model,
             messages=messages,
             stream=False,
@@ -935,7 +936,7 @@ async def chat_completions_stream(
 
         try:
             if prepared.model.startswith("twcc/"):
-                url = (prepared.api_base or "").rstrip("/")
+                url = (prepared.resolved.api_base or "").rstrip("/")
                 if not url:
                     persist_fail("台智雲 API Base 未設定", "twcc_config")
                     yield _sse_event_error("台智雲 API Base 未設定")
@@ -944,7 +945,7 @@ async def chat_completions_stream(
                 try:
                     twcc_out = await _call_twcc_conversation(
                         url=url,
-                        api_key=prepared.api_key,
+                        api_key=prepared.resolved.api_key or "",
                         model_id=model_id,
                         messages=prepared.messages,
                     )
@@ -968,9 +969,7 @@ async def chat_completions_stream(
             else:
                 stream_timeout = 240 if prepared.has_vision_user_content else 120
                 completion_kwargs = build_llm_kwargs_resolved(
-                    litellm_model=prepared.litellm_model,
-                    api_key=prepared.api_key,
-                    api_base=prepared.api_base,
+                    resolved=prepared.resolved,
                     original_model=prepared.model,
                     messages=prepared.messages,
                     stream=True,

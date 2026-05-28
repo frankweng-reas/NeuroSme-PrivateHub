@@ -8,6 +8,7 @@
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -20,6 +21,7 @@ from app.core.encryption import decrypt_api_key
 from app.models.chat_llm_request import ChatLlmRequest
 from app.models.llm_provider_config import LLMProviderConfig
 from app.services.agent_usage import log_agent_usage
+from app.services.llm_utils import apply_api_base, apply_vertex_to_kwargs, normalize_gcp_region
 
 logger = logging.getLogger(__name__)
 
@@ -36,20 +38,64 @@ class UsageMeta(BaseModel):
     total_tokens: int
 
 
-def _get_llm_params(
-    model: str, db=None, tenant_id: str | None = None
-) -> tuple[str, str | None, str | None]:
+@dataclass
+class LLMResolveResult:
+    """LiteLLM 呼叫所需之解析結果（含 Vertex ADC / Service Account）。"""
+
+    litellm_model: str
+    api_key: str | None = None
+    api_base: str | None = None
+    vertex_project: str | None = None
+    vertex_location: str | None = None
+    vertex_credentials: str | None = None
+
+    def is_configured(self) -> bool:
+        if self.litellm_model.startswith("vertex_ai/"):
+            return bool((self.vertex_project or "").strip() and (self.vertex_location or "").strip())
+        if self.litellm_model.startswith("local/") or self.litellm_model.startswith("ollama_chat/"):
+            return True
+        return bool(self.api_key)
+
+    def apply_to_kwargs(self, kwargs: dict) -> None:
+        apply_api_base(kwargs, self.api_base)
+        if self.litellm_model.startswith("vertex_ai/"):
+            apply_vertex_to_kwargs(
+                kwargs,
+                project=self.vertex_project or "",
+                location=self.vertex_location or "",
+                credentials=self.vertex_credentials,
+            )
+        elif self.api_key:
+            kwargs["api_key"] = self.api_key
+
+
+def _vertex_from_cfg(cfg: LLMProviderConfig | None, litellm_model: str) -> LLMResolveResult:
+    if not cfg:
+        return LLMResolveResult(litellm_model)
+    creds: str | None = None
+    if cfg.api_key_encrypted:
+        try:
+            creds = decrypt_api_key(cfg.api_key_encrypted)
+        except ValueError:
+            logger.warning("LLMProviderConfig id=%s provider=vertex 解密失敗", cfg.id)
+    return LLMResolveResult(
+        litellm_model=litellm_model,
+        vertex_project=cfg.gcp_project_id,
+        vertex_location=normalize_gcp_region(cfg.gcp_region or ""),
+        vertex_credentials=creds,
+    )
+
+
+def _get_llm_params(model: str, db=None, tenant_id: str | None = None) -> LLMResolveResult:
     """
-    依 model 回傳 (litellm_model, api_key, api_base)。
-    api_key 僅從該租戶 DB 的 llm_provider_configs 取得；未設定則回傳 None。
-    api_base 僅台智雲需要，其他為 None。
+    依 model 回傳 LiteLLM 連線參數。
+    Vertex：優先 DB 的 gcp_project_id / gcp_region；金鑰可留空改走 VM ADC。
     """
 
-    def _db_key(provider: str) -> tuple[str | None, str | None]:
-        """從 DB 取得指定 provider 的 (api_key, api_base_url)；找不到或解密失敗回傳 (None, None)"""
+    def _db_cfg(provider: str) -> LLMProviderConfig | None:
         if db is None or not tenant_id:
-            return None, None
-        cfg = (
+            return None
+        return (
             db.query(LLMProviderConfig)
             .filter(
                 LLMProviderConfig.tenant_id == tenant_id,
@@ -59,6 +105,9 @@ def _get_llm_params(
             .order_by(LLMProviderConfig.id)
             .first()
         )
+
+    def _db_key(provider: str) -> tuple[str | None, str | None]:
+        cfg = _db_cfg(provider)
         if not cfg:
             return None, None
         key: str | None = None
@@ -69,29 +118,33 @@ def _get_llm_params(
                 logger.warning("LLMProviderConfig id=%s provider=%s 解密失敗", cfg.id, provider)
         return key, cfg.api_base_url
 
+    if model.startswith("vertex_ai/"):
+        return _vertex_from_cfg(_db_cfg("vertex"), model)
     if model.startswith("gemini/"):
         db_key, _ = _db_key("gemini")
-        return model, db_key or None, None
+        return LLMResolveResult(litellm_model=model, api_key=db_key)
     if model.startswith("twcc/"):
         db_key, db_base = _db_key("twcc")
-        litellm_model = f"openai/{model[5:]}"
-        return litellm_model, db_key or None, db_base or None
+        return LLMResolveResult(litellm_model=f"openai/{model[5:]}", api_key=db_key, api_base=db_base)
     if model.startswith("local/"):
         db_key, db_base = _db_key("local")
-        litellm_model = f"ollama_chat/{model[6:]}"
-        # 本機服務（Ollama / LM Studio / vLLM）通常不需要真實 key；用 "local" 作 placeholder
-        return litellm_model, db_key or "local", db_base or None
+        return LLMResolveResult(
+            litellm_model=f"ollama_chat/{model[6:]}",
+            api_key=db_key or "local",
+            api_base=db_base,
+        )
     if model.startswith("anthropic/") or model.startswith("claude-"):
         db_key, _ = _db_key("anthropic")
-        # 補齊前綴，確保 LiteLLM 路由正確
         litellm_model = model if model.startswith("anthropic/") else f"anthropic/{model}"
-        return litellm_model, db_key or None, None
+        return LLMResolveResult(litellm_model=litellm_model, api_key=db_key)
     db_key, _ = _db_key("openai")
-    return model, db_key or None, None
+    return LLMResolveResult(litellm_model=model, api_key=db_key)
 
 
 def _infer_llm_provider(model: str) -> str:
     m = (model or "").strip()
+    if m.startswith("vertex_ai/"):
+        return "vertex"
     if m.startswith("gemini/"):
         return "gemini"
     if m.startswith("twcc/"):
@@ -102,6 +155,8 @@ def _infer_llm_provider(model: str) -> str:
 
 
 def _get_provider_name(model: str) -> str:
+    if model.startswith("vertex_ai/"):
+        return "Vertex AI"
     if model.startswith("gemini/"):
         return "Gemini"
     if model.startswith("twcc/"):

@@ -399,12 +399,19 @@ async def _call_llm(
     tenant_id: str | None = None,
 ) -> tuple[str, dict | None]:
     """呼叫 LLM，回傳 (content, usage)"""
-    litellm_model, api_key, api_base = _get_llm_params(model, db=db, tenant_id=tenant_id)
-    if not api_key:
-        raise HTTPException(
-            status_code=503,
-            detail=f"{_get_provider_name(model)} API Key 未設定，請在管理介面（租戶 LLM 設定）設定對應的 key",
+    resolved = _get_llm_params(model, db=db, tenant_id=tenant_id)
+    if not resolved.is_configured():
+        detail = (
+            f"{_get_provider_name(model)} 尚未設定完成，請在管理介面（租戶 LLM 設定）設定"
+            + (
+                " GCP Project ID 與 Region"
+                if model.startswith("vertex_ai/")
+                else "對應的 API Key"
+            )
         )
+        raise HTTPException(status_code=503, detail=detail)
+    api_key = resolved.api_key
+    api_base = resolved.api_base
     if model.startswith("twcc/") and not api_base:
         raise HTTPException(status_code=503, detail="台智雲 TWCC_API_BASE 未設定，請在管理介面（租戶 LLM 設定）設定")
 

@@ -24,6 +24,7 @@ from app.services.startup_seed import (
     seed_agent_catalog,
     seed_default_admin,
     seed_default_tenant,
+    seed_doc_parse_profiles,
 )
 from app.services.stored_files_store import get_stored_files_base_dir
 from app.services.km_service import EmbeddingError
@@ -49,6 +50,7 @@ async def lifespan(app: FastAPI):
         seed_agent_catalog(db)
         seed_default_tenant(db)
         seed_default_admin(db)
+        seed_doc_parse_profiles(db)
 
     # 啟動 KM Connector 排程器（每分鐘檢查到期的 connector）
     from app.services.connector_service import run_due_connectors

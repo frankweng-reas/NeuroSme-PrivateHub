@@ -25,13 +25,11 @@
 import logging
 import time
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
 
 import litellm
 from sqlalchemy.orm import Session
 
-from app.services.llm_service import UsageMeta, _get_llm_params, _get_provider_name
-from app.services.llm_utils import apply_api_base
+from app.services.llm_service import LLMResolveResult, UsageMeta, _get_llm_params, _get_provider_name
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +39,17 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 
 class LLMProviderNotConfigured(Exception):
-    """該 provider 的 API Key 尚未在租戶設定中設定"""
+    """該 provider 的連線設定尚未在租戶設定中完成"""
     def __init__(self, model: str):
         provider = _get_provider_name(model)
-        super().__init__(f"{provider} API Key 未設定，請在 NeuroSme 管理介面設定對應的 key")
+        if model.startswith("vertex_ai/"):
+            msg = (
+                "Vertex AI 尚未設定完成，請在 NeuroSme 管理介面設定 GCP Project ID 與 Region"
+                "（GCP VM 可留空 Service Account JSON，使用預設 Service Account）"
+            )
+        else:
+            msg = f"{provider} API Key 未設定，請在 NeuroSme 管理介面設定對應的 key"
+        super().__init__(msg)
         self.model = model
         self.provider = provider
 
@@ -60,21 +65,14 @@ class LLMCallError(Exception):
 # kwargs 組裝
 # ──────────────────────────────────────────────────────────────────────────────
 
-@dataclass
-class LLMParams:
-    litellm_model: str
-    api_key: str
-    api_base: str | None
-
-
-def resolve_llm_params(model: str, db: Session, tenant_id: str) -> LLMParams:
+def resolve_llm_params(model: str, db: Session, tenant_id: str) -> LLMResolveResult:
     """
-    查詢 DB 取得 LLM 連線參數，若 api_key 未設定則拋 LLMProviderNotConfigured。
+    查詢 DB 取得 LLM 連線參數；未設定則拋 LLMProviderNotConfigured。
     """
-    litellm_model, api_key, api_base = _get_llm_params(model, db=db, tenant_id=tenant_id)
-    if not api_key:
+    resolved = _get_llm_params(model, db=db, tenant_id=tenant_id)
+    if not resolved.is_configured():
         raise LLMProviderNotConfigured(model)
-    return LLMParams(litellm_model=litellm_model, api_key=api_key, api_base=api_base)
+    return resolved
 
 
 def build_llm_kwargs(
@@ -96,20 +94,19 @@ def build_llm_kwargs(
 
     不會呼叫 LiteLLM，純粹回傳 dict，方便單元測試。
     """
-    params = resolve_llm_params(model, db, tenant_id)
+    resolved = resolve_llm_params(model, db, tenant_id)
 
     kwargs: dict = {
-        "model": params.litellm_model,
+        "model": resolved.litellm_model,
         "messages": messages,
-        "api_key": params.api_key,
         "stream": stream,
         "temperature": temperature,
         **extra,
     }
-    apply_api_base(kwargs, params.api_base)
+    resolved.apply_to_kwargs(kwargs)
 
     # Ollama 本地模型預設會啟用 thinking mode，對 RAG 問答造成大幅延遲，需明確停用
-    if model.startswith("local/") or params.litellm_model.startswith("ollama_chat/"):
+    if model.startswith("local/") or resolved.litellm_model.startswith("ollama_chat/"):
         kwargs.setdefault("think", False)
 
     return kwargs
@@ -121,9 +118,7 @@ def build_llm_kwargs(
 
 def build_llm_kwargs_resolved(
     *,
-    litellm_model: str,
-    api_key: str,
-    api_base: str | None,
+    resolved: LLMResolveResult,
     original_model: str,
     messages: list[dict],
     stream: bool = False,
@@ -131,20 +126,18 @@ def build_llm_kwargs_resolved(
     **extra,
 ) -> dict:
     """
-    同 build_llm_kwargs，但接受已解析好的 (litellm_model, api_key, api_base)，
-    跳過 DB 查詢。適用於上游已呼叫過 _get_llm_params 的場景（例如 chat.py）。
+    同 build_llm_kwargs，但接受已解析好的 LLMResolveResult，跳過 DB 查詢。
     original_model 用於判斷是否為 local/ 模型。
     """
     kwargs: dict = {
-        "model": litellm_model,
+        "model": resolved.litellm_model,
         "messages": messages,
-        "api_key": api_key,
         "stream": stream,
         "temperature": temperature,
         **extra,
     }
-    apply_api_base(kwargs, api_base)
-    if original_model.startswith("local/") or litellm_model.startswith("ollama_chat/"):
+    resolved.apply_to_kwargs(kwargs)
+    if original_model.startswith("local/") or resolved.litellm_model.startswith("ollama_chat/"):
         kwargs.setdefault("think", False)
     return kwargs
 

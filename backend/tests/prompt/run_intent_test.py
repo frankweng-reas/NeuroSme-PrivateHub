@@ -39,7 +39,7 @@ load_dotenv(_BACKEND / ".env")
 
 # ── 現在才 import app 模組（需要 .env 先載入）─────────────────────────────
 import litellm
-from app.api.endpoints.chat import _get_llm_params, _get_provider_name
+from app.services.llm_service import _get_llm_params, _get_provider_name
 from app.core.database import SessionLocal
 from app.models.bi_schema import BiSchema
 from app.models.user import User
@@ -176,27 +176,24 @@ def call_llm(
             "請使用 --tenant-id、環境變數 INTENT_TEST_TENANT_ID、在 cases.yaml 設定 tenant_id，"
             "或讓該 schema 的 bi_schemas.user_id 可對應到 users.tenant_id。"
         )
-    litellm_model, api_key, api_base = _get_llm_params(model, db=db, tenant_id=tid)
-    if not api_key:
+    resolved = _get_llm_params(model, db=db, tenant_id=tid)
+    if not resolved.is_configured():
         raise RuntimeError(
-            f"租戶 {tid!r} 未設定 {_get_provider_name(model)} 的 API Key（llm_provider_configs.is_active）。"
+            f"租戶 {tid!r} 未設定 {_get_provider_name(model)}（llm_provider_configs.is_active）。"
             "請在管理介面設定後再跑測試。"
         )
-    if model.startswith("gemini/"):
-        os.environ["GEMINI_API_KEY"] = api_key
-    else:
-        os.environ["OPENAI_API_KEY"] = api_key
+    if resolved.api_key and model.startswith("gemini/"):
+        os.environ["GEMINI_API_KEY"] = resolved.api_key
+    elif resolved.api_key:
+        os.environ["OPENAI_API_KEY"] = resolved.api_key
 
     completion_kwargs: dict = {
-        "model": litellm_model,
+        "model": resolved.litellm_model,
         "messages": messages,
-        "api_key": api_key,
         "temperature": 0,
         "timeout": 120,
     }
-    if api_base:
-        base = (api_base or "").rstrip("/")
-        completion_kwargs["api_base"] = base if base.endswith("/v1") else f"{base}/v1"
+    resolved.apply_to_kwargs(completion_kwargs)
 
     resp = litellm.completion(**completion_kwargs)
     return resp.choices[0].message.content or ""  # type: ignore[union-attr]
