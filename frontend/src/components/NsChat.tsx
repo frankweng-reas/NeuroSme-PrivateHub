@@ -1,7 +1,8 @@
 /** NeuroSme 通用 LLM 對話殼（NsChat）；與 AgentChat 分離，供 ChatAgent 等擴充 */
 import { useEffect, useRef, useState, type FormEvent, type HTMLAttributes, type ReactNode } from 'react'
 import type { ChatMessageAttachmentMeta } from '@/api/chatThreads'
-import { ChevronDown, Copy, Loader2, RotateCcw } from 'lucide-react'
+import { ChevronDown, Copy, FileDown, Loader2, RotateCcw } from 'lucide-react'
+import PdfPreviewModal from '@/components/PdfPreviewModal'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
@@ -177,6 +178,8 @@ export interface NsChatProps {
   submitDisabledTitle?: string
   onCopySuccess?: () => void
   onCopyError?: () => void
+  /** 助理訊息是否顯示 PDF 下載（預設 true） */
+  showPdf?: boolean
   /** 僅在最後一則助理訊息顯示「再試一次」；由父層負責打 API／刪除舊訊息等 */
   onRetryLastAssistant?: () => void
   /** 為 true 時不畫外框（由外層容器套用 rounded-2xl / border / shadow，對齊 AgentBusinessUI 主面板） */
@@ -212,6 +215,7 @@ export default function NsChat({
   submitDisabledTitle,
   onCopySuccess,
   onCopyError,
+  showPdf = true,
   onRetryLastAssistant,
   embedded = false,
   allowSubmitEmptyInput = false,
@@ -223,6 +227,7 @@ export default function NsChat({
 }: NsChatProps) {
   const [input, setInput] = useState('')
   const [isAtBottom, setIsAtBottom] = useState(true)
+  const [pdfPreviewContent, setPdfPreviewContent] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -374,7 +379,7 @@ export default function NsChat({
                         <div className="mt-2 border-t border-gray-200 pt-2 text-[15px] text-gray-600">{line}</div>
                       )
                     })()}
-                    {m.role === 'assistant' && !m.streaming && (
+                    {m.role === 'assistant' && !m.streaming && m.content && (
                       <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-2">
                         <button
                           type="button"
@@ -384,6 +389,17 @@ export default function NsChat({
                           <Copy className="h-4 w-4" />
                           複製
                         </button>
+                        {showPdf && (
+                          <button
+                            type="button"
+                            onClick={() => setPdfPreviewContent(m.content)}
+                            title="下載 PDF"
+                            className="flex items-center gap-1 rounded-2xl px-2 py-1 text-[16px] text-gray-600 transition-colors hover:bg-gray-200"
+                          >
+                            <FileDown className="h-4 w-4" />
+                            下載 PDF
+                          </button>
+                        )}
                         {onRetryLastAssistant != null &&
                           i === messages.length - 1 &&
                           !isLoading &&
@@ -427,6 +443,15 @@ export default function NsChat({
             </button>
           ) : null}
         </div>
+
+        {pdfPreviewContent != null && (
+          <PdfPreviewModal
+            open
+            content={pdfPreviewContent}
+            onClose={() => setPdfPreviewContent(null)}
+            onDownloadError={onCopyError}
+          />
+        )}
 
         {composerAboveForm != null ? (
           <div className="mb-2 shrink-0 space-y-2">{composerAboveForm}</div>

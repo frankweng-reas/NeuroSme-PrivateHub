@@ -185,6 +185,177 @@ export async function rewriteQAItem(req: RewriteItemRequest): Promise<RewriteIte
   return res.json() as Promise<RewriteItemResponse>
 }
 
+// ── 結構化 MD → 知識庫 ────────────────────────────────────────────────────────
+
+export interface ImportMdToKBRequest {
+  title: string
+  markdown: string
+  kb_id?: number
+  new_kb_name?: string
+}
+
+export async function importMdToKB(req: ImportMdToKBRequest): Promise<ImportToKBResponse> {
+  const token = localStorage.getItem(TOKEN_KEY)
+  const res = await fetch(`${API_BASE}/doc-refiner/import-md-to-kb`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try {
+      const body = (await res.json()) as { detail?: unknown }
+      if (typeof body.detail === 'string') detail = body.detail
+    } catch { /* ignore */ }
+    throw new ApiError(detail || '匯入失敗', res.status, detail)
+  }
+  return res.json() as Promise<ImportToKBResponse>
+}
+
+// ── 文件 → 結構化 MD ──────────────────────────────────────────────────────────
+
+export type MdStreamEvent =
+  | { type: 'extract_progress'; page: number; page_count: number; stage: string; detail?: string }
+  | { type: 'meta'; page_count: number; char_count: number; chunk_total: number; ocr_pages?: number[] }
+  | { type: 'md_chunk'; chunk: number; chunk_total: number; content: string }
+  | { type: 'done'; usage: TokenUsage; model: string }
+  | { type: 'error'; detail: string }
+
+export async function* toMarkdownStream(
+  file: File,
+  model?: string,
+  signal?: AbortSignal,
+): AsyncGenerator<MdStreamEvent> {
+  const token = localStorage.getItem(TOKEN_KEY) ?? ''
+  const fd = new FormData()
+  fd.append('file', file)
+  if (model) fd.append('model', model)
+
+  const res = await fetch(`${API_BASE}/doc-refiner/to-markdown`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: fd,
+    signal,
+  })
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try {
+      const body = (await res.json()) as { detail?: unknown }
+      if (typeof body.detail === 'string') detail = body.detail
+    } catch { /* ignore */ }
+    yield { type: 'error', detail }
+    return
+  }
+
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const blocks = buffer.split('\n\n')
+    buffer = blocks.pop() ?? ''
+    for (const block of blocks) {
+      const dataLine = block.split('\n').find((l) => l.startsWith('data: '))
+      if (!dataLine) continue
+      try {
+        yield JSON.parse(dataLine.slice(6)) as MdStreamEvent
+      } catch { /* skip malformed */ }
+    }
+  }
+}
+
+// ── 網頁 → 結構化 MD ──────────────────────────────────────────────────────────
+
+export interface WebPreviewResponse {
+  source_url: string
+  title: string
+  content_html: string
+  preview_html: string
+  text_length: number
+  excerpt: string
+}
+
+export async function fetchWebPreview(url: string): Promise<WebPreviewResponse> {
+  const token = localStorage.getItem(TOKEN_KEY)
+  const res = await fetch(`${API_BASE}/doc-refiner/web/preview`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ url }),
+  })
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try {
+      const body = (await res.json()) as { detail?: unknown }
+      if (typeof body.detail === 'string') detail = body.detail
+    } catch { /* ignore */ }
+    throw new ApiError(detail || '網頁擷取失敗', res.status, detail)
+  }
+  return res.json() as Promise<WebPreviewResponse>
+}
+
+export async function* webToMarkdownStream(
+  params: {
+    sourceUrl: string
+    title: string
+    contentHtml: string
+    model?: string
+  },
+  signal?: AbortSignal,
+): AsyncGenerator<MdStreamEvent> {
+  const token = localStorage.getItem(TOKEN_KEY) ?? ''
+  const fd = new FormData()
+  fd.append('source_url', params.sourceUrl)
+  fd.append('title', params.title)
+  fd.append('content_html', params.contentHtml)
+  if (params.model) fd.append('model', params.model)
+
+  const res = await fetch(`${API_BASE}/doc-refiner/web/to-markdown`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: fd,
+    signal,
+  })
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try {
+      const body = (await res.json()) as { detail?: unknown }
+      if (typeof body.detail === 'string') detail = body.detail
+    } catch { /* ignore */ }
+    yield { type: 'error', detail }
+    return
+  }
+
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const blocks = buffer.split('\n\n')
+    buffer = blocks.pop() ?? ''
+    for (const block of blocks) {
+      const dataLine = block.split('\n').find((l) => l.startsWith('data: '))
+      if (!dataLine) continue
+      try {
+        yield JSON.parse(dataLine.slice(6)) as MdStreamEvent
+      } catch { /* skip malformed */ }
+    }
+  }
+}
+
 export async function exportDocument(req: ExportRequest): Promise<Blob> {
   const token = localStorage.getItem(TOKEN_KEY)
   const res = await fetch(`${API_BASE}/doc-refiner/export`, {

@@ -43,6 +43,7 @@ _PROMPT_TYPE_FILES: dict[str, str] = {
     "doc_refiner_note":     "system_prompt_doc_refiner_note.md",
     "doc_refiner_rewrite":  "system_prompt_doc_refiner_rewrite.md",
     "doc_refiner_sop":      "system_prompt_doc_refiner_sop.md",
+    "doc_refiner_md":       "system_prompt_doc_refiner_md.md",
     "document_parse":       "system_prompt_document_parse.md",
 }
 

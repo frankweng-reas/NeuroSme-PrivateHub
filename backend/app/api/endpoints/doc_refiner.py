@@ -3,6 +3,7 @@
 POST /doc-refiner/process   - 上傳 PDF，LLM 整理成 Q&A 或摘要，回傳 JSON
 POST /doc-refiner/export    - 接收整理後的 JSON，產生 PDF 下載
 """
+import asyncio
 import io
 import json
 import logging
@@ -64,6 +65,13 @@ class ImportToKBResponse(BaseModel):
     kb_name: str
     doc_id: int
     imported_count: int
+
+
+class ImportMdToKBRequest(BaseModel):
+    title: str
+    markdown: str              # 完整 MD 內容（含 YAML front matter）
+    kb_id: int | None = None   # 現有 KB id（與 new_kb_name 擇一）
+    new_kb_name: str | None = None
 
 
 class RewriteItemRequest(BaseModel):
@@ -503,6 +511,293 @@ async def process_document(
             yield _sse({"type": "error", "detail": f"處理失敗：{exc}"})
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.post("/to-markdown", summary="文件轉結構化 Markdown（SSE 串流）")
+async def to_markdown(
+    file: UploadFile = File(..., description="原始 PDF 檔案"),
+    model: str = Form("", description="指定 LLM model（留空使用租戶預設）"),
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """上傳 PDF，以 LLM 補上章節標題（## / ###），輸出結構化 Markdown。
+    SSE 事件：
+      { type: "extract_progress", page, page_count, stage, detail }  # OCR 進行中
+      { type: "meta",     page_count, char_count, chunk_total }
+      { type: "md_chunk", chunk, chunk_total, content }  # 首 chunk 含 YAML front matter
+      { type: "done",     model, usage }
+      { type: "error",    detail }
+    """
+    from app.services.document_structuring import DocumentStructuringService
+    from app.services.document_structuring.extractors import is_supported_filename
+
+    fname = file.filename or ""
+    if not is_supported_filename(fname):
+        raise HTTPException(status_code=400, detail="僅支援 PDF 格式（Word、網頁請先匯出 PDF）")
+
+    file_bytes = await file.read()
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=400, detail="上傳的檔案是空的")
+    if len(file_bytes) > _MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="檔案過大（上限 20 MB）")
+
+    svc = DocumentStructuringService()
+
+    async def generate():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def on_progress(event: dict) -> None:
+            await queue.put(event)
+
+        async def run_extract() -> None:
+            try:
+                result = await svc.extract_async(
+                    file_bytes,
+                    fname,
+                    model=model,
+                    db=db,
+                    tenant_id=current.tenant_id,
+                    enable_pdf_ocr=True,
+                    on_progress=on_progress,
+                )
+                await queue.put({"_extract_done": result})
+            except ValueError as exc:
+                await queue.put({"_extract_error": str(exc)})
+            except Exception as exc:
+                logger.error("MD 模式文字萃取失敗: %s", exc)
+                await queue.put({"_extract_error": f"檔案解析失敗，請確認檔案完整性：{exc}"})
+
+        extract_task = asyncio.create_task(run_extract())
+
+        while True:
+            item = await queue.get()
+            if "_extract_done" in item:
+                extracted = item["_extract_done"]
+                break
+            if "_extract_error" in item:
+                yield _sse({"type": "error", "detail": item["_extract_error"]})
+                await extract_task
+                return
+            yield _sse(item)
+
+        await extract_task
+
+        if not extracted.text.strip():
+            fmt_hint = "PDF" if fname.lower().endswith(".pdf") else "檔案"
+            yield _sse(
+                {
+                    "type": "error",
+                    "detail": f"無法從 {fmt_hint} 萃取文字（含 OCR 補強後仍無內容，可能是空白文件）",
+                }
+            )
+            return
+
+        async for event in svc.structure_stream(
+            extracted,
+            model=model,
+            db=db,
+            tenant_id=current.tenant_id,
+        ):
+            yield _sse(event)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+class WebPreviewRequest(BaseModel):
+    url: str
+
+
+class WebPreviewResponse(BaseModel):
+    source_url: str
+    title: str
+    content_html: str
+    preview_html: str
+    text_length: int
+    excerpt: str
+
+
+@router.post("/web/preview", response_model=WebPreviewResponse, summary="擷取網頁正文預覽")
+async def web_preview(
+    body: WebPreviewRequest,
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """抓取公開 URL，抽取正文 HTML 供前端預覽（已去除常見雜訊）。"""
+    from app.services.web_to_md_service import WebFetchError, fetch_web_preview
+
+    try:
+        preview = await fetch_web_preview(body.url)
+    except WebFetchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("web preview failed: %s", exc)
+        raise HTTPException(status_code=502, detail="網頁擷取失敗，請稍後再試") from exc
+
+    return WebPreviewResponse(
+        source_url=preview.source_url,
+        title=preview.title,
+        content_html=preview.content_html,
+        preview_html=preview.preview_html,
+        text_length=preview.text_length,
+        excerpt=preview.excerpt,
+    )
+
+
+_MAX_WEB_HTML_CHARS = 2 * 1024 * 1024
+
+
+@router.post("/web/to-markdown", summary="網頁正文轉結構化 Markdown（SSE 串流）")
+async def web_to_markdown(
+    source_url: str = Form(..., description="原始網頁 URL"),
+    title: str = Form("", description="文件標題"),
+    content_html: str = Form(..., description="確認後的正文 HTML"),
+    model: str = Form("", description="指定 LLM model（留空使用租戶預設）"),
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """將預覽確認過的 HTML 確定性轉為結構化 Markdown（不走 PDF / LLM）。"""
+    from app.services.web_to_md_service import (
+        WebFetchError,
+        build_web_structured_markdown_async,
+        validate_public_url,
+    )
+
+    html_body = (content_html or "").strip()
+    if not html_body:
+        raise HTTPException(status_code=400, detail="正文 HTML 不可為空")
+    if len(html_body) > _MAX_WEB_HTML_CHARS:
+        raise HTTPException(status_code=413, detail="HTML 內容過大")
+
+    try:
+        normalized_url = validate_public_url(source_url)
+    except WebFetchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    doc_title = (title or "").strip() or "webpage"
+
+    async def generate():
+        yield _sse({"type": "extract_progress", "page": 1, "page_count": 1, "stage": "html", "detail": "轉換 Markdown…"})
+
+        try:
+            md_content = await build_web_structured_markdown_async(
+                html_body,
+                title=doc_title,
+                original_file=normalized_url,
+                source_url=normalized_url,
+            )
+        except WebFetchError as exc:
+            yield _sse({"type": "error", "detail": str(exc)})
+            return
+        except Exception as exc:
+            logger.error("web html_to_md failed: %s", exc)
+            yield _sse({"type": "error", "detail": f"Markdown 轉換失敗：{exc}"})
+            return
+
+        char_count = len(md_content)
+        yield _sse({
+            "type": "meta",
+            "page_count": 1,
+            "char_count": char_count,
+            "chunk_total": 1,
+            "ocr_pages": [],
+        })
+        yield _sse({
+            "type": "md_chunk",
+            "chunk": 1,
+            "chunk_total": 1,
+            "content": md_content,
+        })
+        yield _sse({
+            "type": "done",
+            "model": "deterministic",
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        })
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.post("/import-md-to-kb", response_model=ImportToKBResponse, summary="將結構化 MD 匯入知識庫")
+async def import_md_to_kb(
+    body: ImportMdToKBRequest,
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """將 Doc Refiner 生成的結構化 Markdown 匯入知識庫，使用 structured_md chunk 策略。"""
+    from app.models.km_knowledge_base import KmKnowledgeBase
+    from app.models.km_document import KmDocument
+    from app.services.km_service import process_document
+    import uuid as _uuid
+
+    if not body.markdown.strip():
+        raise HTTPException(status_code=400, detail="Markdown 內容不可為空")
+    if body.kb_id is None and not body.new_kb_name:
+        raise HTTPException(status_code=400, detail="請指定 kb_id 或提供 new_kb_name")
+
+    # ── 1. 取得或建立 KB ──────────────────────────────
+    if body.kb_id is not None:
+        kb = db.query(KmKnowledgeBase).filter(
+            KmKnowledgeBase.id == body.kb_id,
+            KmKnowledgeBase.tenant_id == current.tenant_id,
+        ).first()
+        if not kb:
+            raise HTTPException(status_code=404, detail="知識庫不存在")
+        can_manage = current.role in ("admin", "super_admin", "manager")
+        is_admin = current.role in ("admin", "super_admin")
+        if kb.scope == "company" and not can_manage:
+            raise HTTPException(status_code=403, detail="只有管理員可匯入到公司共用知識庫")
+        if kb.scope == "personal" and kb.created_by != current.id and not is_admin:
+            raise HTTPException(status_code=403, detail="只能匯入到自己的知識庫")
+    else:
+        kb = KmKnowledgeBase(
+            tenant_id=current.tenant_id,
+            name=body.new_kb_name.strip(),
+            scope="personal",
+            created_by=current.id,
+            public_token=str(_uuid.uuid4()),
+        )
+        db.add(kb)
+        db.commit()
+        db.refresh(kb)
+
+    # ── 2. 建立 KmDocument 並處理 ─────────────────────
+    md_bytes = body.markdown.encode("utf-8")
+    doc_filename = f"{(body.title or 'document').strip()}.md"
+    scope = "public" if kb.scope == "company" else "private"
+    owner_id = current.id if scope == "private" else None
+
+    doc = KmDocument(
+        tenant_id=current.tenant_id,
+        owner_user_id=owner_id,
+        filename=doc_filename,
+        content_type="text/markdown",
+        size_bytes=len(md_bytes),
+        scope=scope,
+        status="pending",
+        knowledge_base_id=kb.id,
+        doc_type="structured_md",
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+
+    process_document(
+        doc_id=doc.id,
+        file_bytes=md_bytes,
+        content_type="text/markdown",
+        filename=doc_filename,
+        db=db,
+        tenant_id=current.tenant_id,
+        doc_type="structured_md",
+        agent_id="doc-refiner",
+        user_id=current.id,
+    )
+    db.refresh(doc)
+
+    return ImportToKBResponse(
+        kb_id=kb.id,
+        kb_name=kb.name,
+        doc_id=doc.id,
+        imported_count=doc.chunk_count or 0,
+    )
 
 
 @router.post("/export-txt", summary="匯出整理結果為純文字")

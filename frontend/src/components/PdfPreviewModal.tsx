@@ -5,7 +5,7 @@ import ChartForPdf from '@/components/ChartForPdf'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
-import html2pdf from 'html2pdf.js'
+import { TOKEN_KEY } from '@/contexts/AuthContext'
 import type { ChartData } from './ChartModal'
 
 const CHAT_MARKDOWN_COMPONENTS = {
@@ -86,18 +86,27 @@ export default function PdfPreviewModal({ open, content, chartData, onClose, onD
   }, [open, onClose])
 
   async function handleDownload() {
-    const el = contentRef.current
-    if (!el || downloading) return
+    if (downloading) return
     setDownloading(true)
     try {
-      const opt = {
-        margin: 12,
-        filename: `chat-export-${Date.now()}.pdf`,
-        image: { type: 'jpeg' as const, quality: 0.95 },
-        html2canvas: { scale: 2 },
-        jsPDF: { unit: 'mm' as const, format: 'a4' as const, orientation: 'portrait' as const },
-      }
-      await html2pdf().set(opt).from(el).save()
+      const filename = `chat-export-${Date.now()}`
+      const token = localStorage.getItem(TOKEN_KEY) ?? ''
+      const res = await fetch('/api/v1/export/chat-pdf', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ content, filename }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${filename}.pdf`
+      a.click()
+      URL.revokeObjectURL(url)
       onClose()
     } catch {
       onDownloadError?.()
