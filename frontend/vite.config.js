@@ -95,8 +95,8 @@ export default defineConfig(function (_a) {
                 '/api': {
                     target: "http://localhost:".concat(apiPort),
                     changeOrigin: true,
-                    timeout: 300000, // 等待連線建立（ms）
-                    proxyTimeout: 300000, // 等待 backend 回應（ms）
+                    timeout: 900000, // 等待連線建立（ms）
+                    proxyTimeout: 900000, // 等待 backend 回應（ms）
                 },
                 '/auth': {
                     target: "http://localhost:".concat(localAuthPort),

@@ -26,6 +26,7 @@ import type { Agent } from '@/types'
 const HEADER_COLOR = '#1C3939'
 const STORAGE_KEY = 'agent-writing-ui-model'
 const LAST_DOC_KEY = 'agent-writing-ui-last-doc'
+const NS_WRITING_INIT_KEY = 'ns_writing_init'
 const CONTENT_MAX = 10_000
 const PROMPT_MAX = 2_000
 
@@ -355,6 +356,8 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
   const [newDocTitle, setNewDocTitle] = useState('')
   const [settingsExpanded, setSettingsExpanded] = useState(false)
 
+  const initDataRef = useRef<{ title?: string; content?: string; userPrompt?: string } | null>(null)
+
   const fullTextRef = useRef('')
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const rewriteRangeRef = useRef<{ from: number; to: number } | null>(null)
@@ -444,13 +447,43 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
     listLlmSkills().then(setSkills).catch(() => {})
   }, [])
 
+  // 讀取外部帶入資料（例如 Estimator Agent 的試算結果），暫存在 ref，等文件列表載入後再建立新文件
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(NS_WRITING_INIT_KEY)
+      if (!raw) return
+      localStorage.removeItem(NS_WRITING_INIT_KEY)
+      const parsed = JSON.parse(raw) as { title?: string; content?: string; userPrompt?: string }
+      if (parsed.content || parsed.userPrompt) initDataRef.current = parsed
+    } catch { /* ignore */ }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // 載入文件列表
   useEffect(() => {
     setDocsLoading(true)
     listWritingDocs()
-      .then((list) => {
+      .then(async (list) => {
         setDocs(list)
-        if (list.length > 0) {
+        const init = initDataRef.current
+        if (init) {
+          initDataRef.current = null
+          try {
+            const doc = await createWritingDoc({
+              title: (init.title ?? '新提案').slice(0, 100),
+              content: (init.content ?? '').slice(0, CONTENT_MAX),
+              user_prompt: (init.userPrompt ?? '').slice(0, PROMPT_MAX),
+            })
+            setDocs((prev) => [doc, ...prev])
+            doSelectDoc(doc)
+          } catch {
+            // 建立失敗就退回選現有文件
+            if (list.length > 0) {
+              const lastId = (() => { try { return Number(localStorage.getItem(LAST_DOC_KEY)) || null } catch { return null } })()
+              const target = (lastId ? list.find((d) => d.id === lastId) : null) ?? list[0]
+              doSelectDoc(target)
+            }
+          }
+        } else if (list.length > 0) {
           // 優先還原上次選的 doc，找不到則選第一筆
           const lastId = (() => { try { return Number(localStorage.getItem(LAST_DOC_KEY)) || null } catch { return null } })()
           const target = (lastId ? list.find((d) => d.id === lastId) : null) ?? list[0]

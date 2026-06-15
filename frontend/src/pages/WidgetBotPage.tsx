@@ -581,6 +581,10 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
   const [showFaqSheet, setShowFaqSheet] = useState(false)
   const [showContactSheet, setShowContactSheet] = useState(false)
 
+  // ── postMessage：讓父頁面（Demo 頁）可注入問題 ────────────────────────────────
+  // 使用 ref 確保 listener 永遠呼叫到最新的 handleSend closure
+  const handleSendRef = useRef<(text: string) => Promise<void>>(async () => {})
+
   // ── 載入 Bot info ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!token) { setLoadError('載入失敗，請確認連結是否正確'); return }
@@ -741,6 +745,20 @@ function WidgetBotInner({ token, isEmbed, langOverride }: { token: string; isEmb
       setIsLoading(false)
     }
   }
+
+  // 每次 render 更新 ref，讓 postMessage listener 永遠取得最新 closure
+  handleSendRef.current = handleSend
+
+  // postMessage listener（只掛一次）
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type !== 'ns:prefill') return
+      const text = typeof e.data.text === 'string' ? e.data.text.trim() : ''
+      if (text) void handleSendRef.current(text)
+    }
+    window.addEventListener('message', handler)
+    return () => window.removeEventListener('message', handler)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 清除對話 ─────────────────────────────────────────────────────────────────
   function handleReset() {

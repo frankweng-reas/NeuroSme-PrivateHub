@@ -12,6 +12,7 @@ from pathlib import Path
 # 每次 LLM 呼叫保留的最大歷史輪數（1 輪 = 1 user + 1 assistant）
 # 超過此數量的舊對話會被捨棄，避免 context 過長造成費用暴增或超出 token limit
 MAX_HISTORY_TURNS = 10  # 保留最近 10 輪（20 則訊息）
+DOC_ANALYST_MAX_HISTORY_TURNS = 20  # doc-analyst 文件錨點模式：更多歷史輪數
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -45,6 +46,7 @@ _PROMPT_TYPE_FILES: dict[str, str] = {
     "doc_refiner_sop":      "system_prompt_doc_refiner_sop.md",
     "doc_refiner_md":       "system_prompt_doc_refiner_md.md",
     "document_parse":       "system_prompt_document_parse.md",
+    "doc-analyst":          "system_prompt_doc_analyst.md",
 }
 
 
@@ -82,9 +84,15 @@ def _merge_system_into_first_user(messages: list[dict]) -> list[dict]:
     return result
 
 
-def _build_messages(req, data: str = "", kb_system_prompt: str | None = None) -> list[dict]:
+def _build_messages(
+    req,
+    data: str = "",
+    kb_system_prompt: str | None = None,
+    max_history_turns: int = MAX_HISTORY_TURNS,
+) -> list[dict]:
     """組裝 OpenAI messages 格式。data 由後端依 agent_id 查詢已選取來源檔案組出。
     kb_system_prompt：若有設定則覆寫 prompt_type 檔案，優先級最高。
+    max_history_turns：保留歷史輪數上限，doc-analyst 使用 DOC_ANALYST_MAX_HISTORY_TURNS。
     """
     msgs: list[dict] = []
     system_parts: list[str] = []
@@ -102,7 +110,7 @@ def _build_messages(req, data: str = "", kb_system_prompt: str | None = None) ->
         system_parts.append(f"以下為參考資料：\n\n{data.strip()}")
     if system_parts:
         msgs.append({"role": "system", "content": "\n\n".join(system_parts)})
-    for m in req.messages[-MAX_HISTORY_TURNS * 2:]:
+    for m in req.messages[-max_history_turns * 2:]:
         msgs.append({"role": m.role, "content": m.content})
     user_content = req.content
     if req.user_prompt.strip():

@@ -71,10 +71,11 @@ async function convertFileToMarkdown(
   file: File,
   model: string | undefined,
   signal: AbortSignal,
+  pdfMode: 'text' | 'image' | 'auto' = 'auto',
   onProgress?: (info: BatchFileProgress) => void,
 ): Promise<string> {
   let content = ''
-  for await (const event of toMarkdownStream(file, model, signal)) {
+  for await (const event of toMarkdownStream(file, model, signal, pdfMode)) {
     if (event.type === 'extract_progress') {
       onProgress?.({
         status: event.detail || `第 ${event.page}/${event.page_count} 頁`,
@@ -108,6 +109,7 @@ export interface RunBatchOptions {
   files: File[]
   outputDir?: FileSystemDirectoryHandle | null
   model?: string
+  pdfMode?: 'text' | 'image' | 'auto'
   signal?: AbortSignal
   onFileStart?: (index: number, file: File) => void
   onFileProgress?: (index: number, file: File, info: BatchFileProgress) => void
@@ -116,7 +118,7 @@ export interface RunBatchOptions {
 }
 
 export async function runBatch(options: RunBatchOptions): Promise<BatchSummary> {
-  const { files, outputDir, model, signal, onFileStart, onFileProgress, onFileDone, onFileError } = options
+  const { files, outputDir, model, pdfMode = 'auto', signal, onFileStart, onFileProgress, onFileDone, onFileError } = options
   let saved = 0
   let failed = 0
 
@@ -131,6 +133,7 @@ export async function runBatch(options: RunBatchOptions): Promise<BatchSummary> 
         file,
         model,
         signal ?? new AbortController().signal,
+        pdfMode,
         (info) => onFileProgress?.(i, file, info),
       )
       if (outputDir) {

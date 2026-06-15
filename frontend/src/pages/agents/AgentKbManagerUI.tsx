@@ -655,11 +655,7 @@ export default function AgentKbManagerUI({ agent }: Props) {
         setUploadProgress(0)
         const lower = file.name.toLowerCase()
         let detectedType = uploadDocType
-        if (uploadDocType === 'article') {
-          if (/faq|q[&＆]a|問答/.test(lower)) detectedType = 'faq'
-          else if (/spec|規格|technical|datasheet/.test(lower)) detectedType = 'spec'
-          else if (/policy|政策|條款|terms|contract/.test(lower)) detectedType = 'policy'
-        }
+        if (uploadDocType === 'article' && /faq|q[&＆]a|問答/.test(lower)) detectedType = 'faq'
         try {
           const doc = await uploadKmDocument(file, 'private', (pct) => setUploadProgress(pct), [], selectedKbId, detectedType)
           setDocs((prev) => [doc, ...prev])
@@ -975,8 +971,8 @@ export default function AgentKbManagerUI({ agent }: Props) {
 
       {/* 上傳 Modal */}
       {uploadModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl ring-1 ring-gray-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl ring-1 ring-gray-200">
             <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4">
               <div className="flex items-center gap-2">
                 <Upload className="h-4 w-4 text-sky-500" />
@@ -987,48 +983,81 @@ export default function AgentKbManagerUI({ agent }: Props) {
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="px-6 py-6 space-y-6">
+            <div className="px-6 py-6 space-y-5">
               <div>
                 <p className="mb-1 text-base font-semibold text-gray-700">文件類型</p>
-                <p className="mb-3 text-base text-gray-400">選擇適合類型可提升搜尋準確度</p>
+                <p className="mb-3 text-sm text-gray-400">選擇最符合文件用途的類型，系統會以最適合的方式切塊與建立索引</p>
                 <div className="grid grid-cols-2 gap-3">
                   {([
-                    { value: 'article',   emoji: '📄', label: '一般文章',   sub: '說明文件、公告' },
-                    { value: 'faq',       emoji: '💬', label: 'FAQ 問答集', sub: '常見問題、Q&A' },
-                    { value: 'chat',      emoji: '💭', label: '對話紀錄',   sub: 'Slack、訊息、會議記錄' },
-                    { value: 'spec',      emoji: '🔧', label: '技術規格',   sub: '參數表、Datasheet' },
-                    { value: 'policy',    emoji: '📋', label: '政策 / 條款', sub: '合約、規章' },
-                    { value: 'reference', emoji: '📑', label: '參考資料',   sub: '菜單、價目表、術語表' },
-                  ] as const).map(({ value, emoji, label, sub }) => (
+                    {
+                      value: 'article',
+                      emoji: '📄',
+                      label: '一般文件',
+                      sub: '說明文件、操作手冊、合約、報告、規章',
+                      detail: '段落切塊（約 1500 字），保留段落語意完整性，適合 AI 整合回答多段內容',
+                    },
+                    {
+                      value: 'faq',
+                      emoji: '💬',
+                      label: '精準問答',
+                      sub: 'Q&A 問答集、常見問題、客服話術、SOP 步驟',
+                      detail: '小切塊（約 300 字）＋ BM25 關鍵字索引，問答對獨立檢索，精準回答 Bot 專用',
+                    },
+                    {
+                      value: 'reference',
+                      emoji: '📑',
+                      label: '整份查閱',
+                      sub: '價目表、術語對照表、產品目錄、不宜拆分的規章',
+                      detail: '整份文件不切分，查詢時一次取回完整內容，適合需要對照全表的場景',
+                    },
+                    {
+                      value: 'structured_md',
+                      emoji: '🗂️',
+                      label: '結構化 MD',
+                      sub: 'Doc Refiner 產出的 .md 文件、帶章節標題的手冊',
+                      detail: '依 ##/### 標題切 chunk 並附章節路徑，BM25 + 向量雙重索引；僅接受 .md 格式',
+                    },
+                  ] as const).map(({ value, emoji, label, sub, detail }) => (
                     <button key={value} type="button"
                       disabled={uploading}
                       onClick={() => setUploadDocType(value)}
-                      className={`flex items-start gap-3 rounded-xl border-2 px-4 py-3 text-left transition-all disabled:opacity-60 ${uploadDocType === value ? 'border-sky-400 bg-sky-50 ring-2 ring-sky-200' : 'border-gray-200 bg-gray-50 hover:border-sky-200'}`}>
-                      <span className="mt-0.5 text-2xl leading-none">{emoji}</span>
-                      <div>
-                        <p className={`text-base font-medium ${uploadDocType === value ? 'text-sky-700' : 'text-gray-800'}`}>{label}</p>
-                        <p className="text-base text-gray-400">{sub}</p>
+                      className={`flex flex-col gap-2 rounded-xl border-2 px-4 py-4 text-left transition-all disabled:opacity-60 ${uploadDocType === value ? 'border-sky-400 bg-sky-50 ring-2 ring-sky-200' : 'border-gray-200 bg-gray-50 hover:border-sky-200'}`}>
+                      <div className="flex items-center gap-2">
+                        <span className="text-2xl leading-none">{emoji}</span>
+                        <p className={`text-base font-semibold ${uploadDocType === value ? 'text-sky-700' : 'text-gray-800'}`}>{label}</p>
+                        {uploadDocType === value && <Check className="ml-auto h-4 w-4 shrink-0 text-sky-500" />}
                       </div>
-                      {uploadDocType === value && <Check className="ml-auto mt-0.5 h-4 w-4 shrink-0 text-sky-500" />}
+                      <p className="text-sm font-medium text-gray-600">{sub}</p>
+                      <p className="text-sm text-gray-400 leading-relaxed">{detail}</p>
                     </button>
                   ))}
                 </div>
+                {uploadDocType === 'structured_md' && (
+                  <p className="mt-2 text-sm text-amber-600 flex items-center gap-1.5">
+                    <span>⚠️</span>結構化 MD 僅接受 <code className="rounded bg-amber-50 px-1 font-mono">.md</code> /
+                    <code className="rounded bg-amber-50 px-1 font-mono">.markdown</code> 格式
+                  </p>
+                )}
               </div>
               {uploading && (
                 <div className="space-y-1">
-                  {uploadTotal > 1 && <p className="text-center text-base text-gray-500">處理中 {uploadCurrent}/{uploadTotal}</p>}
+                  {uploadTotal > 1 && <p className="text-center text-sm text-gray-500">處理中 {uploadCurrent}/{uploadTotal}</p>}
                   <div className="overflow-hidden rounded-full bg-gray-100">
                     <div className="h-2 rounded-full bg-sky-400 transition-all" style={{ width: `${uploadProgress > 0 ? uploadProgress : 100}%` }} />
                   </div>
                 </div>
               )}
-              <input ref={fileInputRef} type="file" accept=".pdf,.txt,.md,.markdown" multiple className="hidden" onChange={handleFileChange} />
+              <input ref={fileInputRef} type="file"
+                accept={uploadDocType === 'structured_md' ? '.md,.markdown' : '.pdf,.txt,.md,.markdown'}
+                multiple className="hidden" onChange={handleFileChange} />
               <button type="button" disabled={uploading} onClick={() => fileInputRef.current?.click()}
-                className="flex w-full items-center justify-center gap-2 rounded-xl py-6 text-base font-medium text-white hover:opacity-90 disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-2 rounded-xl py-4 text-base font-medium text-white hover:opacity-90 disabled:opacity-50"
                 style={{ backgroundColor: HEADER_COLOR }}>
                 {uploading
                   ? <><Loader2 className="h-5 w-5 animate-spin" />{`上傳中 ${uploadProgress > 0 ? `${uploadProgress}%` : '…'}`}</>
-                  : <><Upload className="h-5 w-5" />點擊選擇檔案（可多選，PDF / TXT / MD）</>}
+                  : uploadDocType === 'structured_md'
+                    ? <><Upload className="h-5 w-5" />點擊選擇 .md 檔案（可多選）</>
+                    : <><Upload className="h-5 w-5" />點擊選擇檔案（可多選，PDF / TXT / MD）</>}
               </button>
             </div>
           </div>
@@ -1435,12 +1464,14 @@ export default function AgentKbManagerUI({ agent }: Props) {
                               <StatusBadge status={doc.status} />
                               {doc.doc_type && (() => {
                                 const typeMap: Record<string, { label: string; color: string }> = {
-                                  article:   { label: '文章',   color: 'bg-blue-50 text-blue-600' },
-                                  faq:       { label: 'FAQ',    color: 'bg-emerald-50 text-emerald-600' },
-                                  chat:      { label: '對話',   color: 'bg-purple-50 text-purple-600' },
-                                  spec:      { label: '規格',   color: 'bg-orange-50 text-orange-600' },
-                                  policy:    { label: '政策',   color: 'bg-amber-50 text-amber-600' },
-                                  reference: { label: '參考',   color: 'bg-gray-100 text-gray-500' },
+                                  article:       { label: '文件',   color: 'bg-blue-50 text-blue-600' },
+                                  faq:           { label: 'FAQ',    color: 'bg-emerald-50 text-emerald-600' },
+                                  reference:     { label: '查閱',   color: 'bg-gray-100 text-gray-500' },
+                                  structured_md: { label: '結構化', color: 'bg-violet-50 text-violet-600' },
+                                  doc_image:     { label: '圖片MD', color: 'bg-pink-50 text-pink-600' },
+                                  chat:          { label: '對話',   color: 'bg-purple-50 text-purple-600' },
+                                  spec:          { label: '規格',   color: 'bg-orange-50 text-orange-600' },
+                                  policy:        { label: '政策',   color: 'bg-amber-50 text-amber-600' },
                                 }
                                 const t = typeMap[doc.doc_type] ?? { label: doc.doc_type, color: 'bg-gray-100 text-gray-500' }
                                 return <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${t.color}`}>{t.label}</span>

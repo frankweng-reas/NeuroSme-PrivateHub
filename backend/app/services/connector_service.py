@@ -140,7 +140,6 @@ def _upsert_document(
         db.delete(existing)
         db.commit()
 
-    file_bytes = doc.content.encode("utf-8")
     kb = connector.knowledge_base_id
 
     # 繼承 KB 的 scope 設定（與 km.py 的上傳邏輯一致）
@@ -154,7 +153,7 @@ def _upsert_document(
         knowledge_base_id=kb,
         filename=doc.filename,
         content_type="text/markdown",
-        size_bytes=len(file_bytes),
+        size_bytes=len(doc.content.encode("utf-8")),
         scope=scope,
         status="pending",
         doc_type=doc.doc_type,
@@ -167,9 +166,7 @@ def _upsert_document(
     try:
         process_document(
             doc_id=km_doc.id,
-            file_bytes=file_bytes,
-            content_type="text/markdown",
-            filename=doc.filename,
+            text=doc.content,
             db=db,
             tenant_id=connector.tenant_id,
             doc_type=doc.doc_type,

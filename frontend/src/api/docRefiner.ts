@@ -50,12 +50,14 @@ export async function* processDocumentStream(
   model?: string,
   signal?: AbortSignal,
   sourceType: 'doc' | 'note' | 'sop' = 'doc',
+  granularity?: string,
 ): AsyncGenerator<StreamEvent> {
   const token = localStorage.getItem(TOKEN_KEY) ?? ''
   const fd = new FormData()
   fd.append('file', file)
   if (model) fd.append('model', model)
   fd.append('source_type', sourceType)
+  if (granularity) fd.append('granularity', granularity)
 
   const res = await fetch(`${API_BASE}/doc-refiner/process`, {
     method: 'POST',
@@ -100,9 +102,10 @@ export interface ExportRequest {
   items: QAItem[]
 }
 
-export async function listKBs(): Promise<KBOption[]> {
+export async function listKBs(options?: { writable?: boolean }): Promise<KBOption[]> {
   const token = localStorage.getItem(TOKEN_KEY)
-  const res = await fetch(`${API_BASE}/km/knowledge-bases`, {
+  const params = options?.writable ? '?writable=true' : ''
+  const res = await fetch(`${API_BASE}/km/knowledge-bases${params}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   })
   if (!res.ok) throw new ApiError('取得知識庫列表失敗', res.status, '')
@@ -228,11 +231,13 @@ export async function* toMarkdownStream(
   file: File,
   model?: string,
   signal?: AbortSignal,
+  pdfMode: 'text' | 'image' | 'auto' = 'image',
 ): AsyncGenerator<MdStreamEvent> {
   const token = localStorage.getItem(TOKEN_KEY) ?? ''
   const fd = new FormData()
   fd.append('file', file)
   if (model) fd.append('model', model)
+  fd.append('pdf_mode', pdfMode)
 
   const res = await fetch(`${API_BASE}/doc-refiner/to-markdown`, {
     method: 'POST',
@@ -354,6 +359,29 @@ export async function* webToMarkdownStream(
       } catch { /* skip malformed */ }
     }
   }
+}
+
+// ── PDF 類型偵測 ─────────────────────────────────────────────────────────────
+
+export type PdfType = 'text' | 'image' | 'mixed' | 'unknown'
+
+export interface CheckPdfResult {
+  type: PdfType
+  page_count: number
+  ocr_pages_estimate: number
+}
+
+export async function checkPdf(file: File): Promise<CheckPdfResult> {
+  const token = localStorage.getItem(TOKEN_KEY) ?? ''
+  const fd = new FormData()
+  fd.append('file', file)
+  const res = await fetch(`${API_BASE}/doc-refiner/check-pdf`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: fd,
+  })
+  if (!res.ok) return { type: 'unknown', page_count: 0, ocr_pages_estimate: 0 }
+  return res.json() as Promise<CheckPdfResult>
 }
 
 export async function exportDocument(req: ExportRequest): Promise<Blob> {

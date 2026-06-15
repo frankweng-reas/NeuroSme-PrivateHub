@@ -17,6 +17,9 @@ class ChatThread(Base):
     status = Column(String(32), nullable=False, server_default="active")
     last_message_at = Column(DateTime(timezone=True), nullable=True)
     extra_data = Column("extra", JSONB, nullable=True)
+    # doc-analyst 文件錨點：儲存上傳 PDF 的萃取文字，每次 LLM 呼叫都帶入 system prompt
+    document_context = Column(Text, nullable=True)
+    document_filename = Column(String(512), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 

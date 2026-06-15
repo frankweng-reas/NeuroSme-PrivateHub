@@ -1,6 +1,6 @@
 import { apiFetch } from './client'
 
-export type ApiKeyType = 'bot' | 'voice' | 'general'
+export type ApiKeyType = 'bot' | 'voice' | 'vision' | 'general'
 
 export interface ApiKey {
   id: number

@@ -10,7 +10,7 @@ from uuid import UUID
 
 import aiohttp
 import litellm
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -19,8 +19,10 @@ from app.api.endpoints.source_files import _check_agent_access
 from app.core.config import settings
 from app.core.database import SessionLocal, get_db
 from app.core.security import get_current_user
+from app.models.chat_thread import ChatThread
 from app.models.user import User
 from app.services.chat_service import (
+    DOC_ANALYST_MAX_HISTORY_TURNS,
     _build_messages,
     _get_selected_source_files_content,
     _inject_user_message_images_into_messages,
@@ -320,7 +322,7 @@ def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> Ch
             detail=f"參考資料超過 {max_chars:,} 字元（目前約 {data_len:,} 字元），請減少選用的來源檔案後再試。",
         )
 
-    if data_len == 0 and aid != "knowledge":
+    if data_len == 0 and aid not in ("knowledge", "doc-analyst"):
         logger.warning(
             "chat_completions: 無參考資料 (agent_id=%r, tenant_id=%r, aid=%r, user_id=%s) - 請在該 agent 頁面左欄上傳並勾選來源檔案",
             req.agent_id,
@@ -330,6 +332,18 @@ def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> Ch
         )
     elif data_len > 0:
         logger.info("chat_completions: 已載入參考資料 %d 字元", data_len)
+
+    # doc-analyst：從 thread 讀取 document_context，注入 system_prompt
+    doc_analyst_context: str | None = None
+    if aid == "doc-analyst" and thread_uuid:
+        doc_thread = db.query(ChatThread).filter(ChatThread.id == thread_uuid).first()
+        if doc_thread and doc_thread.document_context:
+            doc_analyst_context = doc_thread.document_context.strip()
+            doc_block = f"以下是本次分析的完整文件：\n\n{doc_analyst_context}"
+            existing_sys = (req.system_prompt or "").strip()
+            new_sys = f"{doc_block}\n\n{existing_sys}" if existing_sys else doc_block
+            req = req.model_copy(update={"system_prompt": new_sys})
+            logger.info("doc-analyst: 注入文件 context %d 字元", len(doc_analyst_context))
 
     # KB 設定的 model 優先；其次前端傳入的 model；兩者皆空則報錯
     model = kb_model_name or (req.model or "").strip()
@@ -356,7 +370,13 @@ def _prepare_chat_completion(req: ChatRequest, db: Session, current: User) -> Ch
             detail="台智雲 TWCC_API_BASE 未設定，請在管理介面（租戶 LLM 設定）設定",
         )
 
-    messages = _build_messages(req, data=data, kb_system_prompt=kb_system_prompt)
+    max_turns = DOC_ANALYST_MAX_HISTORY_TURNS if aid == "doc-analyst" else None
+    messages = _build_messages(
+        req,
+        data=data,
+        kb_system_prompt=kb_system_prompt,
+        **({"max_history_turns": max_turns} if max_turns else {}),
+    )
     messages, has_vision = _inject_user_message_images_into_messages(
         db,
         messages,
@@ -1092,3 +1112,139 @@ async def chat_completions_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ─── Doc Analyst：文件錨點 thread 建立 ───────────────────────────────────────
+
+DOC_ANALYST_MAX_CHARS = 150_000       # 合併後總字元上限
+DOC_ANALYST_MAX_CHARS_PER_FILE = 60_000  # 每個檔案字元上限
+DOC_ANALYST_AGENT_ID = "doc-analyst"
+
+
+class DocAnalystInitResponse(BaseModel):
+    thread_id: str
+    filename: str          # 顯示用標題（多檔時為 "a.pdf 等 N 份"）
+    filenames: list[str]   # 各檔名清單
+    char_count: int
+
+
+class DocAnalystInitTextRequest(BaseModel):
+    text: str
+    filename: str = "document"
+
+
+def _create_doc_analyst_thread(
+    db: Session,
+    current: User,
+    text: str,
+    filenames: list[str],
+) -> DocAnalystInitResponse:
+    """建立 doc-analyst ChatThread 並儲存 document_context。"""
+    from app.api.endpoints.source_files import _check_agent_access
+
+    tenant_id, aid = _check_agent_access(db, current, DOC_ANALYST_AGENT_ID)
+    doc_text = text.replace('\x00', '').strip()
+    if len(doc_text) > DOC_ANALYST_MAX_CHARS:
+        logger.warning(
+            "doc-analyst: 文件超過 %d 字元（實際 %d），自動截斷", DOC_ANALYST_MAX_CHARS, len(doc_text)
+        )
+        doc_text = doc_text[:DOC_ANALYST_MAX_CHARS]
+
+    # 顯示標題
+    if len(filenames) == 1:
+        display_title = filenames[0]
+    elif filenames:
+        display_title = f"{filenames[0]} 等 {len(filenames)} 份"
+    else:
+        display_title = "未命名文件"
+
+    row = ChatThread(
+        tenant_id=tenant_id,
+        user_id=current.id,
+        agent_id=aid,
+        title=display_title[:512],
+        document_context=doc_text,
+        document_filename=display_title[:512],
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return DocAnalystInitResponse(
+        thread_id=str(row.id),
+        filename=display_title,
+        filenames=filenames,
+        char_count=len(doc_text),
+    )
+
+
+async def _extract_file_text(file: UploadFile) -> tuple[str, str]:
+    """萃取單一 UploadFile 的文字，回傳 (filename, text)。"""
+    from app.services import document_service
+
+    fname = (file.filename or "").lower()
+    ct = (file.content_type or "").lower()
+    is_pdf = "pdf" in ct or fname.endswith(".pdf")
+    is_md = fname.endswith(".md") or "markdown" in ct or ct in ("text/plain", "text/x-markdown")
+
+    if not is_pdf and not is_md:
+        raise HTTPException(
+            status_code=400,
+            detail=f"檔案 {file.filename!r} 格式不支援，僅接受 PDF 或 Markdown（.md）"
+        )
+
+    raw_bytes = await file.read()
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail=f"檔案 {file.filename!r} 內容為空")
+
+    if is_pdf:
+        result = await document_service.extract(raw_bytes)
+        text = result.text or ""
+    else:
+        text = raw_bytes.decode("utf-8", errors="replace")
+
+    # 每個檔案個別截斷
+    text = text.replace('\x00', '')
+    if len(text) > DOC_ANALYST_MAX_CHARS_PER_FILE:
+        logger.warning(
+            "doc-analyst: 檔案 %r 超過 %d 字元（%d），截斷",
+            file.filename, DOC_ANALYST_MAX_CHARS_PER_FILE, len(text),
+        )
+        text = text[:DOC_ANALYST_MAX_CHARS_PER_FILE]
+
+    filename = file.filename or ("document.pdf" if is_pdf else "document.md")
+    return filename, text
+
+
+@router.post("/doc-analyst/upload", response_model=DocAnalystInitResponse)
+async def doc_analyst_upload(
+    files: Annotated[list[UploadFile], File()],
+    db: Annotated[Session, Depends(get_db)] = ...,
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """上傳一或多個 PDF / Markdown，萃取並合併後建立 doc-analyst thread。"""
+    if not files:
+        raise HTTPException(status_code=400, detail="請至少上傳一個檔案")
+
+    parts: list[str] = []
+    filenames: list[str] = []
+    for f in files:
+        fname, text = await _extract_file_text(f)
+        filenames.append(fname)
+        header = f"--- 檔案：{fname} ---"
+        parts.append(f"{header}\n{text}" if text else f"{header}\n（無法萃取文字）")
+
+    combined = "\n\n".join(parts)
+    return _create_doc_analyst_thread(db, current, combined, filenames)
+
+
+@router.post("/doc-analyst/init-text", response_model=DocAnalystInitResponse)
+async def doc_analyst_init_text(
+    body: DocAnalystInitTextRequest,
+    db: Annotated[Session, Depends(get_db)] = ...,
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """以純文字建立 doc-analyst thread（供 Doc Parse 等前端整合使用）。"""
+    if not body.text.strip():
+        raise HTTPException(status_code=400, detail="text 不可為空")
+
+    return _create_doc_analyst_thread(db, current, body.text, [body.filename])

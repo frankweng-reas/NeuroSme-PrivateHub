@@ -29,13 +29,13 @@ def _can_manage(role: str) -> bool:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-KEY_TYPES = {"bot", "voice", "general"}
+KEY_TYPES = {"bot", "voice", "vision", "general"}
 
 
 class ApiKeyCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="API Key 名稱，用於識別用途")
     bot_id: int | None = Field(None, description="綁定的 Bot ID；key_type='bot' 時必填")
-    key_type: str = Field("bot", description="Key 用途類型：bot | voice | general")
+    key_type: str = Field("bot", description="Key 用途類型：bot | voice | vision | general")
     label: str | None = Field(None, max_length=100, description="用途備註，例如 LINE、FB Messenger、官網")
 
 
@@ -153,7 +153,7 @@ def create_api_key(
 )
 def list_api_keys(
     bot_id: int | None = Query(None, description="篩選指定 Bot 的 Keys"),
-    key_type: str | None = Query(None, description="篩選 key_type：bot | voice | general"),
+    key_type: str | None = Query(None, description="篩選 key_type：bot | voice | vision | general"),
     db: Session = Depends(get_db),
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):

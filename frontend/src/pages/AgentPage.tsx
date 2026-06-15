@@ -14,6 +14,8 @@ import AgentKbManagerUI from './agents/AgentKbManagerUI'
 import AgentKbBotBuilderUI from './agents/AgentKbBotBuilderUI'
 import AgentDocRefinerUI from './agents/AgentDocRefinerUI'
 import AgentDocumentParseUI from './agents/AgentDocumentParseUI'
+import AgentDocAnalystUI from './agents/AgentDocAnalystUI'
+import AgentEstimatorUI from './agents/AgentEstimatorUI'
 import AgentPageLayout from '@/components/AgentPageLayout'
 import AgentIcon from '@/components/AgentIcon'
 
@@ -24,6 +26,8 @@ function getAgentUI(agent: Agent) {
   if (id === 'kb-bot-builder') return AgentKbBotBuilderUI
   if (id === 'doc-refiner') return AgentDocRefinerUI
   if (id === 'document-parse') return AgentDocumentParseUI
+  if (id === 'doc-analyst') return AgentDocAnalystUI
+  if (id === 'estimator') return AgentEstimatorUI
   if (id === 'writing') return AgentWritingUI
   if (id.includes('business')) return AgentBusinessUI
   if (id.includes('customer')) return AgentCustomerUI

@@ -48,7 +48,7 @@ const ATTACHMENT_CONTEXT_USER_ROUNDS = 2 // 測試用；上線請與後端改回
 /** 與 backend CHAT_ATTACH_MAX_BYTES 對齊（純文字） */
 const CHAT_ATTACH_MAX_FILE_BYTES = 30 * 1024
 /** 與 backend CHAT_ATTACH_PDF_MAX_BYTES 對齊 */
-const CHAT_ATTACH_PDF_MAX_FILE_BYTES = 4 * 1024 * 1024
+const CHAT_ATTACH_PDF_MAX_FILE_BYTES = 20 * 1024 * 1024
 /** 與後端 persist_chat_uploads 拒絕單檔 ValueError 文案一致 */
 const CHAT_ATTACH_TOO_LARGE_MESSAGE = '檔案過大，請節錄重點後再上傳。'
 const CHAT_ATTACHMENT_EXT = new Set([
@@ -314,6 +314,7 @@ export default function AgentChatUI({ agent }: AgentChatUIProps) {
   const [errorModal, setErrorModal] = useState<{ title: string; message: string } | null>(null)
   const [voiceTranscript, setVoiceTranscript] = useState('')
   const [voiceAutoSendText, setVoiceAutoSendText] = useState('')
+  const initMsgFiredRef = useRef(false)
   const [showHelpModal, setShowHelpModal] = useState(false)
   const chatFileInputRef = useRef<HTMLInputElement>(null)
   const attachFileOpIdRef = useRef(0)
@@ -458,6 +459,27 @@ export default function AgentChatUI({ agent }: AgentChatUIProps) {
     loadThreads()
   }, [loadThreads])
 
+  // 從 localStorage 讀取由其他 agent（如 Doc Parse）帶入的初始訊息，自動發送
+  // 條件：threads 已載入 + messages 未在載入中（NsChat 才會渲染）
+  useEffect(() => {
+    if (threadsLoading || messagesLoading) return
+    if (initMsgFiredRef.current) return
+    const INIT_MSG_KEY = 'ns_chat_init_msg'
+    try {
+      const initMsg = localStorage.getItem(INIT_MSG_KEY)
+      if (!initMsg) return
+      localStorage.removeItem(INIT_MSG_KEY)
+      initMsgFiredRef.current = true
+      setSelectedThreadId(null)
+      setTimeout(() => {
+        setVoiceAutoSendText(initMsg)
+        setTimeout(() => setVoiceAutoSendText(''), 100)
+      }, 100)
+    } catch {
+      /* ignore */
+    }
+  }, [threadsLoading, messagesLoading])
+
   useEffect(() => {
     try {
       const saved = sessionStorage.getItem(threadSessionKey(agent.id))
@@ -483,6 +505,7 @@ export default function AgentChatUI({ agent }: AgentChatUIProps) {
       setThreadFiles([])
       setSelectedThreadFileIds([])
       lastCommittedAnchorKeyRef.current = ''
+      setMessagesLoading(false)
       return
     }
     let cancelled = false

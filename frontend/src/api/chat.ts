@@ -261,6 +261,48 @@ export async function chatCompletionsStream(
   }
 }
 
+// ─── Doc Analyst ─────────────────────────────────────────────────────────────
+
+export interface DocAnalystInitResponse {
+  thread_id: string
+  filename: string       // 顯示標題（多檔時為 "a.pdf 等 N 份"）
+  filenames: string[]    // 各檔名清單
+  char_count: number
+}
+
+/** 上傳一或多個 PDF / Markdown，萃取並合併後建立 doc-analyst thread */
+export async function docAnalystUpload(files: File[]): Promise<DocAnalystInitResponse> {
+  const formData = new FormData()
+  for (const file of files) {
+    formData.append('files', file)
+  }
+  const API_BASE = '/api/v1'
+  const token = localStorage.getItem(TOKEN_KEY)
+  const res = await fetch(`${API_BASE}/chat/doc-analyst/upload`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: formData,
+  })
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try {
+      const body = await res.json() as { detail?: string }
+      if (typeof body?.detail === 'string') detail = body.detail
+    } catch { /* ignore */ }
+    throw new Error(detail)
+  }
+  return res.json() as Promise<DocAnalystInitResponse>
+}
+
+/** 以純文字（來自 Doc Parse 解析結果）建立 doc-analyst thread */
+export async function docAnalystInitText(text: string, filename: string): Promise<DocAnalystInitResponse> {
+  const { apiFetch } = await import('./client')
+  return apiFetch<DocAnalystInitResponse>('/chat/doc-analyst/init-text', {
+    method: 'POST',
+    body: JSON.stringify({ text, filename }),
+  })
+}
+
 /** dev-test-chat 專用：不讀 md 檔，完全使用 request 的 system_prompt */
 export async function chatCompletionsDev(req: ChatRequest): Promise<ChatResponse> {
   return apiFetch<ChatResponse>('/chat/dev/completions', {

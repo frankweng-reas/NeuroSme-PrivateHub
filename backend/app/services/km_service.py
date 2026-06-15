@@ -7,7 +7,6 @@
   - 支援 PDF（pypdf）、純文字/Markdown（UTF-8）
   - chunk_size=1500 字元，overlap=200 字元
 """
-import io
 import logging
 import time
 from datetime import datetime, timezone
@@ -81,12 +80,14 @@ def _raise_embedding_error(
 # 各文件類型的 chunking 策略與檢索 top_k
 # chunk_size 越小 → top_k 越大（總 context 字元數約 3000–6000）
 CHUNK_STRATEGIES: dict[str, dict] = {
-    "faq":       {"chunk_size": 300,  "overlap": 50,  "top_k": 12},
-    "spec":      {"chunk_size": 400,  "overlap": 80,  "top_k": 12},
-    "chat":      {"chunk_size": 500,  "overlap": 50,  "top_k": 10},
-    "policy":    {"chunk_size": 800,  "overlap": 150, "top_k": 6},
-    "article":   {"chunk_size": 1500, "overlap": 200, "top_k": 4},
-    "reference": {"chunk_size": 60000, "overlap": 0,   "top_k": 10},
+    "faq":           {"chunk_size": 300,   "overlap": 50,  "top_k": 12},
+    "spec":          {"chunk_size": 400,   "overlap": 80,  "top_k": 12},
+    "chat":          {"chunk_size": 500,   "overlap": 50,  "top_k": 10},
+    "policy":        {"chunk_size": 800,   "overlap": 150, "top_k": 6},
+    "article":       {"chunk_size": 1500,  "overlap": 200, "top_k": 4},
+    "reference":     {"chunk_size": 60000, "overlap": 0,   "top_k": 10},
+    "structured_md": {"chunk_size": 1200,  "overlap": 0,   "top_k": 6},
+    "doc_image":     {"chunk_size": 4000,  "overlap": 0,   "top_k": 4},
 }
 DOC_TYPES = frozenset(CHUNK_STRATEGIES.keys())
 
@@ -102,12 +103,16 @@ def _strategy(doc_type: str) -> dict:
 
 
 def extract_text(file_bytes: bytes, content_type: str | None, filename: str) -> str:
-    """從 PDF、Word 或文字檔擷取純文字。"""
+    """從 DOCX 或純文字檔擷取純文字。
+    PDF 請改用 document_service.extract()（支援 OCR）。
+    """
     ct = (content_type or "").lower()
     name = (filename or "").lower()
 
     if "pdf" in ct or name.endswith(".pdf"):
-        return _extract_pdf(file_bytes)
+        from app.services.document_service import _extract_pdf as _doc_extract_pdf
+        text, _ = _doc_extract_pdf(file_bytes)
+        return _clean_pdf_text(text)
 
     if (
         "wordprocessingml" in ct
@@ -154,20 +159,6 @@ def _extract_docx(file_bytes: bytes) -> str:
         return ""
 
 
-def _extract_pdf(file_bytes: bytes) -> str:
-    """從 PDF 擷取純文字。
-    策略：pdfplumber（主）→ pypdf（備援）。
-    pdfplumber 對表格式、多欄 PDF（如 Apple 規格書）提取能力較強。
-    提取後會清洗掉 URL、頁碼、時間戳記等雜訊行。
-    """
-    text = _extract_pdf_pdfplumber(file_bytes)
-    if len(text.strip()) < 100:
-        text_pypdf = _extract_pdf_pypdf(file_bytes)
-        if len(text_pypdf) > len(text):
-            text = text_pypdf
-    return _clean_pdf_text(text)
-
-
 def _clean_pdf_text(text: str) -> str:
     """清洗 PDF 提取文字：移除 URL、頁碼行、時間戳記等雜訊。"""
     import re
@@ -195,101 +186,6 @@ def _clean_pdf_text(text: str) -> str:
     # 壓縮連續空白行為單一空行
     result = re.sub(r"\n{3,}", "\n\n", "\n".join(clean_lines))
     return result.strip()
-
-
-def _table_to_markdown(table: list[list]) -> str:
-    """將 pdfplumber 二維陣列轉成 Markdown 表格字串。"""
-    rows = [[str(cell or "").strip() for cell in row] for row in table if any(cell for cell in row)]
-    if not rows:
-        return ""
-    header = rows[0]
-    body = rows[1:]
-    sep = ["---"] * len(header)
-    lines = [
-        "| " + " | ".join(header) + " |",
-        "| " + " | ".join(sep) + " |",
-    ] + ["| " + " | ".join(row) + " |" for row in body]
-    return "\n".join(lines)
-
-
-def _extract_pdf_pdfplumber(file_bytes: bytes) -> str:
-    try:
-        import pdfplumber  # type: ignore[import-untyped]
-
-        parts: list[str] = []
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            for page in pdf.pages:
-                page_parts: list[str] = []
-
-                # 1. 找出所有表格及其 bbox，轉成 Markdown
-                table_objs = page.find_tables()
-                table_bboxes = [t.bbox for t in table_objs]
-                for t in table_objs:
-                    md = _table_to_markdown(t.extract())
-                    if md:
-                        page_parts.append(md)
-
-                # 2. 萃取表格區域以外的純文字，避免重複
-                if table_bboxes:
-                    words = page.extract_words(x_tolerance=2, y_tolerance=3)
-                    non_table = []
-                    for w in words:
-                        wx0, wy0, wx1, wy1 = w["x0"], w["top"], w["x1"], w["bottom"]
-                        in_table = any(
-                            wx0 >= bx0 and wy0 >= by0 and wx1 <= bx1 and wy1 <= by1
-                            for bx0, by0, bx1, by1 in table_bboxes
-                        )
-                        if not in_table:
-                            non_table.append(w["text"])
-                    plain = " ".join(non_table).strip()
-                else:
-                    plain = (page.extract_text(x_tolerance=2, y_tolerance=3) or "").strip()
-
-                if plain:
-                    page_parts.insert(0, plain)  # 純文字置於表格前
-
-                if page_parts:
-                    parts.append("\n\n".join(page_parts))
-
-        return "\n\n".join(parts)
-    except Exception as e:
-        logger.warning("pdfplumber 擷取失敗: %s", e)
-        return ""
-
-
-def _collapse_spaced_text(text: str) -> str:
-    """修正 fpdf2 CIDFont 產生的「每字元間有空格」問題。
-    偵測到大量字元間空格時，移除所有非換行的字間空格。
-    """
-    import re
-    if not text:
-        return text
-    # 計算非換行字元數和空格數，若空格率 > 60% 視為 spaced-out text
-    non_newline = text.replace("\n", "")
-    char_count = len(non_newline.replace(" ", ""))
-    space_count = non_newline.count(" ")
-    if char_count > 0 and space_count / max(char_count, 1) > 0.6:
-        # 移除相鄰可見字元之間的單一空格
-        text = re.sub(r"(?<=\S) (?=\S)", "", text)
-        # 壓縮殘留的多餘空格
-        text = re.sub(r"  +", " ", text)
-    return text
-
-
-def _extract_pdf_pypdf(file_bytes: bytes) -> str:
-    try:
-        from pypdf import PdfReader  # type: ignore[import-untyped]
-
-        reader = PdfReader(io.BytesIO(file_bytes))
-        parts: list[str] = []
-        for page in reader.pages:
-            text = page.extract_text()
-            if text:
-                parts.append(_collapse_spaced_text(text.strip()))
-        return "\n\n".join(parts)
-    except Exception as e:
-        logger.warning("pypdf 擷取失敗: %s", e)
-        return ""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -381,6 +277,112 @@ def _chunk_faq(text: str) -> list[str]:
     return _chunk_sliding(text, chunk_size=300, overlap=50)
 
 
+def _strip_yaml_front_matter(text: str) -> str:
+    """移除 YAML Front Matter（--- ... --- 區塊），回傳剩餘內容。"""
+    stripped = text.lstrip()
+    if not stripped.startswith("---"):
+        return text
+    end = stripped.find("\n---", 3)
+    if end == -1:
+        return text
+    return stripped[end + 4:].lstrip()
+
+
+def _chunk_by_heading(text: str, max_size: int = 1200, min_size: int = 150) -> list[str]:
+    """章節感知切分：依 Markdown 標題（## / ### / ####）切分，並前綴完整麵包屑路徑。
+
+    演算法：
+      1. 以 ## / ### / #### 為邊界切成節（sections）
+      2. 太短的節（< min_size）合併至下一節
+      3. 太長的節（> max_size）章內滑窗子切，每子切片帶同一份麵包屑前綴
+      4. 完全無標題時 fallback 到 _chunk_sliding
+    """
+    # ── 1. 解析各節 ────────────────────────────────────────────
+    heading_re = _re.compile(r'^(#{2,4})\s+(.+)$', _re.MULTILINE)
+    matches = list(heading_re.finditer(text))
+
+    if not matches:
+        logger.debug("structured_md chunking：無標題，fallback 滑動視窗")
+        return _chunk_sliding(text, chunk_size=max_size, overlap=200)
+
+    # 取出各節的起始位置與標題資訊
+    sections: list[dict] = []
+    for i, m in enumerate(matches):
+        level = len(m.group(1))      # ## = 2, ### = 3, #### = 4
+        title = m.group(2).strip()
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body = text[start:end].strip()
+        sections.append({"level": level, "title": title, "body": body, "start": start})
+
+    # 若第一個標題前有前言文字，先當一個無標題節
+    preamble = text[:matches[0].start()].strip()
+    if preamble:
+        sections.insert(0, {"level": 0, "title": "", "body": preamble, "start": 0})
+
+    # ── 2. 建立麵包屑追蹤（level → title）──────────────────────
+    breadcrumb: dict[int, str] = {}
+
+    def _build_breadcrumb(level: int, title: str) -> str:
+        """更新麵包屑並回傳完整路徑字串。"""
+        if level == 0:
+            return ""
+        breadcrumb[level] = title
+        # 清除比當前層級更深的舊標題
+        for deeper in [k for k in breadcrumb if k > level]:
+            del breadcrumb[deeper]
+        parts = [breadcrumb[lv] for lv in sorted(breadcrumb)]
+        return " > ".join(parts)
+
+    # ── 3. 太短的節合併到下一節（只合併 body，麵包屑各自保留）──
+    merged: list[dict] = []
+    pending_body = ""
+    pending_crumb = ""
+
+    for sec in sections:
+        crumb = _build_breadcrumb(sec["level"], sec["title"])
+        combined = (pending_body + "\n\n" + sec["body"]).strip() if pending_body else sec["body"]
+
+        if len(combined) < min_size and sec is not sections[-1]:
+            pending_body = combined
+            pending_crumb = crumb or pending_crumb
+        else:
+            merged.append({"breadcrumb": crumb or pending_crumb, "body": combined})
+            pending_body = ""
+            pending_crumb = ""
+
+    if pending_body:
+        # 最後幾節都太短（pending 未 flush）：合併進前一個 chunk，保持語意完整
+        if merged:
+            last = merged[-1]
+            last["body"] = (last["body"] + "\n\n" + pending_body).strip()
+        else:
+            merged.append({"breadcrumb": pending_crumb, "body": pending_body})
+
+    # 最後一個 merged 項目若太短，往前合併（避免孤立的短 chunk）
+    if len(merged) >= 2 and len(merged[-1]["body"]) < min_size:
+        prev = merged[-2]
+        last = merged.pop()
+        prev["body"] = (prev["body"] + "\n\n" + last["body"]).strip()
+
+    # ── 4. 太長的節子切，每片帶同一份麵包屑 ───────────────────
+    result: list[str] = []
+    for item in merged:
+        crumb_prefix = f"{item['breadcrumb']}\n\n" if item["breadcrumb"] else ""
+        body = item["body"]
+
+        if len(crumb_prefix) + len(body) <= max_size:
+            result.append((crumb_prefix + body).strip())
+        else:
+            # 章內滑窗子切（overlap=100 保留前後文）
+            sub_chunks = _chunk_sliding(body, chunk_size=max_size - len(crumb_prefix), overlap=100)
+            for sub in sub_chunks:
+                result.append((crumb_prefix + sub).strip())
+
+    logger.debug("structured_md chunking：%d 節 → %d chunks", len(sections), len(result))
+    return [c for c in result if c]
+
+
 def chunk_text(
     text: str,
     doc_type: str = "article",
@@ -389,6 +391,7 @@ def chunk_text(
 ) -> list[str]:
     """文件切分入口：依 doc_type 選擇切分策略。
     - faq：Q&A 感知切割（每對獨立 chunk）
+    - structured_md：章節感知切割（依 ## / ### / #### 標題，帶麵包屑前綴）
     - 其他：依 CHUNK_STRATEGIES 的 chunk_size/overlap 滑動視窗
     """
     text = text.strip()
@@ -397,6 +400,11 @@ def chunk_text(
 
     if doc_type == "faq":
         return _chunk_faq(text)
+
+    if doc_type == "structured_md":
+        clean = _strip_yaml_front_matter(text)
+        s = _strategy("structured_md")
+        return _chunk_by_heading(clean, max_size=s["chunk_size"])
 
     s = _strategy(doc_type)
     size = chunk_size if chunk_size is not None else s["chunk_size"]
@@ -544,17 +552,15 @@ def embed_texts_sync(
 
 def process_document(
     doc_id: int,
-    file_bytes: bytes,
-    content_type: str | None,
-    filename: str,
+    text: str,
     db: Session,
     tenant_id: str,
     doc_type: str = "article",
     agent_id: str = "knowledge",
     user_id: int | None = None,
 ) -> None:
-    """完整管線：文字擷取 → 切分 → Embedding → 寫入 km_chunks。
-    同步執行（於上傳請求中直接處理，適合初期小量文件場景）。
+    """完整管線：分塊 → Embedding → 寫入 km_chunks。
+    呼叫方負責在呼叫前完成文字萃取（包含 OCR）後傳入 text。
     doc_type 決定 chunk_size / overlap（見 CHUNK_STRATEGIES）。
     """
     doc = db.get(KmDocument, doc_id)
@@ -565,8 +571,6 @@ def process_document(
         doc.status = "processing"
         db.commit()
 
-        # 1. 擷取文字
-        text = extract_text(file_bytes, content_type, filename)
         if not text.strip():
             doc.status = "error"
             doc.error_message = "無法從檔案擷取文字內容（PDF 可能加密，或為純圖片 PDF）"
@@ -628,7 +632,7 @@ def process_document(
         # FAQ type：content_tsv 索引 Q+A 全文（與 embedding 一致），
         # 確保 tag、答案術語等關鍵字都能被 BM25 搜到；
         # 語意精準度由 embedding（ALPHA=0.7）主導，BM25 負責關鍵字覆蓋。
-        BM25_DOC_TYPES = {"faq", "spec"}
+        BM25_DOC_TYPES = {"faq", "spec", "structured_md", "doc_image"}
         build_tsv = doc_type in BM25_DOC_TYPES
         for idx, (chunk_content, embedding) in enumerate(zip(chunks, all_embeddings)):
             tsv_text = chunk_content
@@ -644,7 +648,7 @@ def process_document(
                     ).scalar()
                     if build_tsv else None
                 ),
-                metadata_={"filename": filename, "chunk_index": idx},
+                metadata_={"filename": doc.filename, "chunk_index": idx},
             )
             db.add(km_chunk)
 
@@ -658,7 +662,7 @@ def process_document(
             "KM 文件 id=%d 處理完成：%d chunks，檔名=%s",
             doc_id,
             len(chunks),
-            filename,
+            doc.filename,
         )
 
     except Exception as e:
@@ -853,6 +857,8 @@ def km_retrieve_sync(
 
         # ── RRF 合併（k=60）─────────────────────────────────
         # score = α × 1/(k+rank_vector) + (1-α) × 1/(k+rank_bm25)
+        # BM25 命中但不在 vector_rows 的 chunk，給予 fetch_k+1 的 fallback vector rank
+        # 確保關鍵字精確命中不會因向量相似度偏低而被淘汰
         RRF_K = 60
         ALPHA = 0.7  # 向量權重
 
@@ -863,8 +869,13 @@ def km_retrieve_sync(
             scores[chunk.id] = scores.get(chunk.id, 0.0) + ALPHA / (RRF_K + rank)
             chunk_map[chunk.id] = chunk
 
+        vector_ids = {c.id for c in vector_rows}
         for rank, chunk in enumerate(bm25_rows, start=1):
-            scores[chunk.id] = scores.get(chunk.id, 0.0) + (1 - ALPHA) / (RRF_K + rank)
+            bm25_score = (1 - ALPHA) / (RRF_K + rank)
+            if chunk.id not in vector_ids:
+                # BM25 命中但向量搜尋未收錄：補一個 fallback vector 分數
+                bm25_score += ALPHA / (RRF_K + fetch_k + 1)
+            scores[chunk.id] = scores.get(chunk.id, 0.0) + bm25_score
             chunk_map[chunk.id] = chunk
 
         sorted_ids = sorted(scores, key=lambda cid: scores[cid], reverse=True)

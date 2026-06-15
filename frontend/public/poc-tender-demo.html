@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>公部門標案分析自動化 POC — MVP 架構</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --c-bg:       #ffffff;
+    --c-surface:  #f8f9fa;
+    --c-border:   #e2e5e9;
+    --c-text:     #1a1d23;
+    --c-muted:    #6b7280;
+    --c-faint:    #9ca3af;
+    --c-green:    #16a34a;
+    --c-green-bg: #f0fdf4;
+    --c-green-bd: #bbf7d0;
+    --c-orange:   #d97706;
+    --c-orange-bg:#fffbeb;
+    --c-orange-bd:#fde68a;
+    --c-blue:     #2563eb;
+    --c-blue-bg:  #eff6ff;
+    --c-blue-bd:  #bfdbfe;
+    --c-red:      #dc2626;
+    --c-red-bg:   #fef2f2;
+    --c-red-bd:   #fecaca;
+    --c-gray-bg:  #f3f4f6;
+    --c-gray-bd:  #d1d5db;
+    --radius:     8px;
+    font-family: -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+  }
+
+  body { background: var(--c-bg); color: var(--c-text); font-size: 14px; line-height: 1.6; padding: 40px 24px; }
+  .page { max-width: 960px; margin: 0 auto; display: flex; flex-direction: column; gap: 32px; }
+
+  .stack { display: flex; flex-direction: column; }
+  .stack.gap-4  { gap: 4px; }  .stack.gap-8 { gap: 8px; }
+  .stack.gap-12 { gap: 12px; } .stack.gap-16 { gap: 16px; }
+  .row  { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .grid-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+
+  h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+  h2 { font-size: 15px; font-weight: 600; }
+  h3 { font-size: 13px; font-weight: 600; }
+  .muted  { color: var(--c-muted); }
+  .faint  { color: var(--c-faint); }
+  .small  { font-size: 12px; }
+  .bold   { font-weight: 600; }
+  .semibold { font-weight: 500; }
+  .mono   { font-family: "Courier New", monospace; font-size: 12px; }
+  hr { border: none; border-top: 1px solid var(--c-border); }
+
+  .pill {
+    display: inline-flex; align-items: center;
+    padding: 1px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 500;
+    border: 1px solid transparent; white-space: nowrap;
+  }
+  .pill.green  { color: var(--c-green);  background: var(--c-green-bg);  border-color: var(--c-green-bd); }
+  .pill.orange { color: var(--c-orange); background: var(--c-orange-bg); border-color: var(--c-orange-bd); }
+  .pill.blue   { color: var(--c-blue);   background: var(--c-blue-bg);   border-color: var(--c-blue-bd); }
+  .pill.red    { color: var(--c-red);    background: var(--c-red-bg);    border-color: var(--c-red-bd); }
+  .pill.gray   { color: var(--c-muted);  background: var(--c-gray-bg);   border-color: var(--c-gray-bd); }
+
+  .callout {
+    padding: 12px 14px; border-radius: var(--radius);
+    border-left: 3px solid; font-size: 13px; line-height: 1.7;
+  }
+  .callout.info    { background: var(--c-blue-bg);   border-color: var(--c-blue);   color: #1e3a5f; }
+  .callout.success { background: var(--c-green-bg);  border-color: var(--c-green);  color: #14532d; }
+  .callout.warning { background: var(--c-orange-bg); border-color: var(--c-orange); color: #78350f; }
+  .callout .callout-title { font-weight: 600; margin-bottom: 4px; }
+
+  .card { border: 1px solid var(--c-border); border-radius: var(--radius); overflow: hidden; }
+  .card.llm-card { border-color: var(--c-blue-bd); }
+  .card-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 14px; border-bottom: 1px solid var(--c-border);
+    background: var(--c-surface); font-size: 12px; font-weight: 500; color: var(--c-muted);
+  }
+  .card.llm-card .card-header { background: var(--c-blue-bg); }
+  .card-body { padding: 14px; }
+
+  .stat { padding: 14px; border: 1px solid var(--c-border); border-radius: var(--radius); }
+  .stat .stat-value { font-size: 22px; font-weight: 700; line-height: 1.2; margin-bottom: 4px; }
+  .stat .stat-label { font-size: 11px; color: var(--c-muted); }
+  .stat.green .stat-value { color: var(--c-green); }
+  .stat.blue  .stat-value { color: var(--c-blue); }
+  .stat.red   .stat-value { color: var(--c-red); }
+
+  .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .tbl th {
+    text-align: left; padding: 7px 10px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    font-weight: 500; color: var(--c-muted); font-size: 12px;
+  }
+  .tbl td { padding: 7px 10px; border: 1px solid var(--c-border); vertical-align: top; }
+  .tbl tr.row-green  td { background: var(--c-green-bg); }
+  .tbl tr.row-orange td { background: var(--c-orange-bg); }
+  .tbl tr.row-blue   td { background: var(--c-blue-bg); }
+  .tbl tr.row-gray   td { background: var(--c-surface); }
+  .tbl tr.striped:nth-child(even) td { background: var(--c-surface); }
+
+  /* Step cards */
+  .step-card { padding: 14px; border: 1px solid var(--c-border); border-radius: var(--radius); }
+  .step-card.llm { border-color: var(--c-blue-bd); background: var(--c-blue-bg); }
+  .step-num   { font-size: 11px; font-weight: 600; color: var(--c-faint); margin-bottom: 4px; }
+  .step-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .step-who   { font-size: 12px; color: var(--c-muted); }
+
+  /* Collapsible details */
+  details summary { cursor: pointer; list-style: none; }
+  details summary::-webkit-details-marker { display: none; }
+  details summary .toggle-icon { transition: transform 0.2s; display: inline-block; }
+  details[open] summary .toggle-icon { transform: rotate(90deg); }
+
+  .phase-bar {
+    display: flex; gap: 0; border: 1px solid var(--c-border); border-radius: var(--radius); overflow: hidden;
+  }
+  .phase-seg {
+    flex: 1; padding: 8px 10px; text-align: center;
+    font-size: 12px; font-weight: 500;
+  }
+  .phase-seg.p1 { background: var(--c-green-bg); color: var(--c-green); border-right: 1px solid var(--c-border); }
+  .phase-seg.p2 { background: var(--c-surface); color: var(--c-muted); }
+
+  .disclaimer { text-align: center; font-size: 11px; color: var(--c-faint); padding-top: 16px; border-top: 1px solid var(--c-border); }
+
+  @media print { body { padding: 0; } }
+  @media (max-width: 720px) {
+    .grid-5 { grid-template-columns: repeat(3, 1fr); }
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- 標題 -->
+  <div class="stack gap-4">
+    <div class="row">
+      <h1>公部門標案分析自動化 POC</h1>
+      <span class="pill blue">架構討論</span>
+    </div>
+    <p class="muted small">遠通電收 × NeuroSme　MVP 設計草稿　訪談後進一步確認範圍與優先順序</p>
+  </div>
+
+  <!-- MVP 流程架構 -->
+  <div class="stack gap-12">
+    <h2>MVP 流程架構</h2>
+    <div class="grid-5" id="steps-container"></div>
+
+    <!-- Phase 標示 -->
+    <div class="phase-bar">
+      <div class="phase-seg p1" style="flex:3">
+        Phase 1（建議 POC 範圍）　Step 01 + 02 + 03
+      </div>
+      <div class="phase-seg p2" style="flex:2">
+        Phase 2　Step 04 + 05
+      </div>
+    </div>
+    <div class="callout info">
+      <div class="callout-title">Phase 1 = 立即可展示的最小 POC</div>
+      每天自動從 g0v 標案 API 拉取符合關鍵字的標案，LLM 自動生成一頁摘要推送給業務。
+      不需要公司內部資料，資料源已解決，技術可立即啟動。
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- 各步驟資料需求 -->
+  <div class="stack gap-16">
+    <h2>各步驟資料需求</h2>
+    <div class="stack gap-12" id="steps-detail"></div>
+  </div>
+
+  <hr>
+
+  <!-- LLM 角色 -->
+  <div class="stack gap-12">
+    <h2>LLM 角色詳述（Steps 03–05）</h2>
+    <p class="muted small">
+      這個 POC 與停車報價 POC 最大的不同：LLM 不只是「生成文字」，
+      更要做「文件理解」和「推論比對」，是整個產品的核心引擎。
+    </p>
+    <div class="grid-3" id="llm-roles"></div>
+  </div>
+
+  <hr>
+
+  <!-- g0v API -->
+  <div class="stack gap-12">
+    <div class="row">
+      <h2>資料來源：g0v 標案 API</h2>
+      <span class="pill green">可立即串接</span>
+    </div>
+    <div class="callout success">
+      <div class="callout-title">不需要爬蟲，有現成合法 API</div>
+      g0v 社群維護的 <span class="mono">pcc.mlwmlw.org/api</span> 
+      直接提供政府採購網結構化資料，開放 CORS、免費使用，
+      資料來源符合著作權法合理使用規定（報導、研究、正當目的）。
+    </div>
+    <table class="tbl">
+      <thead><tr><th>用途</th><th>Endpoint</th><th>說明</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="semibold">關鍵字搜尋</td>
+          <td class="mono">/api/keyword/電子收費</td>
+          <td class="muted">最常用，直接對應 Step 01 的關鍵字設定</td>
+        </tr>
+        <tr class="striped">
+          <td class="semibold">每日新增標案</td>
+          <td class="mono">/api/date/tender/2026-05-31</td>
+          <td class="muted">排程每日執行，取得當天所有公告標案</td>
+        </tr>
+        <tr>
+          <td class="semibold">每日得標公告</td>
+          <td class="mono">/api/date/award/2026-05-31</td>
+          <td class="muted">分析競爭者、了解市場行情</td>
+        </tr>
+        <tr class="striped">
+          <td class="semibold">機關月別查詢</td>
+          <td class="mono">/api/unit/交通部/2026-05</td>
+          <td class="muted">鎖定特定主管機關，追蹤相關標案</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="callout warning">
+      <div class="callout-title">使用注意事項</div>
+      g0v API 因大量 AI 爬蟲造成負載，已加 Cloudflare 防護並阻擋機器人行為。
+      請設定合理 rate limit（建議每分鐘不超過 10 次請求）並加上正常的 User-Agent。
+      商業上線前建議法務確認政府資料商業使用的合規性。
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- 與停車 POC 比較 -->
+  <div class="stack gap-8">
+    <h2>與停車報價 POC 的差異比較</h2>
+    <table class="tbl">
+      <thead><tr><th>維度</th><th>停車報價 POC</th><th>標案分析 POC</th></tr></thead>
+      <tbody id="compare-table"></tbody>
+    </table>
+    <div class="callout info">
+      <div class="callout-title">關鍵差異</div>
+      停車 POC 的核心是「財務計算引擎」，LLM 是輔助；
+      標案 POC 的核心是「LLM 文件理解」，沒有 LLM 就沒有產品。
+      兩個 POC 互補，展示 AI 在不同場景的不同角色。
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- 訪談清單 -->
+  <div class="stack gap-8">
+    <h2>訪談確認清單</h2>
+    <table class="tbl">
+      <thead><tr><th>優先</th><th>問題</th><th>影響範圍</th></tr></thead>
+      <tbody id="qa-table"></tbody>
+    </table>
+  </div>
+
+  <p class="disclaimer">本文件為 POC 討論用設計草稿，訪談後進一步確認範圍與優先順序。</p>
+</div>
+
+<script>
+// ── 資料定義 ─────────────────────────────────────────────────────────
+const STEPS = [
+  {
+    num:"01", title:"設定篩選條件", who:"使用者填寫", llm:false,
+    desc:"業務設定關鍵字、預算範圍、截止日期區間、採購類型，一次設定反覆使用",
+    data:[
+      { name:"關鍵字（領域 / 技術）", src:"使用者", s:"ok", note:"如「電子收費」、「停車管理」、「智慧交通」" },
+      { name:"預算範圍（下限 / 上限）", src:"使用者", s:"ok" },
+      { name:"截止日期區間", src:"使用者", s:"ok" },
+      { name:"採購類型（勞務 / 財物 / 工程）", src:"使用者", s:"ok" },
+      { name:"採購機關類型（中央 / 地方）", src:"使用者", s:"tbd", note:"是否需要？可作進階篩選" },
+    ],
+  },
+  {
+    num:"02", title:"自動取得標案清單", who:"g0v API + 過濾引擎", llm:false,
+    desc:"每日排程呼叫 g0v 標案 API，依篩選條件過濾後回傳符合的標案清單",
+    data:[
+      { name:"g0v 標案 API（pcc.mlwmlw.org/api）", src:"公開 API", s:"ok", note:"開放 CORS、免費，/keyword/:kw 直接關鍵字查詢" },
+      { name:"標案標題、預算、截止日、採購機關", src:"公開 API", s:"ok", note:"API 回傳結構化 JSON，直接可用" },
+      { name:"標案文件下載連結（PDF）", src:"公開 API", s:"ok", note:"API 含原始頁面連結，可進一步下載 PDF" },
+      { name:"關鍵字比對邏輯（精準 vs 語意）", src:"系統設定", s:"tbd", note:"POC 先用純關鍵字；之後可加 LLM 語意相似度" },
+      { name:"著作權 / 商業使用合規", src:"法務確認", s:"risk", note:"允許報導、研究、正當目的合理使用；商業上線前確認" },
+      { name:"API 穩定性（Cloudflare bot 防護）", src:"技術限制", s:"risk", note:"需設定 rate limit + User-Agent，避免被擋" },
+    ],
+  },
+  {
+    num:"03", title:"LLM 標案文件摘要", who:"LLM（文件理解）", llm:true,
+    desc:"LLM 讀入標案 PDF，擷取核心需求、資格條件、履約條款等結構化重點",
+    data:[
+      { name:"標案 PDF 全文（解析後文字）", src:"公開資料", s:"risk", note:"PDF 格式差異大，掃描版解析品質不穩定" },
+      { name:"核心需求摘要", src:"LLM 產出", s:"ok" },
+      { name:"技術規格要點", src:"LLM 產出", s:"ok" },
+      { name:"資格條件（資本額、經驗、證照）", src:"LLM 產出", s:"ok" },
+      { name:"合約年限 / 履約期程", src:"LLM 產出", s:"ok" },
+      { name:"履約保證金比例", src:"LLM 產出", s:"ok" },
+      { name:"罰則條款摘要", src:"LLM 產出", s:"ok" },
+    ],
+  },
+  {
+    num:"04", title:"LLM 潛在風險評估", who:"LLM（分析推論）", llm:true,
+    desc:"對照公司 profile 與標案條件，LLM 判斷資格缺口、技術/時程/財務風險",
+    data:[
+      { name:"公司能力檔案（資格、經驗、認證）", src:"使用者", s:"risk", note:"需公司自行建立 profile，這是品質關鍵輸入" },
+      { name:"技術風險（能否達標規格？）", src:"LLM 產出", s:"ok" },
+      { name:"時程風險（履約期程是否可行？）", src:"LLM 產出", s:"ok" },
+      { name:"財務風險（保證金比例 / 罰則重）", src:"LLM 產出", s:"ok" },
+      { name:"資格缺口分析", src:"LLM 產出", s:"risk", note:"需對照公司 profile，LLM 判斷可能有誤差" },
+      { name:"競爭態勢分析", src:"LLM 產出", s:"tbd", note:"POC 範圍是否涵蓋？難度較高" },
+    ],
+  },
+  {
+    num:"05", title:"LLM 標案企劃草稿", who:"LLM（文件生成）", llm:true,
+    desc:"根據標案需求 + 公司資料，LLM 生成完整企劃草稿，業務只需調整細節",
+    data:[
+      { name:"公司介紹範本（固定段落）", src:"使用者", s:"ok", note:"一次設定，反覆使用" },
+      { name:"過去得標案例 / 實績", src:"使用者", s:"tbd", note:"有則品質大幅提升，無則通用語言生成" },
+      { name:"技術方案草稿", src:"LLM 產出", s:"ok" },
+      { name:"專案執行時程表", src:"LLM 產出", s:"ok" },
+      { name:"風險應對說明", src:"LLM 產出", s:"ok" },
+      { name:"報價邏輯說明", src:"LLM 產出", s:"tbd", note:"實際報價涉及成本試算，超出純 LLM 範疇" },
+    ],
+  },
+];
+
+const LLM_ROLES = [
+  {
+    step:"Step 03", role:"文件理解（RAG + Summarization）",
+    desc:"讀入數十至數百頁的標案 PDF，擷取結構化重點。這是這個 POC 最核心的 LLM 工作。",
+    challenge:"PDF 品質不一、表格辨識困難、長文件超出 context window",
+  },
+  {
+    step:"Step 04", role:"對比分析（Reasoning）",
+    desc:"將標案條件與公司 profile 進行比對，判斷資格缺口與風險等級。",
+    challenge:"LLM 可能過度樂觀或遺漏細節，高風險項目需人工確認",
+  },
+  {
+    step:"Step 05", role:"文件生成（Generation）",
+    desc:"根據標案需求 + 公司資料，生成客製化企劃草稿，業務只需調整細節。",
+    challenge:"沒有公司實績資料時，生成內容通用性強但說服力弱",
+  },
+];
+
+const COMPARE = [
+  { dim:"資料來源",    p:"業者提供 / 業務填寫（封閉資料）",   t:"政府公開資料（g0v API，開放可自動取得）" },
+  { dim:"計算複雜度",  p:"高（IRR、現金流、財務模型）",        t:"低（主要是文字理解與生成）" },
+  { dim:"LLM 依賴度", p:"中（Proposal 文字 + Q&A 說明）",     t:"高（摘要、風險、企劃全靠 LLM）" },
+  { dim:"輸出物",      p:"數字報表 + PDF 業者簡報",            t:"標案清單 + 風險報告 + 企劃草稿" },
+  { dim:"主要風險",    p:"流量資料不可靠 → 財務計算失準",       t:"PDF 解析失敗 + LLM 幻覺 → 法律資訊錯誤" },
+  { dim:"啟動門檻",    p:"需要財務模型 Excel（內部資料）",       t:"不需要公司內部資料即可開始 Phase 1" },
+];
+
+const QUESTIONS = [
+  { pri:"最優先", q:"公司是否有固定的投標領域關鍵字清單？", impact:"決定 Step 01 篩選條件設計，影響爬梳精準度" },
+  { pri:"最優先", q:"目前業務人員如何處理標案？每週看幾件？哪個步驟最耗時？", impact:"確認真實痛點，決定哪個 Step 優先做" },
+  { pri:"最優先", q:"公司是否願意提供「能力 profile」資料（資格、實績、認證）？", impact:"有的話 Step 04/05 品質大幅提升；否則企劃只能通用" },
+  { pri:"次優先", q:"POC 成功定義是什麼？精準找到標案？還是企劃可直接使用？", impact:"決定 MVP 做到哪個 Step 就可以展示" },
+  { pri:"次優先", q:"對摘要準確性的容忍度？需要法務確認嗎？", impact:"影響 LLM 風險評估的設計原則：草稿 vs 確認模式" },
+  { pri:"之後",   q:"是否需要整合到現有系統（ERP / CRM / Email）？", impact:"決定輸出格式與整合複雜度" },
+];
+
+// ── Render ──────────────────────────────────────────────────────────
+// Step cards
+const stepsEl = document.getElementById("steps-container");
+STEPS.forEach(s => {
+  const el = document.createElement("div");
+  el.className = `step-card${s.llm ? " llm" : ""}`;
+  el.innerHTML = `
+    <div class="step-num">STEP ${s.num}${s.llm ? ' <span class="pill blue">LLM</span>' : ""}</div>
+    <div class="step-title">${s.title}</div>
+    <div class="step-who">${s.who}</div>
+  `;
+  stepsEl.appendChild(el);
+});
+
+// Steps detail
+const detailEl = document.getElementById("steps-detail");
+STEPS.forEach(s => {
+  const riskCount = s.data.filter(d => d.s === "risk").length;
+  const tbdCount  = s.data.filter(d => d.s === "tbd").length;
+  const el = document.createElement("div");
+  el.className = `card${s.llm ? " llm-card" : ""}`;
+  const badges = [
+    s.llm ? '<span class="pill blue">LLM</span>' : "",
+    riskCount ? `<span class="pill orange">${riskCount} 風險</span>` : "",
+    tbdCount  ? `<span class="pill gray">${tbdCount} 待議</span>` : "",
+  ].filter(Boolean).join(" ");
+
+  const rows = s.data.map(d => {
+    const pillCls = d.s === "ok" ? "green" : d.s === "risk" ? "orange" : "gray";
+    const pillTxt = d.s === "ok" ? "明確" : d.s === "risk" ? "風險" : "待議";
+    const rowCls  = d.s === "risk" ? "row-orange" : "";
+    return `<tr class="${rowCls}">
+      <td class="semibold">${d.name}</td>
+      <td class="muted small">${d.src}</td>
+      <td><span class="pill ${pillCls}">${pillTxt}</span></td>
+      <td class="muted small">${d.note || "—"}</td>
+    </tr>`;
+  }).join("");
+
+  el.innerHTML = `
+    <div class="card-header">
+      <span>Step ${s.num}　${s.title}　<span class="faint small">— ${s.who}</span></span>
+      <span class="row" style="gap:6px">${badges}</span>
+    </div>
+    <div class="card-body stack gap-8">
+      <p class="muted small">${s.desc}</p>
+      <table class="tbl">
+        <thead><tr><th>資料項目</th><th>來源</th><th>狀態</th><th>備註 / 問題</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  detailEl.appendChild(el);
+});
+
+// LLM roles
+const llmEl = document.getElementById("llm-roles");
+LLM_ROLES.forEach(r => {
+  llmEl.innerHTML += `
+    <div class="card llm-card">
+      <div class="card-header">${r.step} <span class="pill blue">LLM</span></div>
+      <div class="card-body stack gap-8">
+        <p class="bold small">${r.role}</p>
+        <p class="muted small">${r.desc}</p>
+        <div class="callout warning" style="padding:8px 10px;font-size:12px">
+          <strong>挑戰：</strong>${r.challenge}
+        </div>
+      </div>
+    </div>`;
+});
+
+// Compare table
+const cmpEl = document.getElementById("compare-table");
+COMPARE.forEach((r, i) => {
+  const cls = i % 2 === 1 ? "striped" : "";
+  cmpEl.innerHTML += `<tr class="${cls}">
+    <td class="semibold">${r.dim}</td>
+    <td class="muted small">${r.p}</td>
+    <td class="muted small">${r.t}</td>
+  </tr>`;
+});
+
+// Questions table
+const qaEl = document.getElementById("qa-table");
+QUESTIONS.forEach(q => {
+  const pillCls = q.pri === "最優先" ? "orange" : q.pri === "次優先" ? "blue" : "gray";
+  const rowCls  = q.pri === "最優先" ? "row-orange" : "";
+  qaEl.innerHTML += `<tr class="${rowCls}">
+    <td><span class="pill ${pillCls}">${q.pri}</span></td>
+    <td class="semibold">${q.q}</td>
+    <td class="muted small">${q.impact}</td>
+  </tr>`;
+});
+</script>
+</body>
+</html>

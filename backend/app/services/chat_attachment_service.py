@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 
 # 純文字（與前端 CHAT_ATTACH_MAX_FILE_BYTES 對齊）
 CHAT_ATTACH_MAX_BYTES = 30 * 1024
-# PDF 二進位單檔上限（擷取後仍受 CHAT_AGENT_REFERENCE_MAX_CHARS 限制）
-CHAT_ATTACH_PDF_MAX_BYTES = 4 * 1024 * 1024
+# PDF 二進位單檔上限（PDF 大小 ≠ 內容大小，真正保護由頁數與字元上限把關）
+CHAT_ATTACH_PDF_MAX_BYTES = 20 * 1024 * 1024
 # 圖片（與 settings.CHAT_INLINE_IMAGE_MAX_BYTES 對齊，供 persist 與驗證）
 CHAT_ATTACHMENT_IMAGE_EXT = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
 CHAT_ATTACHMENT_EXT = frozenset(

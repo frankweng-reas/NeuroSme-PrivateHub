@@ -96,8 +96,8 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: `http://localhost:${apiPort}`,
           changeOrigin: true,
-          timeout: 300_000,       // 等待連線建立（ms）
-          proxyTimeout: 300_000,  // 等待 backend 回應（ms）
+          timeout: 900_000,       // 等待連線建立（ms）；PDF OCR 可能較久
+          proxyTimeout: 900_000,  // 等待 backend 回應（ms）
         },
         '/auth': {
           target: `http://localhost:${localAuthPort}`,

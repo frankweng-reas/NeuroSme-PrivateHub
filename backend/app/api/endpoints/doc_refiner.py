@@ -72,6 +72,7 @@ class ImportMdToKBRequest(BaseModel):
     markdown: str              # 完整 MD 內容（含 YAML front matter）
     kb_id: int | None = None   # 現有 KB id（與 new_kb_name 擇一）
     new_kb_name: str | None = None
+    doc_type: str = "structured_md"  # 預設 structured_md；圖片匯入用 doc_image
 
 
 class RewriteItemRequest(BaseModel):
@@ -84,6 +85,25 @@ class RewriteItemRequest(BaseModel):
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
+# JSON schema：強制 LLM 輸出符合格式的 Q&A array（constrained decoding）
+_QA_JSON_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "Q": {"type": "string"},
+            "A": {"type": "string"},
+        },
+        "required": ["Q", "A"],
+        "additionalProperties": False,
+    },
+}
+_QA_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "qa_list", "schema": _QA_JSON_SCHEMA},
+}
+
 
 def _split_text(text: str) -> list[str]:
     """依字數切分文字，超過 _CHUNK_SIZE 才切；相鄰段落保留 _CHUNK_OVERLAP 重疊。"""
@@ -299,10 +319,17 @@ def _extract_text_from_file(file_bytes: bytes, filename: str) -> tuple[str, int]
     return _extract_text(file_bytes)
 
 
+def _fix_llm_json(s: str) -> str:
+    """修正 LLM 常見的 JSON 語法問題：trailing comma。"""
+    s = re.sub(r",(\s*[}\]])", r"\1", s)
+    return s
+
+
 def _parse_llm_json(raw: str) -> list[dict]:
     """從 LLM 回覆中萃取並正規化 Q&A items 列表。"""
     try:
         json_str = _extract_json_candidate(raw)
+        json_str = _fix_llm_json(json_str)
         data = json.loads(json_str)
     except json.JSONDecodeError as exc:
         raise ValueError(f"LLM 回覆 JSON 解析失敗：{exc}") from exc
@@ -374,6 +401,7 @@ async def process_document(
     file: UploadFile = File(..., description="原始 PDF 或 TXT 檔案"),
     model: str = Form("", description="指定 LLM model（留空使用租戶預設）"),
     source_type: str = Form("doc", description="來源類型：doc（文件）或 note（筆記）"),
+    granularity: str = Form("key_points", description="整理粒度：summary / key_points / detailed"),
     db: Session = Depends(get_db),
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):
@@ -438,6 +466,16 @@ async def process_document(
     else:
         prompt_key = "doc_refiner_doc"
     system_prompt = _load_system_prompt_from_file(prompt_key) or ""
+
+    # 根據整理粒度，在 system prompt 末尾附加數量指令
+    _GRANULARITY_INSTRUCTIONS = {
+        "summary":    "【數量限制】本次只產生 1 條 Q&A，以整份文件的核心主旨為題。",
+        "key_points": "【數量限制】本次產生 3–5 條 Q&A，挑選最重要的關鍵資訊。",
+        "detailed":   "【數量限制】本次盡量涵蓋所有重要知識點，不限數量。",
+    }
+    granularity_inst = _GRANULARITY_INSTRUCTIONS.get(granularity, _GRANULARITY_INSTRUCTIONS["key_points"])
+    system_prompt = system_prompt.rstrip() + "\n\n" + granularity_inst
+
     chunks = _split_text(raw_text)
     chunk_total = len(chunks)
 
@@ -465,6 +503,11 @@ async def process_document(
                     },
                 ]
 
+                # local model 用 JSON schema constrained decoding 確保輸出合法
+                llm_extra: dict = {}
+                if use_model.startswith("local/"):
+                    llm_extra["response_format"] = _QA_RESPONSE_FORMAT
+
                 try:
                     answer, llm_usage, _ = await call_llm(
                         model=use_model,
@@ -472,6 +515,7 @@ async def process_document(
                         db=db,
                         tenant_id=tenant_id,
                         temperature=0.3,
+                        **llm_extra,
                     )
                 except (LLMProviderNotConfigured, LLMCallError) as exc:
                     yield _sse({"type": "error", "detail": str(exc)})
@@ -513,10 +557,104 @@ async def process_document(
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
+def _detect_pdf_mode(file_bytes: bytes) -> str:
+    """偵測 PDF 類型，回傳建議萃取模式：'text' 或 'image'。
+    策略：以全份 PDF 的平均每頁非空白字數判斷。
+    - 平均 >= 80 字/頁 → 'text'（有足夠文字層）
+    - 平均 < 80 字/頁 → 'image'（掃描型或圖片型）
+    封面、空白頁會拉低平均值，但文字型 PDF 整體平均仍遠高於門檻。
+    """
+    import pdfplumber
+
+    try:
+        total_chars = 0
+        page_count = 0
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            page_count = len(pdf.pages)
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                total_chars += len(re.sub(r"\s+", "", text))
+
+        if page_count == 0:
+            return "image"
+
+        avg_chars = total_chars / page_count
+        logger.info("_detect_pdf_mode: total_chars=%d, pages=%d, avg=%.1f", total_chars, page_count, avg_chars)
+        return "text" if avg_chars >= 80 else "image"
+
+    except Exception as exc:
+        logger.warning("_detect_pdf_mode 失敗，fallback image: %s", exc)
+        return "image"
+
+
+@router.post("/check-pdf", summary="快速偵測 PDF 類型（文字型 / 圖片型 / 混合型）")
+async def check_pdf(
+    file: UploadFile = File(..., description="PDF 檔案"),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """分析 PDF 各頁的文字層與圖片分佈，回傳：
+    - type: "text" | "image" | "mixed"
+    - page_count: 頁數
+    - ocr_pages_estimate: 預估需要 OCR 的頁數
+    """
+    import fitz
+    import pdfplumber
+
+    file_bytes = await file.read()
+    try:
+        fitz_doc = fitz.open(stream=file_bytes, filetype="pdf")
+        page_count = fitz_doc.page_count
+        ocr_needed = 0
+
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for i, plumb_page in enumerate(pdf.pages):
+                fitz_page = fitz_doc[i]
+                page_area = fitz_page.rect.width * fitz_page.rect.height
+
+                text = plumb_page.extract_text() or ""
+                chars = len(re.sub(r"\s+", "", text))
+
+                seen: set[int] = set()
+                max_ratio = 0.0
+                for img in fitz_page.get_images(full=True):
+                    xref = int(img[0])
+                    if xref in seen:
+                        continue
+                    seen.add(xref)
+                    try:
+                        rects = fitz_page.get_image_rects(xref)
+                        if rects and page_area > 0:
+                            ratio = max(r.width * r.height for r in rects) / page_area
+                            max_ratio = max(max_ratio, ratio)
+                    except Exception:
+                        pass
+
+                is_full_page_render = max_ratio > 0.75
+                # 有全頁大圖 + 文字層幾乎空白才算掃描頁
+                if is_full_page_render and chars < 50:
+                    ocr_needed += 1
+
+        fitz_doc.close()
+
+        if ocr_needed == 0:
+            pdf_type = "text"
+        elif ocr_needed == page_count:
+            pdf_type = "image"
+        else:
+            pdf_type = "mixed"
+
+        return {"type": pdf_type, "page_count": page_count, "ocr_pages_estimate": ocr_needed}
+
+    except Exception as exc:
+        logger.warning("check_pdf 失敗: %s", exc)
+        return {"type": "unknown", "page_count": 0, "ocr_pages_estimate": 0}
+
+
 @router.post("/to-markdown", summary="文件轉結構化 Markdown（SSE 串流）")
 async def to_markdown(
     file: UploadFile = File(..., description="原始 PDF 檔案"),
     model: str = Form("", description="指定 LLM model（留空使用租戶預設）"),
+    pdf_mode: str = Form("text", description="PDF 萃取模式：text（文字層）/ image（整頁 OCR）/ auto（自動偵測）"),
     db: Session = Depends(get_db),
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):
@@ -528,8 +666,8 @@ async def to_markdown(
       { type: "done",     model, usage }
       { type: "error",    detail }
     """
+    from app.services.document_service import is_supported_filename
     from app.services.document_structuring import DocumentStructuringService
-    from app.services.document_structuring.extractors import is_supported_filename
 
     fname = file.filename or ""
     if not is_supported_filename(fname):
@@ -540,6 +678,12 @@ async def to_markdown(
         raise HTTPException(status_code=400, detail="上傳的檔案是空的")
     if len(file_bytes) > _MAX_PDF_BYTES:
         raise HTTPException(status_code=413, detail="檔案過大（上限 20 MB）")
+
+    # auto 模式：同步偵測 PDF 類型（輕量，幾乎不影響速度）
+    effective_mode = pdf_mode
+    if pdf_mode == "auto":
+        effective_mode = _detect_pdf_mode(file_bytes)
+        logger.info("auto 偵測結果：%s → 使用 %s 模式", fname, effective_mode)
 
     svc = DocumentStructuringService()
 
@@ -554,10 +698,10 @@ async def to_markdown(
                 result = await svc.extract_async(
                     file_bytes,
                     fname,
+                    mode=effective_mode,
                     model=model,
                     db=db,
                     tenant_id=current.tenant_id,
-                    enable_pdf_ocr=True,
                     on_progress=on_progress,
                 )
                 await queue.put({"_extract_done": result})
@@ -764,6 +908,7 @@ async def import_md_to_kb(
     scope = "public" if kb.scope == "company" else "private"
     owner_id = current.id if scope == "private" else None
 
+    effective_doc_type = body.doc_type if body.doc_type in ("structured_md", "doc_image", "faq", "spec", "article") else "structured_md"
     doc = KmDocument(
         tenant_id=current.tenant_id,
         owner_user_id=owner_id,
@@ -773,7 +918,7 @@ async def import_md_to_kb(
         scope=scope,
         status="pending",
         knowledge_base_id=kb.id,
-        doc_type="structured_md",
+        doc_type=effective_doc_type,
     )
     db.add(doc)
     db.commit()
@@ -781,12 +926,10 @@ async def import_md_to_kb(
 
     process_document(
         doc_id=doc.id,
-        file_bytes=md_bytes,
-        content_type="text/markdown",
-        filename=doc_filename,
+        text=md_bytes.decode("utf-8"),
         db=db,
         tenant_id=current.tenant_id,
-        doc_type="structured_md",
+        doc_type=effective_doc_type,
         agent_id="doc-refiner",
         user_id=current.id,
     )
@@ -905,9 +1048,7 @@ async def import_to_kb(
 
     process_document(
         doc_id=doc.id,
-        file_bytes=faq_bytes,
-        content_type="text/plain",
-        filename=doc_filename,
+        text=faq_text,
         db=db,
         tenant_id=current.tenant_id,
         doc_type="faq",

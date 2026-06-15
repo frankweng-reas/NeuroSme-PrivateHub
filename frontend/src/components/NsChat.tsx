@@ -188,6 +188,8 @@ export interface NsChatProps {
    * 為 true 時允許輸入框空白仍送出（例如僅附加檔時由父層填入預設訊息寫入 DB）
    */
   allowSubmitEmptyInput?: boolean
+  /** 訊息列表末尾（捲動區內，緊接最後一則訊息之後） */
+  appendContent?: ReactNode
   /** 送出列上方（例如待併入本則訊息的附件列表） */
   composerAboveForm?: ReactNode
   /** 與輸入框同一列、位於輸入框左側（例如附加檔按鈕） */
@@ -219,6 +221,7 @@ export default function NsChat({
   onRetryLastAssistant,
   embedded = false,
   allowSubmitEmptyInput = false,
+  appendContent,
   composerAboveForm,
   composerLeading,
   appendInputText,
@@ -430,6 +433,9 @@ export default function NsChat({
                   <span>.</span>
                 </span>
               </p>
+            )}
+            {appendContent != null && (
+              <div className="mt-3">{appendContent}</div>
             )}
           </div>
           {!isAtBottom && messages.length > 0 ? (

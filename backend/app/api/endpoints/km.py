@@ -102,7 +102,7 @@ async def upload_km_document(
     scope: Annotated[str, Form(description="'private' 個人 | 'public' 租戶共用（admin）")] = "private",
     tags: Annotated[str, Form(description="JSON 陣列字串，如 '[\"HR\",\"IT\"]'，可選")] = "[]",
     knowledge_base_id: Annotated[int | None, Form(description="知識庫 ID，可選")] = None,
-    doc_type: Annotated[str, Form(description="文件類型：article | policy | spec | faq")] = "article",
+    doc_type: Annotated[str, Form(description="文件類型：article | faq | reference | structured_md | spec | policy | chat | doc_image")] = "article",
     db: Session = Depends(get_db),
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):
@@ -173,11 +173,63 @@ async def upload_km_document(
             detail=f"檔案超過 20MB 上限（目前 {len(file_bytes) // 1024 // 1024}MB）",
         )
 
+    # 若使用者以預設 doc_type（article）上傳 .md 且 front matter 含 source: doc-refiner-md，
+    # 自動升級為 structured_md，不需使用者手動選擇。
+    if doc_type == "article" and (
+        filename.lower().endswith(".md") or (content_type or "").lower() in ("text/markdown", "text/x-markdown")
+    ):
+        try:
+            head = file_bytes[:512].decode("utf-8", errors="ignore")
+            stripped = head.lstrip()
+            if stripped.startswith("---"):
+                if "source: doc-refiner-md" in stripped[:512] or "source: doc-refiner-web-md" in stripped[:512]:
+                    doc_type = "structured_md"
+                    logger.info("upload: 自動識別 structured_md（Doc Refiner YAML front matter）")
+        except Exception:
+            pass
+
+    # 萃取文字（PDF 走 document_service + OCR，其他走 km_extract_text）
+    from app.services.document_service import LLMContext
+    from app.services.document_service import extract as doc_extract
+    from app.services.document_service import is_supported_filename
+    from app.services.km_service import _clean_pdf_text, extract_text as km_extract_text
+    from app.services.document_structuring.llm_resolve import resolve_tenant_model
+
+    use_model = resolve_tenant_model("", db, current.tenant_id)
+
+    if is_supported_filename(filename):
+        llm_ctx = LLMContext(model=use_model, db=db, tenant_id=current.tenant_id) if use_model else None
+        pdf_result = await doc_extract(file_bytes, llm_ctx=llm_ctx)
+        extracted_text = _clean_pdf_text(pdf_result.text)
+    else:
+        extracted_text = km_extract_text(file_bytes, content_type, filename)
+
+    # structured_md：PDF 萃取後再用 LLM 整理成有章節結構的 markdown
+    if doc_type == "structured_md" and is_supported_filename(filename) and use_model:
+        from app.services.document_structuring.service import DocumentStructuringService
+        from app.services.document_structuring.types import ExtractResult
+        title = filename.rsplit(".", 1)[0] if "." in filename else filename
+        extracted_result = ExtractResult(
+            text=extracted_text,
+            page_count=getattr(pdf_result, "page_count", 0),
+            source_format="pdf",
+            filename=filename,
+            title=title,
+            ocr_pages=getattr(pdf_result, "ocr_pages", []),
+        )
+        try:
+            extracted_text = await DocumentStructuringService().structure_full(
+                extracted_result,
+                model=use_model,
+                db=db,
+                tenant_id=current.tenant_id,
+            )
+        except Exception as e:
+            logger.warning("structured_md LLM 結構化失敗，使用原始文字：%s", e)
+
     # FAQ 格式預先驗證（在建立 DB 記錄前，避免留下無效的 pending 記錄）
     if doc_type == "faq":
-        from app.services.km_service import extract_text as _extract_text
-        preview_text = _extract_text(file_bytes, content_type, filename)
-        if preview_text and not detect_faq_format(preview_text):
+        if extracted_text and not detect_faq_format(extracted_text):
             raise HTTPException(
                 status_code=422,
                 detail=(
@@ -206,12 +258,10 @@ async def upload_km_document(
     db.commit()
     db.refresh(doc)
 
-    # 同步處理（extract → chunk → embed → save）
+    # 同步處理（chunk → embed → save），文字已於上方萃取完成
     process_document(
         doc_id=doc.id,
-        file_bytes=file_bytes,
-        content_type=content_type,
-        filename=filename,
+        text=extracted_text,
         db=db,
         tenant_id=current.tenant_id,
         doc_type=doc_type,
@@ -387,11 +437,9 @@ def list_doc_chunks(
 
 
 def _build_content_tsv(content: str, doc_type: str, db: Session):
-    """依文件類型建立 BM25 tsvector，僅 faq/spec 才建，其餘回傳 None。
-    faq/spec 一律索引全文（Q+A），確保 tag 與答案術語也能被關鍵字搜到。
-    """
+    """依文件類型建立 BM25 tsvector，與 km_service.process_document 的 BM25_DOC_TYPES 保持一致。"""
     import sqlalchemy as sa
-    BM25_DOC_TYPES = {"faq", "spec"}
+    BM25_DOC_TYPES = {"faq", "spec", "structured_md", "doc_image"}
     if doc_type not in BM25_DOC_TYPES:
         return None
     return db.execute(

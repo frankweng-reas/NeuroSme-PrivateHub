@@ -2,7 +2,7 @@
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -149,21 +149,35 @@ def create_knowledge_base(
 def list_knowledge_bases(
     db: Session = Depends(get_db),
     current: Annotated[User, Depends(get_current_user)] = ...,
+    writable: bool = Query(False, description="為 true 時只回傳當前用戶可寫入（owner 或 admin）的 KB"),
 ):
     from sqlalchemy import or_
-    # personal：只有建立者自己的；company：同 tenant 全員可見
-    kbs = (
-        db.query(KmKnowledgeBase)
-        .filter(
-            KmKnowledgeBase.tenant_id == current.tenant_id,
-            or_(
-                KmKnowledgeBase.scope == "company",
+    is_admin = current.role in ("admin", "super_admin")
+    if writable and not is_admin:
+        # 只回傳自己建立的 KB（owner），admin 不受限
+        kbs = (
+            db.query(KmKnowledgeBase)
+            .filter(
+                KmKnowledgeBase.tenant_id == current.tenant_id,
                 KmKnowledgeBase.created_by == current.id,
-            ),
+            )
+            .order_by(KmKnowledgeBase.created_at.asc())
+            .all()
         )
-        .order_by(KmKnowledgeBase.created_at.asc())
-        .all()
-    )
+    else:
+        # personal：只有建立者自己的；company：同 tenant 全員可見
+        kbs = (
+            db.query(KmKnowledgeBase)
+            .filter(
+                KmKnowledgeBase.tenant_id == current.tenant_id,
+                or_(
+                    KmKnowledgeBase.scope == "company",
+                    KmKnowledgeBase.created_by == current.id,
+                ),
+            )
+            .order_by(KmKnowledgeBase.created_at.asc())
+            .all()
+        )
     return [_to_response(kb, db) for kb in kbs]
 
 

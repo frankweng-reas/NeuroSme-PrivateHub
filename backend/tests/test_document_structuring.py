@@ -4,7 +4,7 @@ import sys
 sys.path.insert(0, ".")
 
 from app.services.document_structuring.enrich import enrich
-from app.services.document_structuring.extractors import extract_txt, is_supported_filename
+from app.services.document_service import extract_txt, is_supported_filename
 from app.services.document_structuring.strategies import split_text, strip_md_fence
 
 
@@ -23,14 +23,14 @@ def test_enrich_with_ocr_pages():
 
 
 def test_meanful_char_count():
-    from app.services.document_structuring.extractors import _meaningful_char_count
+    from app.services.document_service import _meaningful_char_count
 
     assert _meaningful_char_count("hello world") == 10
     assert _meaningful_char_count("   ") == 0
 
 
 def test_is_bogus_ocr_text():
-    from app.services.document_structuring.extractors import _is_bogus_ocr_text
+    from app.services.document_service import _is_bogus_ocr_text
 
     assert _is_bogus_ocr_text("") is True
     assert _is_bogus_ocr_text("由於您尚未提供需要轉錄的圖片，請上傳圖片") is True
@@ -38,7 +38,7 @@ def test_is_bogus_ocr_text():
 
 
 def test_embedded_image_worth_ocr():
-    from app.services.document_structuring.extractors import _embedded_image_worth_ocr
+    from app.services.document_service import _embedded_image_worth_ocr
 
     page_area = 595 * 842
     assert _embedded_image_worth_ocr(50 * 50, 50, page_area) is False
@@ -46,7 +46,7 @@ def test_embedded_image_worth_ocr():
 
 
 def test_mime_from_image_ext():
-    from app.services.document_structuring.extractors import _mime_from_image_ext
+    from app.services.document_service import _mime_from_image_ext
 
     assert _mime_from_image_ext("jpg") == "image/jpeg"
     assert _mime_from_image_ext("png") == "image/png"

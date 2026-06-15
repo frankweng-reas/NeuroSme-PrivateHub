@@ -18,6 +18,9 @@ const AGENT_DESCRIPTIONS: Record<string, string> = {
   'kb-manager':     '建立與管理企業知識庫，上傳文件並測試查詢效果',
   'kb-bot-builder': '以知識庫為基礎建立 AI Bot，並部署為 Widget 供外部使用',
   'doc-refiner':    '上傳 PDF，AI 自動萃取 Q&A 知識條目，一鍵匯入知識庫',
+  'document-parse': '依自訂欄位解析 PDF，快速萃取結構化資訊',
+  'doc-analyst':    '上傳文件，以對話方式深度分析，文件全程保留於 AI 上下文',
+  estimator: '自訂試算情境範本，填入數字自動計算，一鍵生成業務提案',
   business:  '數據分析與商業洞察報告',
   customer:  '客戶行為分析與洞察',
   ocr:       '上傳圖片，自動抽取結構化欄位資料',
@@ -31,6 +34,9 @@ const AGENT_SCENARIOS: Record<string, string> = {
   'kb-manager':     '文件上傳、知識庫建立、查詢測試',
   'kb-bot-builder': 'Bot 建立與設定、Widget 部署、語音啟用',
   'doc-refiner':    'PDF 整理、Q&A 萃取、知識庫匯入',
+  'document-parse': '標案、合約、報告、財務文件欄位萃取',
+  'doc-analyst':    '標案分析、合約審閱、多文件交叉比對',
+  estimator: '停車場報價、太陽能投資、工程估價、軟體授權試算',
   business:  '銷售分析、市場趨勢、績效報告',
   customer:  '客戶分群、購買行為、留存分析',
   ocr:       '名片、發票、收據、合約掃描',
@@ -114,7 +120,7 @@ export default function HomePage() {
         open={showHelpModal}
         onClose={() => setShowHelpModal(false)}
         url="/help-platform.md"
-        title="NeuroSme | Private Hub 產品介紹"
+        title="NeuroSme 使用場景指南"
       />
       {showActivationDialog && (
         <ActivationDialog

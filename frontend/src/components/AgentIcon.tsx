@@ -18,6 +18,7 @@ import {
   FileSearch,
   Megaphone,
   ScanText,
+  ScrollText,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -41,6 +42,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   FileSearch,
   Megaphone,
   ScanText,
+  ScrollText,
 }
 
 const DEFAULT_ICON = MessageCircle

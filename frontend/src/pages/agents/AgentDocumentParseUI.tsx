@@ -216,6 +216,28 @@ export default function AgentDocumentParseUI({ agent }: Props) {
     finally { setSavingField(false) }
   }
 
+  // ── 在 Doc Analyst 中深度分析 ────────────────────────────────────────────
+  function openInDocAnalyst() {
+    if (!sections) return
+    const lines: string[] = [`# 文件解析結果：${savedFileName}`, '']
+    for (const section of sections) {
+      lines.push(`## ${section.label}`, '')
+      for (const f of section.fields) {
+        if (f.not_found) continue
+        const val = Array.isArray(f.value)
+          ? (f.value as string[]).join('、')
+          : (f.value as string) ?? ''
+        if (val) lines.push(`- **${f.label}**：${val}`)
+      }
+      lines.push('')
+    }
+    const text = lines.join('\n').trim()
+    try {
+      localStorage.setItem('ns_doc_analyst_init', JSON.stringify({ text, filename: savedFileName }))
+    } catch { /* ignore */ }
+    window.open('/agent/default:doc-analyst', '_blank')
+  }
+
   // ── Markdown 匯出 ─────────────────────────────────────────────────────────
   function exportMarkdown() {
     if (!sections) return
@@ -470,6 +492,15 @@ export default function AgentDocumentParseUI({ agent }: Props) {
                       />
                       原文依據
                     </label>
+                    <button
+                      type="button"
+                      onClick={openInDocAnalyst}
+                      title="在 Doc Analyst 中深度分析"
+                      className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-medium text-indigo-600 hover:bg-indigo-50"
+                    >
+                      <FileSearch className="h-3.5 w-3.5" />
+                      Doc Analyst
+                    </button>
                     <button
                       type="button"
                       onClick={exportMarkdown}

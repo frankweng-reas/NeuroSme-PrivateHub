@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>停車場報價自動化 POC — MVP 示範情境</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --c-bg:       #ffffff;
+    --c-surface:  #f8f9fa;
+    --c-border:   #e2e5e9;
+    --c-text:     #1a1d23;
+    --c-muted:    #6b7280;
+    --c-faint:    #9ca3af;
+    --c-green:    #16a34a;
+    --c-green-bg: #f0fdf4;
+    --c-green-bd: #bbf7d0;
+    --c-orange:   #d97706;
+    --c-orange-bg:#fffbeb;
+    --c-orange-bd:#fde68a;
+    --c-blue:     #2563eb;
+    --c-blue-bg:  #eff6ff;
+    --c-blue-bd:  #bfdbfe;
+    --c-red:      #dc2626;
+    --c-red-bg:   #fef2f2;
+    --c-red-bd:   #fecaca;
+    --c-gray-bg:  #f3f4f6;
+    --c-gray-bd:  #d1d5db;
+    --radius:     8px;
+    --radius-sm:  4px;
+    font-family: -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+  }
+
+  body {
+    background: var(--c-bg);
+    color: var(--c-text);
+    font-size: 14px;
+    line-height: 1.6;
+    padding: 40px 24px;
+  }
+
+  .page { max-width: 960px; margin: 0 auto; }
+
+  /* ── 排版 ── */
+  .stack { display: flex; flex-direction: column; }
+  .stack.gap-4  { gap: 4px; }
+  .stack.gap-8  { gap: 8px; }
+  .stack.gap-12 { gap: 12px; }
+  .stack.gap-20 { gap: 20px; }
+  .stack.gap-28 { gap: 28px; }
+  .row { display: flex; flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .grid-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+
+  /* ── 타이포 ── */
+  h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+  h2 { font-size: 15px; font-weight: 600; }
+  h3 { font-size: 13px; font-weight: 600; }
+  .muted  { color: var(--c-muted); }
+  .faint  { color: var(--c-faint); }
+  .small  { font-size: 12px; }
+  .bold   { font-weight: 600; }
+  .semibold { font-weight: 500; }
+
+  /* ── 分隔線 ── */
+  hr { border: none; border-top: 1px solid var(--c-border); }
+
+  /* ── Pill ── */
+  .pill {
+    display: inline-flex; align-items: center;
+    padding: 1px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 500;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+  .pill.green  { color: var(--c-green);  background: var(--c-green-bg);  border-color: var(--c-green-bd); }
+  .pill.orange { color: var(--c-orange); background: var(--c-orange-bg); border-color: var(--c-orange-bd); }
+  .pill.blue   { color: var(--c-blue);   background: var(--c-blue-bg);   border-color: var(--c-blue-bd); }
+  .pill.red    { color: var(--c-red);    background: var(--c-red-bg);    border-color: var(--c-red-bd); }
+  .pill.gray   { color: var(--c-muted);  background: var(--c-gray-bg);   border-color: var(--c-gray-bd); }
+  .pill.outline-orange { color: var(--c-orange); border-color: var(--c-orange-bd); }
+
+  /* ── Callout ── */
+  .callout {
+    padding: 12px 14px;
+    border-radius: var(--radius);
+    border-left: 3px solid;
+    font-size: 13px;
+    line-height: 1.65;
+  }
+  .callout.info    { background: var(--c-blue-bg);   border-color: var(--c-blue);   color: #1e3a5f; }
+  .callout.success { background: var(--c-green-bg);  border-color: var(--c-green);  color: #14532d; }
+  .callout.warning { background: var(--c-orange-bg); border-color: var(--c-orange); color: #78350f; }
+  .callout .callout-title { font-weight: 600; margin-bottom: 4px; }
+
+  /* ── Card ── */
+  .card {
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .card-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--c-border);
+    background: var(--c-surface);
+    font-size: 12px; font-weight: 500; color: var(--c-muted);
+  }
+  .card-body { padding: 14px; }
+  .card.llm-card { border-color: var(--c-blue-bd); }
+  .card.llm-card .card-header { background: var(--c-blue-bg); }
+
+  /* ── Stat ── */
+  .stat { padding: 14px; border: 1px solid var(--c-border); border-radius: var(--radius); }
+  .stat .stat-value { font-size: 22px; font-weight: 700; line-height: 1.2; margin-bottom: 4px; }
+  .stat .stat-label { font-size: 11px; color: var(--c-muted); }
+  .stat.green .stat-value { color: var(--c-green); }
+  .stat.blue  .stat-value { color: var(--c-blue); }
+  .stat.red   .stat-value { color: var(--c-red); }
+  .stat.orange .stat-value { color: var(--c-orange); }
+
+  /* ── Table ── */
+  .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .tbl th {
+    text-align: left; padding: 7px 10px;
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    font-weight: 500; color: var(--c-muted); font-size: 12px;
+  }
+  .tbl td {
+    padding: 7px 10px;
+    border: 1px solid var(--c-border);
+    vertical-align: top;
+  }
+  .tbl tr.row-green td { background: var(--c-green-bg); }
+  .tbl tr.row-gray  td { background: var(--c-surface); }
+  .tbl tr.row-orange td { background: var(--c-orange-bg); }
+  .tbl tr:nth-child(even).striped td { background: var(--c-surface); }
+  .tbl .right { text-align: right; }
+  .tbl .center { text-align: center; }
+
+  /* ── Step cards ── */
+  .step-card { padding: 14px; border: 1px solid var(--c-border); border-radius: var(--radius); }
+  .step-card.llm { border-color: var(--c-blue-bd); background: var(--c-blue-bg); }
+  .step-num { font-size: 11px; font-weight: 600; color: var(--c-faint); margin-bottom: 4px; }
+  .step-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .step-desc  { font-size: 12px; color: var(--c-muted); }
+
+  /* ── QA block ── */
+  .qa-question { font-weight: 600; font-size: 14px; margin-bottom: 12px; }
+  .qa-col-header { font-size: 11px; font-weight: 600; color: var(--c-faint); margin-bottom: 6px; }
+
+  /* ── Proposal block ── */
+  .proposal-section { margin-bottom: 12px; }
+  .proposal-section-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .proposal-section-body  { color: var(--c-muted); font-size: 13px; line-height: 1.7; }
+
+  /* ── Disclaimer ── */
+  .disclaimer {
+    text-align: center; font-size: 11px; color: var(--c-faint);
+    padding: 16px 0 0; border-top: 1px solid var(--c-border);
+  }
+
+  /* ── Print ── */
+  @media print {
+    body { padding: 0; font-size: 12px; }
+    .no-print { display: none; }
+    .card { break-inside: avoid; }
+    hr { border-color: #ccc; }
+  }
+
+  @media (max-width: 720px) {
+    .grid-2, .grid-3, .grid-4, .grid-5 { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 480px) {
+    .grid-2, .grid-3, .grid-4, .grid-5 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="page stack gap-28">
+
+  <!-- ── 標題 ── -->
+  <div class="stack gap-4">
+    <div class="row">
+      <h1>停車場報價自動化 POC</h1>
+      <span class="pill orange">示範情境</span>
+    </div>
+    <p class="muted small">遠通電收 × NeuroSme　 MVP 架構討論文件　所有數字為假設值，訪談後替換真實資料。</p>
+  </div>
+
+  <!-- ── A. MVP 流程 ── -->
+  <div class="stack gap-12">
+    <h2>MVP 流程架構</h2>
+    <div class="grid-5" id="steps-container"></div>
+    <p class="faint small">Step 01–03：引導式表單 + 公式計算引擎（確定性邏輯）　Step 04–05：LLM 介入點</p>
+  </div>
+
+  <hr>
+
+  <!-- ── B. 假設情境 + 財務結果 ── -->
+  <div class="stack gap-12">
+    <div class="row">
+      <h2>假設情境與財務計算結果</h2>
+      <span class="pill orange">假設資料</span>
+    </div>
+    <div class="grid-2">
+      <table class="tbl">
+        <thead><tr><th>輸入欄位</th><th>假設值</th></tr></thead>
+        <tbody id="input-table"></tbody>
+      </table>
+      <div class="stack gap-12">
+        <div class="grid-2" id="stat-grid-1"></div>
+        <table class="tbl">
+          <thead><tr><th class="center">年度</th><th class="right">累計現金流</th><th class="center">狀態</th></tr></thead>
+          <tbody id="cashflow-table"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- ── C. LLM 角色② Proposal ── -->
+  <div class="stack gap-12">
+    <div class="row">
+      <h2>LLM 角色 ② — Proposal 文字生成</h2>
+      <span class="pill blue">Step 04</span>
+    </div>
+    <div class="callout info">
+      <div class="callout-title">LLM 做什麼</div>
+      接收計算結果（IRR、現金流、地址、業者名稱等），自動產出 Proposal 各段落的客製化文字，
+      再套入遠通品牌模板輸出 PDF／PPT。業務不需要自己寫任何文字。
+    </div>
+    <p class="small muted">以下為 LLM 根據假設情境產出的 Proposal 段落示範：</p>
+    <div class="stack gap-8" id="proposal-container"></div>
+  </div>
+
+  <hr>
+
+  <!-- ── D. LLM 角色③ 互動試算 ── -->
+  <div class="stack gap-12">
+    <div class="row">
+      <h2>LLM 角色 ③ — 互動式敏感度試算</h2>
+      <span class="pill blue">Step 05</span>
+    </div>
+    <div class="callout info">
+      <div class="callout-title">架構說明：LLM 不算數，只負責翻譯</div>
+      計算本身全由確定性程式碼（計算引擎）完成，LLM 不參與任何數學運算。
+      LLM 做兩件事：① 理解自然語言提問，萃取參數，決定呼叫哪個計算工具（Function Calling）；
+      ② 拿到計算結果後，將數字轉為白話說明並提出商業建議。
+    </div>
+
+    <div class="card">
+      <div class="card-header">每次問答的執行流程</div>
+      <div class="card-body">
+        <table class="tbl">
+          <thead><tr><th>階段</th><th>執行者</th><th>內容</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="semibold">① 理解提問</td>
+              <td><span class="pill blue">LLM</span></td>
+              <td class="muted">解析自然語言，拆出關鍵參數（如：費率＝3.5%、目標 IRR＝12%）</td>
+            </tr>
+            <tr>
+              <td class="semibold">② 呼叫工具</td>
+              <td><span class="pill blue">LLM（Function Call）</span></td>
+              <td class="muted">決定呼叫哪個計算函式（calcIRR、minFeeRate 等）並傳入參數</td>
+            </tr>
+            <tr class="row-gray">
+              <td class="semibold">③ 執行計算</td>
+              <td><span class="pill gray">計算引擎（程式碼）</span></td>
+              <td class="muted">以確定性數學公式計算 IRR、回收年限、最低費率等，回傳精確數字</td>
+            </tr>
+            <tr>
+              <td class="semibold">④ 解釋結果</td>
+              <td><span class="pill blue">LLM</span></td>
+              <td class="muted">將數字結果轉為白話說明，結合商業情境提出建議</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p class="small muted">以下為完整問答示範（含各階段角色標示）：</p>
+    <div class="stack gap-12" id="qa-container"></div>
+  </div>
+
+  <hr>
+
+  <!-- ── E. 假設清單 ── -->
+  <div class="stack gap-8">
+    <h2>假設清單（訪談後逐一確認）</h2>
+    <table class="tbl">
+      <thead><tr><th>假設項目</th><th>本次使用值</th><th class="center">影響度</th><th>確認對象</th></tr></thead>
+      <tbody>
+        <tr class="row-orange">
+          <td class="semibold">每日進出車次</td><td>150 輛</td>
+          <td class="center"><span class="pill orange">高</span></td>
+          <td class="muted">業者提供 / 現場估算</td>
+        </tr>
+        <tr class="row-orange">
+          <td class="semibold">平均停車時長</td><td>2.5 小時</td>
+          <td class="center"><span class="pill orange">高</span></td>
+          <td class="muted">業者提供 / 現場估算</td>
+        </tr>
+        <tr class="row-orange">
+          <td class="semibold">設備安裝成本</td><td>NT$1,000,000（200 格）</td>
+          <td class="center"><span class="pill orange">高</span></td>
+          <td class="muted">遠通工程部門</td>
+        </tr>
+        <tr>
+          <td class="semibold">年度維護費</td><td>NT$100,000</td>
+          <td class="center"><span class="pill gray">中</span></td>
+          <td class="muted">遠通財務部門</td>
+        </tr>
+        <tr class="row-orange">
+          <td class="semibold">代收費率</td><td>5%（固定假設）</td>
+          <td class="center"><span class="pill orange">高</span></td>
+          <td class="muted">遠通商務部門（各案是否不同？）</td>
+        </tr>
+        <tr>
+          <td class="semibold">Proposal 模板格式</td><td>尚未確認</td>
+          <td class="center"><span class="pill gray">中</span></td>
+          <td class="muted">遠通行銷 / 業務部門</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout success">
+    <div class="callout-title">訪談優先問題</div>
+    1. 遠通是否有車格數 + 流量的既有資料庫？決定 Step 02 的資料取得方式。<br>
+    2. 財務部門是否有現成 IRR 計算 Excel？直接翻譯成計算引擎最快。<br>
+    3. 代收費率是固定的還是每案客製？影響引導式填入的欄位設計。<br>
+    4. Proposal 現行格式確認（PPT 模板 / PDF 模板 / 兩者皆要）。
+  </div>
+
+  <p class="disclaimer">本文件為 POC 討論用，所有財務數字皆為假設情境，不代表任何正式商業承諾。</p>
+</div>
+
+<script>
+// ── 假設情境參數 ────────────────────────────────────────────────────
+const S = {
+  address:       "台北市大安區仁愛路四段 120 號",
+  operator:      "台灣停車場股份有限公司",
+  spaces:        200,
+  dailyTrips:    150,
+  avgDuration:   2.5,
+  hourlyRate:    60,
+  feeRate:       0.05,
+  contractYears: 5,
+  capex:         1_000_000,
+  opex:          100_000,
+};
+
+// ── 計算引擎 ─────────────────────────────────────────────────────────
+const annualRevenue   = S.dailyTrips * S.avgDuration * S.hourlyRate * 365;
+const annualFeeIncome = annualRevenue * S.feeRate;
+const annualNetCF     = annualFeeIncome - S.opex;
+const grossMargin     = (annualNetCF / annualFeeIncome * 100).toFixed(1);
+const paybackYears    = (S.capex / annualNetCF).toFixed(1);
+
+function calcIRR(cf0, cfN, n, guess = 0.1) {
+  let r = guess;
+  for (let i = 0; i < 200; i++) {
+    let pv = 0, dpv = 0;
+    for (let k = 1; k <= n; k++) {
+      pv  += cfN / Math.pow(1 + r, k);
+      dpv -= cfN * k / Math.pow(1 + r, k + 1);
+    }
+    const rNew = r - (cf0 + pv) / dpv;
+    if (Math.abs(rNew - r) < 1e-8) return rNew;
+    r = rNew;
+  }
+  return r;
+}
+function minFeeRateForIRR(target) {
+  let pv = 0;
+  for (let k = 1; k <= S.contractYears; k++) pv += 1 / Math.pow(1 + target, k);
+  const minNetCF = S.capex / pv;
+  return (minNetCF + S.opex) / annualRevenue;
+}
+
+const irr       = (calcIRR(-S.capex, annualNetCF, S.contractYears) * 100).toFixed(1);
+const altNetCF  = annualRevenue * 0.035 - S.opex;
+const altIRR    = calcIRR(-S.capex, altNetCF, S.contractYears) * 100;
+const minRate12 = (minFeeRateForIRR(0.12) * 100).toFixed(2);
+
+function fmt(n) { return `NT$${Math.round(n).toLocaleString("zh-TW")}`; }
+
+// ── A. Steps ─────────────────────────────────────────────────────────
+const STEPS = [
+  { num:"01", title:"引導式填入", desc:"業務依步驟填寫地址、業者、費率、年限，每步有說明提示", llm:false },
+  { num:"02", title:"資料確認",   desc:"系統帶出停車場基本資訊，業務補填車次、時長等現場資料", llm:false },
+  { num:"03", title:"財務模型計算", desc:"公式引擎自動計算毛利率、代收費收入、IRR、回收年限", llm:false },
+  { num:"04", title:"LLM 生成 Proposal", desc:"AI 根據計算結果撰寫客製化文字，套入模板輸出 PDF/PPT", llm:true },
+  { num:"05", title:"LLM 互動試算", desc:"LLM 理解提問意圖、萃取參數，呼叫計算引擎，再將數字結果轉為白話說明", llm:true },
+];
+const stepsEl = document.getElementById("steps-container");
+STEPS.forEach(s => {
+  const el = document.createElement("div");
+  el.className = `step-card${s.llm ? " llm" : ""}`;
+  el.innerHTML = `
+    <div class="step-num">STEP ${s.num} ${s.llm ? '<span class="pill blue" style="margin-left:4px">LLM</span>' : ""}</div>
+    <div class="step-title">${s.title}</div>
+    <div class="step-desc">${s.desc}</div>
+  `;
+  stepsEl.appendChild(el);
+});
+
+// ── B. 輸入表格 ───────────────────────────────────────────────────────
+const inputRows = [
+  ["停車場地址", S.address],
+  ["業者名稱",   S.operator],
+  ["車格數",     `${S.spaces} 格`],
+  ["每日進出車次", `${S.dailyTrips} 輛`],
+  ["平均停車時長", `${S.avgDuration} 小時`],
+  ["每小時收費",  `NT$${S.hourlyRate}`],
+  ["代收費率",   `${(S.feeRate*100).toFixed(0)}%`],
+  ["合約年限",   `${S.contractYears} 年`],
+];
+const tbl = document.getElementById("input-table");
+inputRows.forEach(([k, v]) => {
+  tbl.innerHTML += `<tr><td class="muted small">${k}</td><td class="semibold">${v}</td></tr>`;
+});
+
+// Stat grid
+const stats = [
+  { value: fmt(annualFeeIncome), label: "年代收費收入",   cls:"green" },
+  { value: `${grossMargin}%`,    label: "毛利率",          cls:"green" },
+  { value: `${irr}%`,            label: "IRR（5 年）",     cls:"green" },
+  { value: `${paybackYears} 年`, label: "投資回收年限",    cls:"blue"  },
+];
+const sg = document.getElementById("stat-grid-1");
+stats.forEach(s => {
+  sg.innerHTML += `<div class="stat ${s.cls}"><div class="stat-value">${s.value}</div><div class="stat-label">${s.label}</div></div>`;
+});
+
+// Cash flow table
+const cfTbl = document.getElementById("cashflow-table");
+cfTbl.innerHTML += `<tr class="row-gray"><td class="center semibold">Year 0</td><td class="right">${fmt(-S.capex)}</td><td class="center"><span class="pill red">投資</span></td></tr>`;
+for (let i = 1; i <= S.contractYears; i++) {
+  const cum = -S.capex + annualNetCF * i;
+  const recovered = cum >= 0;
+  cfTbl.innerHTML += `<tr class="${recovered ? "row-green" : ""}">
+    <td class="center semibold">Year ${i}</td>
+    <td class="right">${fmt(cum)}</td>
+    <td class="center"><span class="pill ${recovered ? "green" : "orange"}">${recovered ? "回收" : "回收中"}</span></td>
+  </tr>`;
+}
+
+// ── C. Proposal ───────────────────────────────────────────────────────
+const PROPOSAL = [
+  {
+    title: "執行摘要",
+    tag:   "AI 生成",
+    body:  `本提案針對台灣停車場股份有限公司位於大安區仁愛路四段之停車場，
+            建議導入遠通電收智慧停車支付系統。預估每年可為貴公司帶來更順暢的收費體驗，
+            同時遠通代收費模式無需貴公司額外支出設備費用。`,
+  },
+  {
+    title: "商圈市場背景",
+    tag:   "AI 生成 + 地點推論",
+    body:  `仁愛路四段鄰近信義計畫區與大安森林公園，為台北市停車需求最密集的商業走廊之一。
+            周邊百貨、辦公大樓及餐飲業集中，平日及假日均有穩定的短停需求，
+            平均停車時長與本估算假設相符，具備導入電子支付的優先條件。`,
+  },
+  {
+    title: "財務效益說明（白話版）",
+    tag:   "AI 生成 + 數字帶入",
+    body:  `根據本場每日約 ${S.dailyTrips} 輛的進出車次，
+            5 年合約期內遠通預計累計代收費收入約 ${fmt(annualFeeIncome * S.contractYears)}。
+            扣除設備維護成本後，年化內部報酬率（IRR）達 ${irr}%，
+            預計於合約第 ${paybackYears} 年完成投資回收，風險可控。`,
+  },
+  {
+    title: "合作建議與下一步",
+    tag:   "AI 生成",
+    body:  `建議進行場勘確認設備安裝條件，並由雙方法務單位啟動合約審閱。
+            遠通可於簽約後 30 個工作天內完成設備安裝與系統上線，
+            正式上線前提供操作培訓及 3 個月密集支援服務。`,
+  },
+];
+const propEl = document.getElementById("proposal-container");
+PROPOSAL.forEach(p => {
+  propEl.innerHTML += `
+    <div class="card llm-card">
+      <div class="card-header">${p.title} <span class="pill blue">${p.tag}</span></div>
+      <div class="card-body muted" style="font-size:13px;line-height:1.75">${p.body}</div>
+    </div>`;
+});
+
+// ── D. QA ─────────────────────────────────────────────────────────────
+const QA = [
+  {
+    q:       "如果代收費率降到 3.5%，IRR 還能過 12% 嗎？",
+    engine:  altIRR < 0
+              ? `IRR：負值（無法回本）<br>費率 3.5% 下年淨現金流僅 ${fmt(altNetCF)}`
+              : `IRR：${altIRR.toFixed(1)}%（低於 12% 門檻）`,
+    llm:     altIRR < 12
+              ? `不行。費率降至 3.5% 後年淨現金流僅剩 ${fmt(altNetCF)}，IRR 降至${altIRR < 0 ? "負值，無法回本" : ` ${altIRR.toFixed(1)}%`}。
+                 若對方堅持 3.5%，建議評估調整合約年限或縮減設備規格以降低 CapEx。`
+              : `可以，費率 3.5% 下 IRR 仍有 ${altIRR.toFixed(1)}%，高於 12% 門檻。`,
+    tone:    "orange",
+  },
+  {
+    q:       "如果我想保住 12% IRR，代收費率至少要幾 %？",
+    engine:  `最低費率：${minRate12}%<br>對應年代收費收入：${fmt(annualRevenue * parseFloat(minRate12)/100)}`,
+    llm:     `以目前假設條件（200 格、每日 ${S.dailyTrips} 輛、CapEx ${fmt(S.capex)}），
+              達到 12% IRR 的最低代收費率為 ${minRate12}%。
+              若業者要求更低費率，可考慮：① 增加車格數或提高進場車次假設；② 降低 CapEx（縮小設備規格）。`,
+    tone:    "blue",
+  },
+  {
+    q:       "第幾年開始回本？如果合約提前終止會怎樣？",
+    engine:  `回收年限：${paybackYears} 年<br>第 3 年終止損失：${fmt(S.capex - annualNetCF * 3)}`,
+    llm:     `按目前現金流，累計現金流在第 ${paybackYears} 年轉正。
+              若合約於第 3 年終止，累計未回收 CapEx 約 ${fmt(S.capex - annualNetCF * 3)}。
+              建議合約中加入提前終止違約金條款，金額應能覆蓋未回收的 CapEx 損失。`,
+    tone:    "orange",
+  },
+];
+
+const qaEl = document.getElementById("qa-container");
+QA.forEach((item, i) => {
+  const borderColor = item.tone === "orange" ? "var(--c-orange-bd)" : "var(--c-blue-bd)";
+  const calloutCls  = item.tone === "orange" ? "warning" : "info";
+  qaEl.innerHTML += `
+    <div class="card">
+      <div class="card-body stack gap-12">
+        <div class="qa-question">「${item.q}」</div>
+        <hr>
+        <div class="grid-2" style="gap:16px">
+          <div>
+            <div class="qa-col-header">計算引擎　數字結果</div>
+            <div class="callout ${calloutCls}" style="font-size:13px">${item.engine}</div>
+          </div>
+          <div>
+            <div class="qa-col-header">LLM　白話解釋 + 建議</div>
+            <p class="muted" style="font-size:13px;line-height:1.7">${item.llm}</p>
+          </div>
+        </div>
+      </div>
+    </div>`;
+});
+</script>
+</body>
+</html>

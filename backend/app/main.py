@@ -93,7 +93,7 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 # ── Public API 文件（僅顯示外部整合用的 API）─────────────────────────────────
 
-_PUBLIC_TAGS = {"public-bot", "public-speech"}
+_PUBLIC_TAGS = {"public-bot", "public-speech", "public-vision"}
 _PUBLIC_OPENAPI_URL = f"{settings.API_V1_STR}/public/openapi.json"
 
 
@@ -110,7 +110,7 @@ async def public_openapi():
         description=(
             "供外部應用整合使用的 API。\n\n"
             "**認證方式**：在 Request Header 加入 `X-API-Key: <your_api_key>`\n\n"
-            "API Key 請由管理員在後台「API 金鑰管理」頁面建立。"
+            "API Key 請由管理員在後台「API 金鑰管理」頁面建立（`key_type`: bot / voice / vision / general）。"
         ),
         routes=public_routes,
     )

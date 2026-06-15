@@ -143,7 +143,7 @@ export default function HelpModal({
     if (!open) return
     setLoading(true)
     setContent(null)
-    fetch(url)
+    fetch(url, { cache: 'no-cache' })
       .then((r) => (r.ok ? r.text() : Promise.reject(new Error('載入失敗'))))
       .then(setContent)
       .catch(() => setContent('# 載入失敗\n\n請稍後再試或聯絡管理員。'))
