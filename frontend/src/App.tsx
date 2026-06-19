@@ -29,6 +29,7 @@ import ProfilePage from './pages/ProfilePage'
 import TestLLMChat from './pages/TestLLMChat'
 import TestComputeEngine from './pages/TestComputeEngine'
 import DevPipelineInspector from './pages/DevPipelineInspector'
+import AgentLabPage from './pages/AgentLabPage'
 import WidgetBotPage from './pages/WidgetBotPage'
 
 function App() {
@@ -120,6 +121,14 @@ function App() {
                 element={
                   <ProtectedRoute>
                     <DevPipelineInspector />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="agent-lab"
+                element={
+                  <ProtectedRoute>
+                    <AgentLabPage />
                   </ProtectedRoute>
                 }
               />

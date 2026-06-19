@@ -1,6 +1,6 @@
 """API 路由彙總：掛載 users、agents、source_files、prompt_templates、bi_projects 等 endpoint"""
 from fastapi import APIRouter
-from app.api.endpoints import users, agents, agent_catalog, chat, chat_dev, chat_compute_tool, chat_threads, chat_insights, agent_insights, source_files, prompt_templates, tenants, companies, bi_projects, bi_sources, bi_schemas, bi_sample_qa, llm_configs, activation, km, km_kb, km_connectors, widget_admin, api_keys, public_bot, public_speech, public_vision, speech, ocr, bots, widget_bot, doc_refiner, doc_image_refiner, document_parse, messaging_webhook, writing, llm_skills, export, estimator
+from app.api.endpoints import users, agents, agent_catalog, chat, chat_dev, chat_compute_tool, chat_threads, chat_insights, agent_insights, source_files, prompt_templates, tenants, companies, bi_projects, bi_sources, bi_schemas, bi_sample_qa, llm_configs, activation, km, km_kb, km_connectors, widget_admin, api_keys, public_bot, public_speech, public_vision, speech, ocr, bots, widget_bot, doc_refiner, doc_image_refiner, document_parse, messaging_webhook, writing, llm_skills, export, estimator, agent_bi
 
 router = APIRouter()
 router.include_router(users.router, prefix="/users", tags=["users"])
@@ -42,3 +42,5 @@ router.include_router(writing.router, prefix="/writing-documents", tags=["writin
 router.include_router(llm_skills.router, prefix="/llm-skills", tags=["llm-skills"])
 router.include_router(export.router, prefix="/export", tags=["export"])
 router.include_router(estimator.router, prefix="/estimator", tags=["estimator"])
+router.include_router(agent_bi.router, prefix="/agent", tags=["agent-bi"])
+router.include_router(agent_bi.chat_router, prefix="/chat", tags=["agent-bi-chat"])

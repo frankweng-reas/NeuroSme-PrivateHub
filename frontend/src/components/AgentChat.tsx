@@ -118,11 +118,18 @@ export interface ResponseMeta {
 
 export type { ChartData } from '@/components/ChartModal'
 
+export interface AgentChartEntry {
+  step: number
+  query: string
+  chartData: ChartData
+}
+
 export interface Message {
   role: 'user' | 'assistant'
   content: string
   meta?: ResponseMeta
   chartData?: ChartData
+  charts?: AgentChartEntry[]   // Agent BI 多步驟圖表（有時同時有 chartData = 最後一張）
   sources?: { filename: string }[]
 }
 
@@ -215,7 +222,8 @@ export default function AgentChat({
 }: AgentChatProps) {
   const [input, setInput] = useState('')
   const [isAtBottom, setIsAtBottom] = useState(true)
-  const [chartModalIndex, setChartModalIndex] = useState<number | null>(null)
+  // { msgIdx: 訊息索引, chartIdx: charts[] 內的索引，-1 代表 message.chartData }
+  const [chartModalTarget, setChartModalTarget] = useState<{ msgIdx: number; chartIdx: number } | null>(null)
   const [pdfPreviewTarget, setPdfPreviewTarget] = useState<{ content: string; chartData?: ChartData } | null>(null)
   const chatScrollRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<HTMLTextAreaElement>(null)
@@ -376,21 +384,40 @@ export default function AgentChat({
                           </button>
                         )}
                         {showChart && (
-                          <button
-                            type="button"
-                            onClick={() => m.chartData && setChartModalIndex(i)}
-                            disabled={!m.chartData}
-                            title={m.chartData ? '檢視圖表' : '此回覆無圖表資料'}
-                            className="flex items-center gap-1 rounded-2xl px-2 py-1 text-[18px] text-gray-600 transition-colors hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
-                          >
-                            <BarChart3 className="h-4 w-4" />
-                            圖表
-                          </button>
+                          <>
+                            {/* Agent BI 多步驟圖表：每張各一個按鈕 */}
+                            {m.charts && m.charts.length > 0 ? (
+                              m.charts.map((c, ci) => (
+                                <button
+                                  key={ci}
+                                  type="button"
+                                  onClick={() => setChartModalTarget({ msgIdx: i, chartIdx: ci })}
+                                  title={c.query}
+                                  className="flex items-center gap-1 rounded-2xl px-2 py-1 text-[18px] text-gray-600 transition-colors hover:bg-gray-200"
+                                >
+                                  <BarChart3 className="h-4 w-4" />
+                                  圖表 {c.step}
+                                </button>
+                              ))
+                            ) : (
+                              /* 一般單張圖表 */
+                              <button
+                                type="button"
+                                onClick={() => m.chartData && setChartModalTarget({ msgIdx: i, chartIdx: -1 })}
+                                disabled={!m.chartData}
+                                title={m.chartData ? '檢視圖表' : '此回覆無圖表資料'}
+                                className="flex items-center gap-1 rounded-2xl px-2 py-1 text-[18px] text-gray-600 transition-colors hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+                              >
+                                <BarChart3 className="h-4 w-4" />
+                                圖表
+                              </button>
+                            )}
+                          </>
                         )}
                         {showPdf && (
                           <button
                             type="button"
-                            onClick={() => handleOpenPdfPreview(m.content, m.chartData)}
+                            onClick={() => handleOpenPdfPreview(m.content, m.charts?.[0]?.chartData ?? m.chartData)}
                             title="匯出 PDF"
                             className="flex items-center gap-1 rounded-2xl px-2 py-1 text-[18px] text-gray-600 transition-colors hover:bg-gray-200"
                           >
@@ -428,13 +455,25 @@ export default function AgentChat({
             </button>
           )}
         </div>
-        {chartModalIndex != null && messages[chartModalIndex]?.chartData && (
-          <ChartModal
-            open
-            data={messages[chartModalIndex].chartData!}
-            onClose={() => setChartModalIndex(null)}
-          />
-        )}
+        {chartModalTarget != null && (() => {
+          const m = messages[chartModalTarget.msgIdx]
+          const data = chartModalTarget.chartIdx >= 0
+            ? m?.charts?.[chartModalTarget.chartIdx]?.chartData
+            : m?.chartData
+          const queryLabel = chartModalTarget.chartIdx >= 0
+            ? m?.charts?.[chartModalTarget.chartIdx]?.query
+            : undefined
+          const displayData = data && queryLabel && !data.title
+            ? { ...data, title: queryLabel }
+            : data
+          return displayData ? (
+            <ChartModal
+              open
+              data={displayData}
+              onClose={() => setChartModalTarget(null)}
+            />
+          ) : null
+        })()}
         {pdfPreviewTarget && (
           <PdfPreviewModal
             open
