@@ -14,6 +14,7 @@ export interface KmDocument {
   knowledge_base_id: number | null
   doc_type: string
   created_at: string
+  char_count?: number | null
 }
 
 export type KbScope = 'personal' | 'company' | 'bot_only'
@@ -85,6 +86,14 @@ export async function updateKnowledgeBase(
 
 export async function deleteKnowledgeBase(id: number): Promise<void> {
   return apiFetch<void>(`/km/knowledge-bases/${id}`, { method: 'DELETE' })
+}
+
+export async function transferKnowledgeBase(kbId: number, newOwnerId: number): Promise<KmKnowledgeBase> {
+  return apiFetch<KmKnowledgeBase>(`/km/knowledge-bases/${kbId}/transfer`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ new_owner_id: newOwnerId }),
+  })
 }
 
 export async function listKmDocuments(scope?: 'private' | 'public', noKb?: boolean): Promise<KmDocument[]> {

@@ -203,6 +203,7 @@ export default function AgentDocAnalystUI({ agent }: Props) {
 
   // 切換 thread → 載入訊息
   useEffect(() => {
+    setSuggestedQuestions([])
     if (!selectedThreadId) {
       setMessages([])
       setDocInfo(null)

@@ -282,6 +282,59 @@ def admin_list_knowledge_bases(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 轉移知識庫所有權
+# ──────────────────────────────────────────────────────────────────────────────
+
+class KbTransferBody(BaseModel):
+    new_owner_id: int
+
+
+@router.put("/knowledge-bases/{kb_id}/transfer", response_model=KbResponse)
+def transfer_knowledge_base(
+    kb_id: int,
+    body: KbTransferBody,
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """轉移知識庫所有權（KB owner 或 admin / super_admin 可操作）"""
+    kb = db.query(KmKnowledgeBase).filter(
+        KmKnowledgeBase.id == kb_id,
+        KmKnowledgeBase.tenant_id == current.tenant_id,
+    ).first()
+    if not kb:
+        raise HTTPException(status_code=404, detail="知識庫不存在")
+    if not _is_admin(current.role) and kb.created_by != current.id:
+        raise HTTPException(status_code=403, detail="只有知識庫擁有人或管理員可以轉移所有權")
+
+    new_owner = db.query(User).filter(
+        User.id == body.new_owner_id,
+        User.tenant_id == current.tenant_id,
+    ).first()
+    if not new_owner:
+        raise HTTPException(status_code=404, detail="指定的新擁有人不存在")
+    if new_owner.id == kb.created_by:
+        raise HTTPException(status_code=400, detail="新擁有人與目前擁有人相同")
+
+    old_owner_id = kb.created_by
+    kb.created_by = new_owner.id
+
+    # 同步更新 KB 內所有文件的 owner_user_id，確保新 owner 對文件有完整管理權
+    doc_count = (
+        db.query(KmDocument)
+        .filter(KmDocument.knowledge_base_id == kb_id)
+        .update({"owner_user_id": new_owner.id}, synchronize_session=False)
+    )
+
+    db.commit()
+    db.refresh(kb)
+    logger.info(
+        "KB %d 所有權由 user %s 轉移給 user %d，同步更新 %d 份文件 owner_user_id",
+        kb_id, old_owner_id, new_owner.id, doc_count,
+    )
+    return _to_response(kb, db)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 查詢統計
 # ──────────────────────────────────────────────────────────────────────────────
 

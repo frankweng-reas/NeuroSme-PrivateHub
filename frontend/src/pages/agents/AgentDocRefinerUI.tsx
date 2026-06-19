@@ -2420,7 +2420,7 @@ function QACard({
       <div className="p-4">
         <div className="mb-2 flex items-start gap-2">
           <span className="mt-0.5 flex-shrink-0 rounded-md bg-blue-500/30 px-2 py-0.5 text-base font-bold text-blue-300">
-            Q{item.id}
+            Q
           </span>
           <textarea
             ref={qRef}

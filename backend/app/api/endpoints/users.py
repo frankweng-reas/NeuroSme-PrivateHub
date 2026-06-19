@@ -185,6 +185,28 @@ async def create_user(
     return db_user
 
 
+@router.get("/{user_id}/kbs")
+def get_user_kbs(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """取得某用戶擁有的知識庫清單（僅限 admin / super_admin）"""
+    if not _is_admin_or_super(current):
+        raise HTTPException(status_code=403, detail="需要 admin 權限")
+    from app.models.km_knowledge_base import KmKnowledgeBase
+    from app.models.km_document import KmDocument
+    kbs = db.query(KmKnowledgeBase).filter(
+        KmKnowledgeBase.tenant_id == current.tenant_id,
+        KmKnowledgeBase.created_by == user_id,
+    ).all()
+    result = []
+    for kb in kbs:
+        doc_count = db.query(KmDocument).filter(KmDocument.knowledge_base_id == kb.id).count()
+        result.append({"id": kb.id, "name": kb.name, "doc_count": doc_count})
+    return result
+
+
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user(
     user_id: int,

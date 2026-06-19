@@ -24,6 +24,7 @@ from app.schemas.llm_config import (
     VALID_PROVIDERS,
 )
 from app.schemas.tenant_config import (
+    AnalysisModelUpdate,
     DefaultLLMUpdate,
     EmbeddingMigrateRequest,
     SpeechConfigUpdate,
@@ -587,6 +588,7 @@ def _tc_response(tc: TenantConfig) -> TenantConfigResponse:
         tenant_id=tc.tenant_id,
         default_llm_provider=tc.default_llm_provider,
         default_llm_model=tc.default_llm_model,
+        analysis_llm_model=tc.analysis_llm_model,
         embedding_provider=tc.embedding_provider,
         embedding_model=tc.embedding_model,
         embedding_locked_at=tc.embedding_locked_at,
@@ -641,6 +643,21 @@ def update_default_llm_model(
     tc = _get_or_create_tenant_config(db, tenant_id)
     tc.default_llm_provider = body.provider
     tc.default_llm_model = body.model
+    db.commit()
+    db.refresh(tc)
+    return _tc_response(tc)
+
+
+@router.patch("/tenant-config/analysis-model", response_model=TenantConfigResponse)
+def update_analysis_llm_model(
+    body: AnalysisModelUpdate,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """更新（或清除）租戶的分析模型設定。清除後 Agent BI 將拒絕執行並提示管理員設定。"""
+    tenant_id = _require_tenant_admin(db, current)
+    tc = _get_or_create_tenant_config(db, tenant_id)
+    tc.analysis_llm_model = (body.model or "").strip() or None
     db.commit()
     db.refresh(tc)
     return _tc_response(tc)

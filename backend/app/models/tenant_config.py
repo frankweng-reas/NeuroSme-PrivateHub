@@ -17,6 +17,9 @@ class TenantConfig(Base):
     default_llm_provider = Column(String(50), nullable=True)   # openai | gemini | twcc | local
     default_llm_model = Column(String(255), nullable=True)     # 例：gemini/gemini-2.5-flash
 
+    # 分析模型（用於 Agent BI 多步分析，需支援 function calling 的旗艦模型）
+    analysis_llm_model = Column(String(255), nullable=True)    # 未設定 → Agent BI 拒絕執行
+
     # Embedding（第一次寫入後鎖定，更換需走遷移流程）
     embedding_provider = Column(String(50), nullable=True)     # null = 尚未設定
     embedding_model = Column(String(255), nullable=True)       # null = 尚未設定

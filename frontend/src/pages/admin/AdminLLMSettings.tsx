@@ -25,6 +25,7 @@ import {
   migrateEmbedding,
   testEmbedding,
   testLLMConfig,
+  updateAnalysisModel,
   updateDefaultLLM,
   updateLLMConfig,
   updateSpeechConfig,
@@ -173,6 +174,11 @@ export default function AdminLLMSettings() {
   const [speechTestResult, setSpeechTestResult] = useState<SpeechTestResult | null>(null)
   const [showDisableSpeechConfirm, setShowDisableSpeechConfirm] = useState(false)
   const [disablingSpeech, setDisablingSpeech] = useState(false)
+
+  // analysis model edit
+  const [showAnalysisModelForm, setShowAnalysisModelForm] = useState(false)
+  const [analysisModelForm, setAnalysisModelForm] = useState({ provider: 'openai', model: '' })
+  const [savingAnalysisModel, setSavingAnalysisModel] = useState(false)
 
   // help modal
   const [showHelpModal, setShowHelpModal] = useState(false)
@@ -345,6 +351,33 @@ export default function AdminLLMSettings() {
       showToast(err instanceof ApiError ? (err.detail ?? err.message) : '儲存失敗', 'error')
     } finally {
       setSavingDefaultLLM(false)
+    }
+  }
+
+  // ── Analysis model config ──────────────────────────────────────────────
+
+  function openAnalysisModelForm() {
+    const current = tenantConfig?.analysis_llm_model ?? ''
+    // 嘗試從 "provider/model" 格式解析 provider
+    const slashIdx = current.indexOf('/')
+    const guessedProvider = slashIdx > 0 ? current.slice(0, slashIdx) : 'openai'
+    const validProvider = Object.keys(PROVIDER_LABELS).includes(guessedProvider) ? guessedProvider : 'openai'
+    setAnalysisModelForm({ provider: validProvider, model: current })
+    setShowAnalysisModelForm(true)
+  }
+
+  async function handleSaveAnalysisModel() {
+    setSavingAnalysisModel(true)
+    try {
+      const model = analysisModelForm.model.trim() || null
+      const tc = await updateAnalysisModel(model)
+      setTenantConfig(tc)
+      setShowAnalysisModelForm(false)
+      showToast(model ? '分析模型已設定' : '分析模型已清除', 'success')
+    } catch (err) {
+      showToast(err instanceof ApiError ? (err.detail ?? err.message) : '儲存失敗', 'error')
+    } finally {
+      setSavingAnalysisModel(false)
     }
   }
 
@@ -649,7 +682,41 @@ export default function AdminLLMSettings() {
           </section>
 
           {/* ════════════════════════════════════════════════════════════════
-              Section 2：Provider 連線設定
+              Section 2：分析模型設定
+          ════════════════════════════════════════════════════════════════ */}
+          <section className="space-y-4">
+            <h3 className="text-lg font-semibold text-gray-700 border-b border-gray-200 pb-2">
+              分析模型設定
+            </h3>
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-5 shadow-sm space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 flex-1 min-w-0">
+                  <p className="shrink-0 text-sm font-medium text-gray-600">
+                    用於 Business Insight 多步驟分析的模型
+                  </p>
+                  {tenantConfig?.analysis_llm_model ? (
+                    <span className="font-mono text-gray-800 text-sm break-all bg-white/70 rounded px-3 py-1.5 border border-indigo-100">
+                      {tenantConfig.analysis_llm_model}
+                    </span>
+                  ) : (
+                    <div className="flex items-center gap-1.5 text-sm text-amber-600 bg-amber-50 rounded px-2.5 py-1 border border-amber-100">
+                      <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+                      <span>尚未設定</span>
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={openAnalysisModelForm}
+                  className="flex-shrink-0 flex items-center gap-1 rounded px-2 py-1 text-sm text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+                >
+                  <Pencil className="h-3.5 w-3.5" /> 變更
+                </button>
+              </div>
+            </div>
+          </section>
+
+          {/* ════════════════════════════════════════════════════════════════
+              Section 3：Provider 連線設定
           ════════════════════════════════════════════════════════════════ */}
           <section className="space-y-4">
             <div className="flex items-center justify-between border-b border-gray-200 pb-2">
@@ -1058,6 +1125,76 @@ export default function AdminLLMSettings() {
               </Field>
             </div>
             <ModalFooter onCancel={() => setShowDefaultLLMForm(false)} onConfirm={handleSaveDefaultLLM} saving={savingDefaultLLM} confirmLabel="儲存" />
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal：分析模型設定 ── */}
+      {showAnalysisModelForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white shadow-2xl">
+            <ModalHeader title="分析模型設定" onClose={() => setShowAnalysisModelForm(false)} />
+            <div className="px-6 py-5 space-y-4">
+              <p className="text-sm text-gray-500">
+                用於 Agent BI 多步驟分析，需支援 Function Calling。建議選擇旗艦模型（GPT-4o、Gemini Flash 等）。
+              </p>
+              <Field label="Provider" required>
+                <select
+                  value={analysisModelForm.provider}
+                  onChange={(e) => setAnalysisModelForm((f) => ({ ...f, provider: e.target.value, model: '' }))}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-gray-400"
+                >
+                  {Object.entries(PROVIDER_LABELS).map(([v, l]) => (
+                    <option key={v} value={v}>{l}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Model" required>
+                {(() => {
+                  const cfg = configs.find((c) => c.provider === analysisModelForm.provider && c.is_active)
+                  const ms = cfg?.available_models?.length
+                    ? cfg.available_models
+                    : (providerOptions[analysisModelForm.provider] ?? [])
+                  return ms.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {ms.map((m) => {
+                        const mid = typeof m === 'string' ? m : m.model
+                        const isSelected = analysisModelForm.model === mid
+                        return (
+                          <button
+                            key={mid}
+                            type="button"
+                            onClick={() => setAnalysisModelForm((f) => ({ ...f, model: mid }))}
+                            className={`rounded px-2.5 py-1 text-sm font-mono transition-colors ${isSelected ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                          >
+                            {mid}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <input
+                      type="text"
+                      placeholder="例：openai/gpt-4o"
+                      value={analysisModelForm.model}
+                      onChange={(e) => setAnalysisModelForm((f) => ({ ...f, model: e.target.value }))}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base font-mono focus:outline-none focus:ring-2 focus:ring-gray-400"
+                    />
+                  )
+                })()}
+              </Field>
+              {analysisModelForm.model && (
+                <p className="text-sm text-gray-500">
+                  已選：<span className="font-mono text-gray-800">{analysisModelForm.model}</span>
+                </p>
+              )}
+            </div>
+            <ModalFooter
+              onCancel={() => setShowAnalysisModelForm(false)}
+              onConfirm={handleSaveAnalysisModel}
+              saving={savingAnalysisModel}
+              confirmLabel="儲存"
+            />
           </div>
         </div>
       )}

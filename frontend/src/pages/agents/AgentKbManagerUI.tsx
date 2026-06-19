@@ -5,6 +5,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  ArrowRight,
   BarChart2,
   Check,
   ChevronRight,
@@ -30,6 +31,7 @@ import { chatCompletionsStream } from '@/api/chat'
 import { ApiError } from '@/api/client'
 import {
   addChunk,
+  adminListKnowledgeBases,
   createConnector,
   createKnowledgeBase,
   deleteChunk,
@@ -63,6 +65,7 @@ import AgentHeader from '@/components/AgentHeader'
 import ConfirmModal from '@/components/ConfirmModal'
 import ErrorModal from '@/components/ErrorModal'
 import HelpModal from '@/components/HelpModal'
+import KbTransferModal from '@/components/KbTransferModal'
 import LLMModelSelect from '@/components/LLMModelSelect'
 import type { Agent, User } from '@/types'
 
@@ -104,6 +107,10 @@ export default function AgentKbManagerUI({ agent }: Props) {
     getMe().then((me) => setCurrentUser(me)).catch(() => {})
   }, [])
 
+  // ── KB 所有人名稱對照（admin 專用）─────────────────────────────────────────
+  const [kbOwnerNames, setKbOwnerNames] = useState<Record<number, string>>({})
+  const [transferKbTarget, setTransferKbTarget] = useState<KmKnowledgeBase | null>(null)
+
   // ── 左欄：KB 列表 ─────────────────────────────────────────────────────────
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [midExpanded, setMidExpanded] = useState(true)
@@ -119,6 +126,9 @@ export default function AgentKbManagerUI({ agent }: Props) {
   const [companyKbOpen, setCompanyKbOpen] = useState(() => {
     try { return localStorage.getItem('kb-section-company') === 'open' } catch { return false }
   })
+  const [othersKbOpen, setOthersKbOpen] = useState(() => {
+    try { return localStorage.getItem('kb-section-others') !== 'closed' } catch { return true }
+  })
 
   const [creatingKbModal, setCreatingKbModal] = useState(false)
 
@@ -132,18 +142,36 @@ export default function AgentKbManagerUI({ agent }: Props) {
   const [settingsScope, setSettingsScope] = useState<KbScope>('personal')
   const [settingsSaving, setSettingsSaving] = useState(false)
 
+  // 用 ref 追蹤 isAdmin，讓 loadKbs callback 永遠讀到最新值
+  const isAdminRef = useRef(isAdmin)
+  useEffect(() => { isAdminRef.current = isAdmin }, [isAdmin])
+
   const loadKbs = useCallback(() => {
     setKbsLoading(true)
-    listKnowledgeBases()
+    const fetchFn = isAdminRef.current ? adminListKnowledgeBases : listKnowledgeBases
+    fetchFn()
       .then((data) => {
         setKbs(data)
+        if (isAdminRef.current) {
+          const map: Record<number, string> = {}
+          ;(data as import('@/api/km').KmKnowledgeBaseAdmin[]).forEach((kb) => {
+            if (kb.created_by && kb.created_by_name) map[kb.id] = kb.created_by_name
+          })
+          setKbOwnerNames(map)
+        }
         if (data.length > 0 && selectedKbId === null) setSelectedKbId(data[0].id)
       })
       .catch(() => setKbs([]))
       .finally(() => setKbsLoading(false))
   }, [selectedKbId])
 
+  // 初始載入（loadKbs 用 ref 判斷 isAdmin，所以不需要 isAdmin 作為依賴）
   useEffect(() => { loadKbs() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Admin 身份確認後重新載入，補抓其他人的 KB
+  useEffect(() => {
+    if (isAdmin) loadKbs()
+  }, [isAdmin]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!kbMenuId) return
@@ -665,6 +693,10 @@ export default function AgentKbManagerUI({ agent }: Props) {
               ? { ...kb, doc_count: kb.doc_count + 1, ready_count: doc.status === 'ready' ? kb.ready_count + 1 : kb.ready_count }
               : kb
           ))
+          // 若 PDF 萃取文字量過少，提示使用 Doc Refiner 進行 OCR
+          if (file.name.toLowerCase().endsWith('.pdf') && doc.char_count != null && doc.char_count < 200) {
+            setOcrHintFile(file.name)
+          }
           successCount++
         } catch (err) {
           errorCount++
@@ -783,6 +815,9 @@ export default function AgentKbManagerUI({ agent }: Props) {
     [agent.agent_id, isLoading, messages, docs, selectedDocIds, threadId]
   )
 
+  // ── OCR 提示（文字量過少的 PDF） ──────────────────────────────────────────
+  const [ocrHintFile, setOcrHintFile] = useState<string | null>(null)
+
   // ── Toast / Error ─────────────────────────────────────────────────────────
   const [toast, setToast] = useState<{ msg: string; type: 'info' | 'error' } | null>(null)
   const showToast = useCallback((msg: string, type: 'info' | 'error' = 'info') => setToast({ msg, type }), [])
@@ -804,6 +839,24 @@ export default function AgentKbManagerUI({ agent }: Props) {
       {toast && (
         <div className={`fixed bottom-8 left-1/2 z-50 -translate-x-1/2 max-w-[90vw] rounded-lg px-4 py-2 text-base text-white shadow-lg ${toast.type === 'error' ? 'bg-red-600' : 'bg-gray-800'}`}
           role={toast.type === 'error' ? 'alert' : 'status'}>{toast.msg}</div>
+      )}
+
+      {/* ── OCR 提示 Banner ────────────────────────────────────────────────── */}
+      {ocrHintFile && (
+        <div className="fixed bottom-8 left-1/2 z-50 -translate-x-1/2 flex w-full max-w-xl items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 shadow-lg">
+          <span className="mt-0.5 text-amber-500">⚠</span>
+          <div className="flex-1 text-sm text-amber-800">
+            <span className="font-medium">「{ocrHintFile}」</span> 偵測到文字內容極少，可能是掃描型 PDF。<br />
+            建議至 <a href="/agent/default:doc-refiner" className="font-semibold underline hover:text-amber-900">Doc Refiner</a> 進行 OCR 處理後再匯入知識庫。
+          </div>
+          <button
+            type="button"
+            onClick={() => setOcrHintFile(null)}
+            className="mt-0.5 shrink-0 text-amber-400 hover:text-amber-600"
+          >
+            ✕
+          </button>
+        </div>
       )}
 
       {/* ── Chunk 編輯 Drawer ──────────────────────────────────────────────── */}
@@ -1140,6 +1193,27 @@ export default function AgentKbManagerUI({ agent }: Props) {
       )}
 
       <ErrorModal open={errorModal !== null} title={errorModal?.title} message={errorModal?.message ?? ''} onClose={() => setErrorModal(null)} />
+      {transferKbTarget && (
+        <KbTransferModal
+          kb={transferKbTarget}
+          currentOwnerName={kbOwnerNames[transferKbTarget.id] ?? null}
+          onClose={() => setTransferKbTarget(null)}
+          onTransferred={(updated) => {
+            setKbs((prev) => prev.map((kb) => kb.id === updated.id ? updated : kb))
+            setKbOwnerNames((prev) => {
+              const next = { ...prev }
+              delete next[updated.id]
+              return next
+            })
+            setTransferKbTarget(null)
+            adminListKnowledgeBases().then((list) => {
+              const map: Record<number, string> = {}
+              list.forEach((kb) => { if (kb.created_by && kb.created_by_name) map[kb.id] = kb.created_by_name })
+              setKbOwnerNames(map)
+            }).catch(() => {})
+          }}
+        />
+      )}
       <ConfirmModal open={deleteKbTarget !== null} title="刪除知識庫"
         message={`確定要刪除「${deleteKbTarget?.name}」嗎？\n知識庫內所有文件也將一併刪除，此操作無法復原。`}
         confirmText="刪除" variant="danger" onConfirm={() => void handleDeleteKb()} onCancel={() => setDeleteKbTarget(null)} />
@@ -1202,14 +1276,20 @@ export default function AgentKbManagerUI({ agent }: Props) {
                 {kbsLoading ? (
                   <div className="flex justify-center py-6"><Loader2 className="h-4 w-4 animate-spin text-white/50" /></div>
                 ) : (() => {
-                  const myKbs = kbs.filter((kb) => kb.scope === 'personal' || kb.scope === 'bot_only')
+                  const myKbs = kbs.filter((kb) => kb.scope !== 'company' && kb.created_by === currentUser?.id)
                   const companyKbs = kbs.filter((kb) => kb.scope === 'company')
+                  const othersKbs = isAdmin ? kbs.filter((kb) => kb.scope !== 'company' && kb.created_by !== currentUser?.id) : []
 
                   const renderKbItem = (kb: KmKnowledgeBase) => (
                     <li key={kb.id} className="relative" ref={kbMenuId === kb.id ? kbMenuRef : undefined}>
                       <button type="button" onClick={() => { setSelectedKbId(kb.id); setKbMenuId(null) }}
                         className={`group flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-lg transition-colors ${selectedKbId === kb.id ? 'bg-sky-500/30 text-white' : 'text-white/75 hover:bg-white/10 hover:text-white'}`}>
-                        <span className="min-w-0 flex-1 truncate font-medium">{kb.name}</span>
+                        <span className="min-w-0 flex-1 overflow-hidden">
+                          <span className="block truncate font-medium">{kb.name}</span>
+                          {isAdmin && kbOwnerNames[kb.id] && (
+                            <span className="block truncate text-xs text-white/40">{kbOwnerNames[kb.id]}</span>
+                          )}
+                        </span>
                         <span className={`shrink-0 text-lg ${selectedKbId === kb.id ? 'text-sky-200/80' : 'text-white/40'}`}>{kb.ready_count}/{kb.doc_count}</span>
                         {kb.scope === 'bot_only' && (
                           <span className="shrink-0 rounded-full bg-violet-500/30 px-1.5 py-0.5 text-xs font-medium text-violet-200" title="Bot 專用">
@@ -1232,11 +1312,17 @@ export default function AgentKbManagerUI({ agent }: Props) {
                         )}
                       </button>
                       {kbMenuId === kb.id && (
-                        <div className="absolute right-0 top-full z-20 mt-0.5 w-24 overflow-hidden rounded-lg border border-white/20 bg-[#1a3a52] shadow-xl">
+                        <div className="absolute right-0 top-full z-20 mt-0.5 w-28 overflow-hidden rounded-lg border border-white/20 bg-[#1a3a52] shadow-xl">
                           <button type="button" onClick={() => { setSettingsKb(kb); setSettingsName(kb.name); setSettingsModel(kb.model_name ?? ''); setSettingsPrompt(kb.system_prompt ?? ''); setSettingsScope(kb.scope ?? 'personal'); setKbMenuId(null) }}
                             className="flex w-full items-center gap-2 px-3 py-2 text-left text-lg text-white/80 hover:bg-white/10 hover:text-white">
                             <Settings className="h-3 w-3" />設定
                           </button>
+                          {isAdmin && (
+                            <button type="button" onClick={() => { setTransferKbTarget(kb); setKbMenuId(null) }}
+                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-lg text-sky-300 hover:bg-sky-500/20">
+                              <ArrowRight className="h-3 w-3" />轉移所有權
+                            </button>
+                          )}
                           <button type="button" onClick={() => { setDeleteKbTarget(kb); setKbMenuId(null) }}
                             className="flex w-full items-center gap-2 px-3 py-2 text-left text-lg text-red-300 hover:bg-red-500/20">
                             <Trash2 className="h-3 w-3" />刪除
@@ -1291,6 +1377,26 @@ export default function AgentKbManagerUI({ agent }: Props) {
                           )
                         )}
                       </div>
+
+                      {/* ── 其他人的知識庫（Admin 專用）── */}
+                      {isAdmin && othersKbs.length > 0 && (
+                        <div>
+                          <div className="border-t border-white/20" />
+                          <div className="mb-1 mt-0.5 border-t border-white/20" />
+                          <button type="button"
+                            onClick={() => { const next = !othersKbOpen; setOthersKbOpen(next); try { localStorage.setItem('kb-section-others', next ? 'open' : 'closed') } catch {} }}
+                            className="flex w-full items-center gap-1.5 rounded-lg px-3 py-1.5 text-left text-lg font-semibold text-amber-200 hover:text-white" style={{ backgroundColor: 'rgba(120,80,10,0.30)' }}>
+                            <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-transform ${othersKbOpen ? 'rotate-90' : ''}`} />
+                            <span className="flex-1">其他人的知識庫</span>
+                            <span className="rounded-full bg-white/10 px-1.5 text-lg text-amber-200/70">{othersKbs.length}</span>
+                          </button>
+                          {othersKbOpen && (
+                            <ul className="space-y-0.5 px-2">
+                              {othersKbs.map(renderKbItem)}
+                            </ul>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )
                 })()}

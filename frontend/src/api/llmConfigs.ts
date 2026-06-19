@@ -7,6 +7,7 @@ export interface TenantConfig {
   tenant_id: string
   default_llm_provider: string | null
   default_llm_model: string | null
+  analysis_llm_model: string | null
   embedding_provider: string
   embedding_model: string
   embedding_locked_at: string | null
@@ -37,6 +38,13 @@ export async function updateDefaultLLM(body: DefaultLLMUpdate): Promise<TenantCo
   return apiFetch<TenantConfig>('/llm-configs/tenant-config/default-model', {
     method: 'PATCH',
     body: JSON.stringify(body),
+  })
+}
+
+export async function updateAnalysisModel(model: string | null): Promise<TenantConfig> {
+  return apiFetch<TenantConfig>('/llm-configs/tenant-config/analysis-model', {
+    method: 'PATCH',
+    body: JSON.stringify({ model: model ?? null }),
   })
 }
 

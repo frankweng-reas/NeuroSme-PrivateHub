@@ -312,18 +312,27 @@ export async function chatCompletionsDev(req: ChatRequest): Promise<ChatResponse
 }
 
 /** 測試用：compute flow（意圖萃取 + 後端計算 + 文字生成） */
+export interface ChartItem {
+  labels: string[]
+  data?: number[]
+  datasets?: { label: string; data: number[] }[]
+  chartType?: 'pie' | 'bar' | 'line'
+  valueSuffix?: string
+  title?: string
+}
+
+export interface AgentChartEntry {
+  step: number
+  query: string
+  chart_data: ChartItem
+}
+
 export interface ChatResponseCompute {
   content: string
   model: string
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
-  chart_data?: {
-    labels: string[]
-    data?: number[]
-    datasets?: { label: string; data: number[] }[]
-    chartType: 'pie' | 'bar' | 'line'
-    valueSuffix?: string
-    title?: string
-  }
+  chart_data?: ChartItem
+  charts?: AgentChartEntry[]   // Agent BI 多步驟圖表
   debug?: Record<string, unknown>
 }
 
@@ -400,6 +409,88 @@ export async function chatCompletionsComputeToolStream(
       if (buffer.trim()) processBlock(buffer)
       break
     }
+  }
+  if (!result) throw new Error('串流未回傳完成事件')
+  return result
+}
+
+// ─── Agent BI Stream（與 AgentBusinessUI 整合用）─────────────────────────────
+
+export interface AgentStepEvent {
+  step: number
+  query: string
+  phase: 'running' | 'done'
+  success?: boolean
+}
+
+/**
+ * 呼叫 Agent BI endpoint（與原本 BI 相容格式）。
+ * 進度事件透過 onAgentStep 回呼，最終結果與 chatCompletionsComputeToolStream 相同格式。
+ */
+export async function chatAgentBiStream(
+  req: ChatRequest,
+  onAgentStep: (step: AgentStepEvent) => void
+): Promise<ChatResponseCompute> {
+  const API_BASE = '/api/v1'
+  const token = localStorage.getItem(TOKEN_KEY)
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  }
+  const res = await fetch(`${API_BASE}/chat/completions-agent-bi-stream`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      const text = await res.text()
+      try {
+        const body = JSON.parse(text)
+        if (typeof body?.detail === 'string') detail = body.detail
+        else if (Array.isArray(body?.detail) && body.detail[0]?.msg) detail = body.detail[0].msg
+      } catch { detail = text || undefined }
+    } catch { /* ignore */ }
+    throw new Error(detail || `API Error: ${res.status}`)
+  }
+  const reader = res.body?.getReader()
+  if (!reader) throw new Error('無法讀取串流')
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let result: ChatResponseCompute | null = null
+
+  function processBlock(block: string): void {
+    const match = block.match(/^data:\s*(.+)$/m)
+    if (!match) return
+    try {
+      const data = JSON.parse(match[1]) as Record<string, unknown>
+      if (data.type === 'agent_step') {
+        onAgentStep({
+          step: data.step as number,
+          query: data.query as string,
+          phase: data.phase as 'running' | 'done',
+          success: data.success as boolean | undefined,
+        })
+      } else if (data.stage === 'done') {
+        result = {
+          content: (data.content as string) ?? '',
+          model: (data.model as string) ?? '',
+          usage: (data.usage as ChatResponseCompute['usage']) ?? undefined,
+          chart_data: data.chart_data as ChatResponseCompute['chart_data'],
+          charts: data.charts as ChatResponseCompute['charts'],
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (value) buffer += decoder.decode(value, { stream: true })
+    const parts = buffer.split('\n\n')
+    buffer = done ? '' : (parts.pop() ?? '')
+    for (const block of parts) { if (block.trim()) processBlock(block) }
+    if (done) { if (buffer.trim()) processBlock(buffer); break }
   }
   if (!result) throw new Error('串流未回傳完成事件')
   return result

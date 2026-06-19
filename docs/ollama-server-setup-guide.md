@@ -398,7 +398,72 @@ Repo 相關文件：
 
 ---
 
-## 12. 快速部署一鍵腳本（進階）
+## 12. 水平擴展：新增第二台 GPU Server
+
+當單台 Server 的 3 路並發不夠用時，可新增第二台 GPU Server 來擴充容量。
+
+**擴展後架構：**
+
+```
+NeuroSme → Server 1 nginx :11434   ← NeuroSme 設定不變
+                ├── Server 1 :11435
+                ├── Server 1 :11436
+                ├── Server 1 :11437
+                ├── Server 2 IP:11435  ← 新增
+                ├── Server 2 IP:11436  ← 新增
+                └── Server 2 IP:11437  ← 新增
+```
+
+並發量從 3 路提升至 6 路，NeuroSme 的 `API Base URL` 完全不需要修改。
+
+### 步驟一：設定 Server 2
+
+在 Server 2 上重複本文第 3～7 節，但 Ollama 實例需監聽內網 IP（讓 Server 1 連得進來）：
+
+```bash
+# Server 2 的 override.conf（以 instance 1 為例）
+Environment="OLLAMA_HOST=0.0.0.0:11435"   # 改為 0.0.0.0，允許跨機連線
+Environment="OLLAMA_ORIGINS=*"
+```
+
+> ⚠️ Server 2 **不需要**安裝 nginx，只要跑三個 Ollama 實例即可。
+
+確認 Server 2 的防火牆開放 **11435、11436、11437**（僅對 Server 1 的內網 IP 開放即可）。
+
+### 步驟二：修改 Server 1 的 nginx upstream
+
+```nginx
+# /etc/nginx/conf.d/ollama-lb.conf
+upstream ollama_pool {
+    least_conn;
+    server 127.0.0.1:11435;          # Server 1 instance 1
+    server 127.0.0.1:11436;          # Server 1 instance 2
+    server 127.0.0.1:11437;          # Server 1 instance 3
+    server 192.168.1.xxx:11435;      # Server 2 instance 1（填入 Server 2 內網 IP）
+    server 192.168.1.xxx:11436;      # Server 2 instance 2
+    server 192.168.1.xxx:11437;      # Server 2 instance 3
+}
+```
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### 步驟三：驗證
+
+```bash
+# 從 Server 1 確認可連到 Server 2 的各實例
+curl http://192.168.1.xxx:11435/api/version
+curl http://192.168.1.xxx:11436/api/version
+curl http://192.168.1.xxx:11437/api/version
+
+# 確認 LB 統計（若安裝 nginx-module-status）
+curl http://127.0.0.1/nginx_status
+```
+
+---
+
+## 13. 快速部署一鍵腳本（進階）
 
 若新機環境與參考機相同（Ubuntu + AMD Vulkan + 96GB VRAM），可依序執行第 3～7 節的指令。  
 建議先在測試機跑完第 8 節驗證，再切換 NeuroSme 的 API Base URL。

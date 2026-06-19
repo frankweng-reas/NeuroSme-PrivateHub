@@ -4,9 +4,10 @@ import { createPortal } from 'react-dom'
 import { useEditor, EditorContent } from '@tiptap/react'
 import { BubbleMenuPlugin } from '@tiptap/extension-bubble-menu'
 import StarterKit from '@tiptap/starter-kit'
+import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table'
 import { marked } from 'marked'
 import {
-  Bold, ClipboardCopy, FileText, Heading2, Italic, List, ListOrdered,
+  Bold, ClipboardCopy, Expand, FileDown, FileText, Heading2, Italic, List, ListOrdered,
   Loader2, Maximize2, Minimize2, Pencil, Plus, RotateCcw, Save, Search, Sparkles, Trash2, Undo2, X, Zap,
 } from 'lucide-react'
 import AgentHeader from '@/components/AgentHeader'
@@ -28,62 +29,8 @@ const STORAGE_KEY = 'agent-writing-ui-model'
 const LAST_DOC_KEY = 'agent-writing-ui-last-doc'
 const NS_WRITING_INIT_KEY = 'ns_writing_init'
 const CONTENT_MAX = 10_000
-const PROMPT_MAX = 2_000
+const PROMPT_MAX = 5_000
 
-// ── 指令範本 ──────────────────────────────────────────────────────────────────
-
-interface PromptTemplate {
-  label: string
-  prompt: string
-}
-
-const PROMPT_TEMPLATES: PromptTemplate[] = [
-  {
-    label: '商業 Email',
-    prompt: `請根據以上內容，寫一封商業 Email，格式如下：主旨、稱呼、內文、結尾敬語、署名。
-目的：（例：拜訪感謝、報價跟進、會議邀請）
-語氣：友善
-其他要求：`,
-  },
-  {
-    label: '工作報告',
-    prompt: `請根據以上內容，整理成一份工作報告，格式如下：標題、摘要、主要發現／數據、結論與建議。
-報告主題：
-受眾：主管
-其他要求：`,
-  },
-  {
-    label: '會議摘要',
-    prompt: `請根據以上內容，整理成一份會議摘要，格式如下：會議主題、日期、與會者、討論重點（條列）、決議事項（條列）、行動項目（負責人＋期限）。
-會議主題：
-其他要求：`,
-  },
-  {
-    label: '提案簡介',
-    prompt: `請根據以上內容，寫一份提案簡介，格式如下：標題、客戶痛點、解決方案、核心優勢、結語。
-目標客戶：
-其他要求：`,
-  },
-  {
-    label: '內部公告',
-    prompt: `請根據以上內容，寫一份內部公告，格式如下：標題、公告對象、公告內容、生效日期（如適用）、聯絡窗口。
-公告對象：全體同仁
-其他要求：`,
-  },
-  {
-    label: 'FAQ 生成',
-    prompt: `請將以上內容轉換成一組 Q&A，每個問題對應一個完整答案。格式如下：
-
-Q：（問題標題）
-A：（答案內容）
-
-規則：
-- 答案須忠實呈現原始內容，不得自行增加或刪減步驟與資訊
-- 每個 Q&A 為獨立完整的一組，可直接使用
-- 問題數量：
-- 問題：`,
-  },
-]
 
 // ── Skill Picker Modal ────────────────────────────────────────────────────────
 
@@ -115,8 +62,8 @@ function SkillPickerModal({ skills, onApply, onClose }: SkillPickerModalProps) {
     return matchCat && matchSearch
   })
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div
         className="relative z-10 flex h-[72vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl"
@@ -263,7 +210,8 @@ function SkillPickerModal({ skills, onApply, onClose }: SkillPickerModalProps) {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -291,10 +239,23 @@ function buildRewritePrompt(fullText: string, selectedText: string, instruction:
   return `改寫指令：${instruction}\n\n完整文件如下，請只改寫標記範圍內的段落：\n\n${markedDoc}`
 }
 
+function fixTableCellsForTiptap(html: string): string {
+  // TipTap Table 擴充要求 td/th 內必須包含 block 元素（如 <p>）
+  // marked 產生的 <td>text</td> 或 <td></td> 需要補上 <p>
+  return html.replace(/<(td|th)([^>]*)>([\s\S]*?)<\/\1>/g, (_, tag, attrs, inner) => {
+    const trimmed = inner.trim()
+    // 已經有 block 元素就不動
+    if (/^<(p|ul|ol|h[1-6]|blockquote|pre)[\s>]/.test(trimmed)) {
+      return `<${tag}${attrs}>${inner}</${tag}>`
+    }
+    return `<${tag}${attrs}><p>${trimmed || ''}</p></${tag}>`
+  })
+}
+
 function markdownToHtml(text: string): string {
   try {
     const html = marked.parse(text, { async: false, breaks: true }) as string
-    return html || '<p></p>'
+    return fixTableCellsForTiptap(html) || '<p></p>'
   } catch {
     return text.split('\n\n').map((p) => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('') || '<p></p>'
   }
@@ -355,6 +316,10 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
   const [showNewDocModal, setShowNewDocModal] = useState(false)
   const [newDocTitle, setNewDocTitle] = useState('')
   const [settingsExpanded, setSettingsExpanded] = useState(false)
+  const [showContentModal, setShowContentModal] = useState(false)
+  const [contentModalDraft, setContentModalDraft] = useState('')
+  const [showPromptModal, setShowPromptModal] = useState(false)
+  const [promptModalDraft, setPromptModalDraft] = useState('')
 
   const initDataRef = useRef<{ title?: string; content?: string; userPrompt?: string } | null>(null)
 
@@ -375,7 +340,13 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
 
   // ── Editor ──
   const editor = useEditor({
-    extensions: [StarterKit],
+    extensions: [
+      StarterKit,
+      Table.configure({ resizable: false }),
+      TableRow,
+      TableHeader,
+      TableCell,
+    ],
     content: '<p></p>',
     editorProps: {
       attributes: {
@@ -796,6 +767,50 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
     }
   }, [editor])
 
+  const handleDownloadPdf = useCallback(async () => {
+    if (!editor) return
+    const html2pdf = (await import('html2pdf.js')).default
+    const docTitle = title.trim() || '文件草稿'
+    const contentHtml = editor.getHTML()
+    const wrapper = document.createElement('div')
+    wrapper.style.cssText = 'font-family: "Noto Sans TC", "PingFang TC", Arial, sans-serif; font-size: 13pt; line-height: 1.8; color: #1a1a1a; padding: 0;'
+    wrapper.innerHTML = contentHtml
+
+    // 套用基本排版樣式
+    const style = document.createElement('style')
+    style.textContent = `
+      h1,h2,h3,h4,h5,h6 { margin: 1em 0 0.4em; font-weight: bold; line-height: 1.4; }
+      h1 { font-size: 20pt; } h2 { font-size: 16pt; } h3 { font-size: 14pt; }
+      p { margin: 0 0 0.8em; }
+      ul, ol { padding-left: 1.5em; margin: 0 0 0.8em; }
+      li { margin-bottom: 0.3em; }
+      blockquote { border-left: 3px solid #ccc; margin: 0.8em 0; padding-left: 1em; color: #555; }
+      pre, code { background: #f4f4f4; border-radius: 3px; font-family: monospace; font-size: 11pt; }
+      pre { padding: 0.8em; overflow: hidden; }
+      code { padding: 0.1em 0.3em; }
+      strong { font-weight: bold; }
+      em { font-style: italic; }
+      table { border-collapse: collapse; width: 100%; margin: 0.75em 0; font-size: 11pt; }
+      th, td { border: 1px solid #aaa; padding: 5px 9px; text-align: left; vertical-align: top; }
+      th { background-color: #e8e8e8; font-weight: bold; }
+      tr:nth-child(even) td { background-color: #f7f7f7; }
+    `
+    wrapper.prepend(style)
+
+    await html2pdf()
+      .set({
+        margin: [15, 15, 15, 15],
+        filename: `${docTitle}.pdf`,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any)
+      .from(wrapper)
+      .save()
+  }, [editor, title])
+
   const handleClear = useCallback(() => {
     if (!editor || isStreaming) return
     editor.commands.setContent('<p></p>')
@@ -897,6 +912,28 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
 
   return (
     <div className="relative flex h-full flex-col p-4 text-[18px]">
+      <style>{`
+        .ProseMirror table {
+          border-collapse: collapse;
+          width: 100%;
+          margin: 0.75em 0;
+          font-size: 0.9em;
+        }
+        .ProseMirror th,
+        .ProseMirror td {
+          border: 1px solid #d1d5db;
+          padding: 6px 10px;
+          text-align: left;
+          vertical-align: top;
+        }
+        .ProseMirror th {
+          background-color: #f3f4f6;
+          font-weight: 600;
+        }
+        .ProseMirror tr:nth-child(even) td {
+          background-color: #fafafa;
+        }
+      `}</style>
       <ErrorModal
         open={errorModal != null}
         title={errorModal?.title}
@@ -1087,9 +1124,19 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
                   <div>
                     <div className="mb-1 flex items-center justify-between">
                       <label className="text-sm font-medium text-gray-600">內容素材</label>
-                      <span className={`text-xs ${content.length > CONTENT_MAX * 0.9 ? 'text-amber-500' : 'text-gray-400'}`}>
-                        {content.length.toLocaleString()} / {CONTENT_MAX.toLocaleString()}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs ${content.length > CONTENT_MAX * 0.9 ? 'text-amber-500' : 'text-gray-400'}`}>
+                          {content.length.toLocaleString()} / {CONTENT_MAX.toLocaleString()}
+                        </span>
+                        <button
+                          type="button"
+                          title="展開編輯"
+                          onClick={() => { setContentModalDraft(content); setShowContentModal(true) }}
+                          className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-600 transition-colors"
+                        >
+                          <Expand className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </div>
                     <textarea
                       rows={8}
@@ -1101,40 +1148,98 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
                     />
                   </div>
 
+                  {/* 內容素材展開 Modal */}
+                  {showContentModal && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+                      <div className="absolute inset-0 bg-black/50" onClick={() => setShowContentModal(false)} />
+                      <div
+                        className="relative z-10 flex w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+                        style={{ height: '80vh' }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {/* Modal Header */}
+                        <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-5 py-4" style={{ backgroundColor: HEADER_COLOR }}>
+                          <span className="font-semibold text-white">內容素材</span>
+                          <button
+                            type="button"
+                            onClick={() => setShowContentModal(false)}
+                            className="rounded-lg p-1 text-white/60 hover:bg-white/10 hover:text-white"
+                          >
+                            <X className="h-5 w-5" />
+                          </button>
+                        </div>
+
+                        {/* Textarea */}
+                        <div className="flex min-h-0 flex-1 flex-col p-4">
+                          <textarea
+                            autoFocus
+                            value={contentModalDraft}
+                            maxLength={CONTENT_MAX}
+                            onChange={(e) => setContentModalDraft(e.target.value)}
+                            placeholder="貼入相關資料、會議記錄、舊稿、重點等…"
+                            className="flex-1 w-full resize-none rounded-lg border border-gray-300 px-4 py-3 text-base text-gray-800 placeholder:text-gray-400 focus:border-[#AE924C] focus:outline-none focus:ring-1 focus:ring-[#AE924C]"
+                          />
+                        </div>
+
+                        {/* Modal Footer */}
+                        <div className="flex shrink-0 items-center justify-between border-t border-gray-200 bg-gray-50 px-5 py-3">
+                          <span className={`text-sm ${contentModalDraft.length > CONTENT_MAX * 0.9 ? 'text-amber-500' : 'text-gray-400'}`}>
+                            {contentModalDraft.length.toLocaleString()} / {CONTENT_MAX.toLocaleString()} 字
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setShowContentModal(false)}
+                              className="rounded-xl border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-100"
+                            >
+                              取消
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                handleFieldChange('content', contentModalDraft)
+                                setShowContentModal(false)
+                              }}
+                              className="rounded-xl px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+                              style={{ backgroundColor: HEADER_COLOR }}
+                            >
+                              確認
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* 對 AI 的指令 */}
                   <div className="flex min-h-0 flex-1 flex-col">
                     <div className="mb-1.5 flex items-center justify-between">
                       <label className="text-sm font-medium text-gray-600">對 AI 的指令</label>
-                      <span className={`text-xs ${userPrompt.length > PROMPT_MAX * 0.9 ? 'text-amber-500' : 'text-gray-400'}`}>
-                        {userPrompt.length} / {PROMPT_MAX}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs ${userPrompt.length > PROMPT_MAX * 0.9 ? 'text-amber-500' : 'text-gray-400'}`}>
+                          {userPrompt.length} / {PROMPT_MAX}
+                        </span>
+                        <button
+                          type="button"
+                          title="展開編輯"
+                          onClick={() => { setPromptModalDraft(userPrompt); setShowPromptModal(true) }}
+                          className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-600 transition-colors"
+                        >
+                          <Expand className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </div>
-                    {/* 指令範本下拉 + Skill 庫按鈕 */}
-                    <div className="mb-2 flex shrink-0 items-center gap-2">
-                      <select
-                        defaultValue=""
-                        onChange={(e) => {
-                          if (!e.target.value) return
-                          handleFieldChange('userPrompt', e.target.value)
-                          e.target.value = ''
-                        }}
-                        className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-500 focus:border-[#AE924C] focus:outline-none"
-                      >
-                        <option value="" disabled>套用範本…</option>
-                        {PROMPT_TEMPLATES.map((t) => (
-                          <option key={t.label} value={t.prompt}>
-                            {t.label}
-                          </option>
-                        ))}
-                      </select>
+                    {/* Skill 庫按鈕 */}
+                    <div className="mb-2 shrink-0">
                       <button
                         type="button"
                         onClick={() => setShowSkillModal(true)}
                         title="開啟 Skill 庫"
-                        className="flex shrink-0 items-center gap-1.5 rounded-lg border border-teal-300 bg-teal-50 px-3 py-1.5 text-sm font-medium text-teal-700 hover:bg-teal-100 transition-colors"
+                        className="flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-white transition-colors hover:opacity-90"
+                        style={{ backgroundColor: '#0F766E' }}
                       >
                         <Zap className="h-3.5 w-3.5" />
-                        Skills
+                        套用 Skill
                       </button>
                     </div>
 
@@ -1143,7 +1248,11 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
                       <SkillPickerModal
                         skills={skills}
                         onApply={(skill) => {
-                          handleFieldChange('userPrompt', skill.prompt)
+                          if (showPromptModal) {
+                            setPromptModalDraft(skill.prompt)
+                          } else {
+                            handleFieldChange('userPrompt', skill.prompt)
+                          }
                           setShowSkillModal(false)
                         }}
                         onClose={() => setShowSkillModal(false)}
@@ -1156,6 +1265,80 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
                       placeholder="例：整理成報價跟進信，語氣友善；或：寫一份會議摘要"
                       className="min-h-[80px] flex-1 resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 placeholder:text-gray-400 focus:border-[#AE924C] focus:outline-none"
                     />
+
+                    {/* AI 指令展開 Modal */}
+                    {showPromptModal && (
+                      <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+                        <div className="absolute inset-0 bg-black/50" onClick={() => setShowPromptModal(false)} />
+                        <div
+                          className="relative z-10 flex w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+                          style={{ height: '80vh' }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {/* Modal Header */}
+                          <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-5 py-4" style={{ backgroundColor: HEADER_COLOR }}>
+                            <span className="font-semibold text-white">對 AI 的指令</span>
+                            <button
+                              type="button"
+                              onClick={() => setShowPromptModal(false)}
+                              className="rounded-lg p-1 text-white/60 hover:bg-white/10 hover:text-white"
+                            >
+                              <X className="h-5 w-5" />
+                            </button>
+                          </div>
+
+                          {/* Textarea */}
+                          <div className="flex min-h-0 flex-1 flex-col p-4">
+                            <textarea
+                              autoFocus
+                              value={promptModalDraft}
+                              maxLength={PROMPT_MAX}
+                              onChange={(e) => setPromptModalDraft(e.target.value)}
+                              placeholder="例：整理成報價跟進信，語氣友善；或：寫一份會議摘要"
+                              className="flex-1 w-full resize-none rounded-lg border border-gray-300 px-4 py-3 text-base text-gray-800 placeholder:text-gray-400 focus:border-[#AE924C] focus:outline-none focus:ring-1 focus:ring-[#AE924C]"
+                            />
+                          </div>
+
+                          {/* Modal Footer */}
+                          <div className="flex shrink-0 items-center justify-between border-t border-gray-200 bg-gray-50 px-5 py-3">
+                            <div className="flex items-center gap-3">
+                              <span className={`text-sm ${promptModalDraft.length > PROMPT_MAX * 0.9 ? 'text-amber-500' : 'text-gray-400'}`}>
+                                {promptModalDraft.length.toLocaleString()} / {PROMPT_MAX.toLocaleString()} 字
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setShowSkillModal(true)}
+                                className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-white transition-colors hover:opacity-90"
+                                style={{ backgroundColor: '#0F766E' }}
+                              >
+                                <Zap className="h-3.5 w-3.5" />
+                                套用 Skill
+                              </button>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setShowPromptModal(false)}
+                                className="rounded-xl border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-100"
+                              >
+                                取消
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  handleFieldChange('userPrompt', promptModalDraft)
+                                  setShowPromptModal(false)
+                                }}
+                                className="rounded-xl px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+                                style={{ backgroundColor: HEADER_COLOR }}
+                              >
+                                確認
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1230,6 +1413,14 @@ export default function AgentWritingUI({ agent }: AgentWritingUIProps) {
                   >
                     <ClipboardCopy className="h-4 w-4" />
                     {copyFeedback ? '已複製！' : '複製'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDownloadPdf}
+                    className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-base text-gray-600 transition-colors hover:bg-gray-50"
+                  >
+                    <FileDown className="h-4 w-4" />
+                    下載 PDF
                   </button>
                 </>
               )}

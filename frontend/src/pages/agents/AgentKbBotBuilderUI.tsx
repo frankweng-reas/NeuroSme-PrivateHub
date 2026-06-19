@@ -437,7 +437,7 @@ export default function AgentKbBotBuilderUI({ agent }: Props) {
         await chatCompletionsStream(
           {
             agent_id: agent.agent_id,
-            prompt_type: 'cs',
+            prompt_type: 'bot_base',
             system_prompt: '',
             user_prompt: '',
             data: '',

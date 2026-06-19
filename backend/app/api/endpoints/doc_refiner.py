@@ -30,6 +30,7 @@ _FONT_PATH = Path(__file__).resolve().parents[3] / "config" / "fonts" / "NotoSan
 _MAX_PDF_BYTES = 20 * 1024 * 1024  # 20 MB
 _CHUNK_SIZE    = 20_000            # 每段最大字數
 _CHUNK_OVERLAP = 300               # 相鄰段落重疊字數（避免語意硬切）
+_NOTE_MAX_CHARS = 15_000           # 筆記→FAQ 單次最大字數（超過截斷，只跑一次 LLM）
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -476,7 +477,10 @@ async def process_document(
     granularity_inst = _GRANULARITY_INSTRUCTIONS.get(granularity, _GRANULARITY_INSTRUCTIONS["key_points"])
     system_prompt = system_prompt.rstrip() + "\n\n" + granularity_inst
 
-    chunks = _split_text(raw_text)
+    if source_type == "note":
+        chunks = [raw_text[:_NOTE_MAX_CHARS]]
+    else:
+        chunks = _split_text(raw_text)
     chunk_total = len(chunks)
 
     tenant_id = current.tenant_id

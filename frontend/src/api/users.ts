@@ -33,6 +33,16 @@ export async function deleteUser(userId: number): Promise<void> {
   await apiFetch(`/users/${userId}`, { method: 'DELETE' })
 }
 
+export interface UserKb {
+  id: number
+  name: string
+  doc_count: number
+}
+
+export async function getUserKbs(userId: number): Promise<UserKb[]> {
+  return apiFetch<UserKb[]>(`/users/${userId}/kbs`)
+}
+
 export async function getUserAgentIds(userId: number): Promise<string[]> {
   const res = await apiFetch<{ agent_ids: string[] }>(`/users/${userId}/agents`)
   return res.agent_ids

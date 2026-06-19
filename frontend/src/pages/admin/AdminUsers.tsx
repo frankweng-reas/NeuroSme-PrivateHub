@@ -1,8 +1,9 @@
 /** Admin：會員管理 — 列表、新增、修改、刪除 */
 import { useCallback, useEffect, useState } from 'react'
-import { Pencil, Trash2, UserPlus, Users, X } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Pencil, Trash2, UserPlus, Users, X } from 'lucide-react'
 import { ApiError } from '@/api/client'
-import { createUser, deleteUser, listUsers, updateUser } from '@/api/users'
+import { createUser, deleteUser, getUserKbs, listUsers, updateUser, type UserKb } from '@/api/users'
+import { transferKnowledgeBase } from '@/api/km'
 import { useToast } from '@/contexts/ToastContext'
 import type { User } from '@/types'
 
@@ -48,6 +49,12 @@ export default function AdminUsers() {
 
   const [deleteTarget, setDeleteTarget] = useState<User | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
+
+  // KB 轉移步驟（方案B）
+  const [kbTransferStep, setKbTransferStep] = useState(false)
+  const [userKbs, setUserKbs] = useState<UserKb[]>([])
+  const [kbTransferMap, setKbTransferMap] = useState<Record<number, number>>({}) // kb_id → new_owner_id
+  const [kbTransferLoading, setKbTransferLoading] = useState(false)
 
   const [editTarget, setEditTarget] = useState<User | null>(null)
   const [editUsername, setEditUsername] = useState('')
@@ -103,6 +110,39 @@ export default function AdminUsers() {
     }
   }
 
+  async function initiateDelete(u: User) {
+    setDeleteTarget(u)
+    setKbTransferMap({})
+    setKbTransferStep(false)
+    try {
+      const kbs = await getUserKbs(u.id)
+      setUserKbs(kbs)
+      if (kbs.length > 0) setKbTransferStep(true)
+    } catch {
+      setUserKbs([])
+    }
+  }
+
+  async function handleKbTransferAndDelete() {
+    if (!deleteTarget) return
+    setKbTransferLoading(true)
+    try {
+      await Promise.all(
+        userKbs.map((kb) => {
+          const newOwnerId = kbTransferMap[kb.id]
+          if (newOwnerId) return transferKnowledgeBase(kb.id, newOwnerId)
+          return Promise.resolve()
+        }),
+      )
+      setKbTransferStep(false)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '轉移失敗，請稍後再試'
+      showToast(msg, 'error')
+    } finally {
+      setKbTransferLoading(false)
+    }
+  }
+
   async function handleDelete() {
     if (!deleteTarget) return
     setDeleteLoading(true)
@@ -117,6 +157,13 @@ export default function AdminUsers() {
     } finally {
       setDeleteLoading(false)
     }
+  }
+
+  function closeDeleteFlow() {
+    setDeleteTarget(null)
+    setKbTransferStep(false)
+    setUserKbs([])
+    setKbTransferMap({})
   }
 
   function openEditModal(u: User) {
@@ -183,6 +230,7 @@ export default function AdminUsers() {
           <p className="text-gray-500">尚無使用者</p>
         </div>
       ) : (
+        <div className="flex-1 overflow-y-auto">
         <div className="overflow-hidden rounded-lg border border-gray-200 shadow-sm">
           <table className="w-full text-sm">
             <thead className="bg-gray-50">
@@ -216,7 +264,7 @@ export default function AdminUsers() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => setDeleteTarget(u)}
+                          onClick={() => void initiateDelete(u)}
                           className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-2.5 py-1 text-xs text-red-600 transition-colors hover:bg-red-50"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -229,6 +277,7 @@ export default function AdminUsers() {
               ))}
             </tbody>
           </table>
+        </div>
         </div>
       )}
 
@@ -324,8 +373,76 @@ export default function AdminUsers() {
         </div>
       )}
 
-      {/* 刪除確認 Modal */}
-      {deleteTarget && (
+      {/* 刪除流程 Modal — 步驟一：KB 轉移（若有） */}
+      {deleteTarget && kbTransferStep && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b px-6 py-4">
+              <h3 className="text-lg font-semibold text-gray-800">刪除帳號前 — 轉移知識庫</h3>
+              <button type="button" onClick={closeDeleteFlow} className="text-gray-400 hover:text-gray-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <div className="flex items-start gap-3 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                <p>
+                  <span className="font-medium">{deleteTarget.username}</span> 擁有{' '}
+                  <span className="font-semibold">{userKbs.length}</span> 個知識庫。
+                  刪除帳號前，請為每個知識庫指定新的管理人，或略過（略過的知識庫將變成無人管理）。
+                </p>
+              </div>
+              <div className="space-y-2">
+                {userKbs.map((kb) => (
+                  <div key={kb.id} className="flex items-center gap-3 rounded-lg border border-gray-200 px-4 py-3">
+                    <span className="flex-1 min-w-0">
+                      <span className="block truncate font-medium text-sm text-gray-800">📚 {kb.name}</span>
+                      <span className="text-xs text-gray-400">{kb.doc_count} 份文件</span>
+                    </span>
+                    <ArrowRight className="h-4 w-4 shrink-0 text-gray-300" />
+                    <select
+                      value={kbTransferMap[kb.id] ?? ''}
+                      onChange={(e) => setKbTransferMap((prev) => ({
+                        ...prev,
+                        [kb.id]: Number(e.target.value) || 0,
+                      }))}
+                      className="w-40 shrink-0 rounded-lg border border-gray-300 px-2 py-1.5 text-sm focus:border-gray-500 focus:outline-none"
+                    >
+                      <option value="">略過（不轉移）</option>
+                      {users
+                        .filter((u) => u.id !== deleteTarget.id)
+                        .map((u) => (
+                          <option key={u.id} value={u.id}>{u.username}</option>
+                        ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 border-t px-6 py-4">
+              <button
+                type="button"
+                onClick={closeDeleteFlow}
+                disabled={kbTransferLoading}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleKbTransferAndDelete()}
+                disabled={kbTransferLoading}
+                className="rounded-lg bg-gray-700 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+              >
+                {kbTransferLoading ? '轉移中...' : '完成並繼續 →'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 刪除流程 Modal — 步驟二：最終確認 */}
+      {deleteTarget && !kbTransferStep && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div className="w-full max-w-sm rounded-xl bg-white shadow-xl">
             <div className="px-6 py-5">
@@ -339,7 +456,7 @@ export default function AdminUsers() {
             <div className="flex justify-end gap-3 border-t px-6 py-4">
               <button
                 type="button"
-                onClick={() => setDeleteTarget(null)}
+                onClick={closeDeleteFlow}
                 disabled={deleteLoading}
                 className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
               >
@@ -347,7 +464,7 @@ export default function AdminUsers() {
               </button>
               <button
                 type="button"
-                onClick={handleDelete}
+                onClick={() => void handleDelete()}
                 disabled={deleteLoading}
                 className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
               >

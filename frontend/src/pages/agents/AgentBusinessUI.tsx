@@ -5,12 +5,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronRight, ChevronsRight, Database, HelpCircle, Lightbulb, Loader2, MoreVertical, Plus, RefreshCw } from 'lucide-react'
 import { Group, Panel, PanelImperativeHandle, Separator } from 'react-resizable-panels'
-import { chatCompletionsComputeToolStream, type ComputeStage } from '@/api/chat'
+import { chatAgentBiStream, type AgentStepEvent } from '@/api/chat'
+import AgentProgressOverlay from '@/components/AgentProgressOverlay'
 import { ApiError } from '@/api/client'
 import AISettingsPanelBasic from '@/components/AISettingsPanelBasic'
 import AISettingsPanelAdvanced from '@/components/AISettingsPanelAdvanced'
 import AgentChat, { type Message, type ResponseMeta } from '@/components/AgentChat'
-import { type ChartData } from '@/components/ChartModal'
 import HelpModal from '@/components/HelpModal'
 import AgentHeader from '@/components/AgentHeader'
 import ConfirmModal from '@/components/ConfirmModal'
@@ -20,6 +20,7 @@ import ExamplePromptsModal from '@/components/ExamplePromptsModal'
 import { createBiProject, deleteBiProject, getDuckdbStatus, importCsvToDuckdb, listBiProjects, updateBiProject, type BiProjectItem, type MessageStored } from '@/api/biProjects'
 import { createBiSampleQa, deleteBiSampleQa, listBiSampleQa } from '@/api/biSampleQa'
 import { getBiSchema, listBiSchemas, type BiSchemaItem } from '@/api/biSchemas'
+import { getTenantConfig } from '@/api/llmConfigs'
 import { DETAIL_OPTIONS, LANGUAGE_OPTIONS, ROLE_OPTIONS } from '@/constants/aiOptions'
 import type { Agent } from '@/types'
 
@@ -98,7 +99,6 @@ const BI_SYSTEM_EXAMPLE_QUESTIONS = [
 
 interface StoredState {
   userPrompt: string
-  model: string
   role: string
   language: string
   detailLevel: string
@@ -152,32 +152,6 @@ function parseConversationData(data: unknown): Message[] {
 }
 
 /** 將 chatCompletionsComputeTool 回傳的 chart_data 轉為 ChartModal 格式 */
-function toChartData(cd: unknown): ChartData | undefined {
-  if (!cd || typeof cd !== 'object' || !('labels' in (cd as object))) return undefined
-  const c = cd as Record<string, unknown>
-  const meta = {
-    valueSuffix: c.valueSuffix as string | undefined,
-    title: c.title as string | undefined,
-    yAxisLabel: (c.yAxisLabel ?? c.y_axis_label ?? c.valueLabel) as string | undefined,
-    // 只有後端明確設定時才傳入，讓 ChartModal 的 getDefaultChartType 自行判斷
-    ...(c.chartType ? { chartType: c.chartType as 'pie' | 'bar' | 'line' } : {}),
-  }
-  if (Array.isArray(c.datasets) && c.datasets.length > 0) {
-    return {
-      labels: c.labels as string[],
-      datasets: c.datasets as { label: string; data: number[] }[],
-      ...meta,
-    }
-  }
-  if (Array.isArray(c.data)) {
-    return {
-      labels: c.labels as string[],
-      data: c.data as number[],
-      ...meta,
-    }
-  }
-  return undefined
-}
 
 function ResizeHandle({ className = '' }: { className?: string }) {
   return (
@@ -473,7 +447,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
   const [editProjectSubmitting, setEditProjectSubmitting] = useState(false)
   const [editProjectError, setEditProjectError] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
-  const [model, setModel] = useState(() => loadStored(agent.id)?.model ?? '')
+  const [analysisModel, setAnalysisModel] = useState<string | null>(null)
   const [userPrompt, setUserPrompt] = useState(() => loadStored(agent.id)?.userPrompt ?? '')
   const [role, setRole] = useState(() => loadStored(agent.id)?.role ?? 'manager')
   const [language, setLanguage] = useState(() => loadStored(agent.id)?.language ?? 'zh-TW')
@@ -482,7 +456,9 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     () => loadStored(agent.id)?.exampleQuestionsCount ?? '0'
   )
   const [isLoading, setIsLoading] = useState(false)
-  const [loadingStage, setLoadingStage] = useState<ComputeStage | null>(null)
+  const [loadingStage] = useState<'intent' | 'compute' | 'text' | null>(null)
+  const [agentSteps, setAgentSteps] = useState<AgentStepEvent[]>([])
+  const [agentFinalizing, setAgentFinalizing] = useState(false)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
   const [showHelpModal, setShowHelpModal] = useState(false)
@@ -624,7 +600,6 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
 
   /** 送出時必讀最新值，避免 stale closure */
   const latestRef = useRef({
-    model,
     role,
     language,
     detailLevel,
@@ -632,7 +607,6 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     userPrompt,
   })
   latestRef.current = {
-    model,
     role,
     language,
     detailLevel,
@@ -640,10 +614,6 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     userPrompt,
   }
 
-  const setModelAndRef = (v: string) => {
-    setModel(v)
-    latestRef.current.model = v
-  }
   const setRoleAndRef = (v: string) => {
     setRole(v)
     latestRef.current.role = v
@@ -815,7 +785,6 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
 
   useEffect(() => {
     const stored = loadStored(agent.id)
-    setModel(stored?.model ?? '')
     setUserPrompt(stored?.userPrompt ?? '')
     setRole(stored?.role ?? 'manager')
     setLanguage(stored?.language ?? 'zh-TW')
@@ -829,7 +798,6 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     if (selectedProject) {
       setMessages(parseConversationData(selectedProject.conversation_data))
       const stored = loadStored(agent.id, selectedProject.project_id)
-      if (stored?.model != null) setModel(stored.model)
       if (stored?.userPrompt != null) setUserPrompt(stored.userPrompt)
       if (stored?.role != null) setRole(stored.role)
       if (stored?.language != null) setLanguage(stored.language)
@@ -876,14 +844,20 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     }
     saveStored(agent.id, {
       userPrompt,
-      model,
       role,
       language,
       detailLevel,
       exampleQuestionsCount,
       selectedTemplateId,
     }, selectedProject?.project_id)
-  }, [agent.id, userPrompt, model, role, language, detailLevel, exampleQuestionsCount, selectedTemplateId, selectedProject?.project_id])
+  }, [agent.id, userPrompt, role, language, detailLevel, exampleQuestionsCount, selectedTemplateId, selectedProject?.project_id])
+
+  /** 載入分析模型設定 */
+  useEffect(() => {
+    getTenantConfig()
+      .then((tc) => setAnalysisModel(tc.analysis_llm_model ?? null))
+      .catch(() => setAnalysisModel(null))
+  }, [])
 
   /** 依專案儲存對話紀錄至 DB（debounce 500ms） */
   useEffect(() => {
@@ -1174,11 +1148,12 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     const latest = latestRef.current
     setMessages((prev) => [...prev, { role: 'user', content: text }])
     setIsLoading(true)
-    setLoadingStage('intent')
+    setAgentSteps([])
+    setAgentFinalizing(false)
 
     try {
       const userPrompt = buildUserPrompt(latest)
-      const res = await chatCompletionsComputeToolStream(
+      const res = await chatAgentBiStream(
         {
           agent_id: agent.id,
           project_id: selectedProject.project_id,
@@ -1186,11 +1161,15 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
           system_prompt: '',
           user_prompt: userPrompt || '',
           data: '',
-          model: latest.model,
+          model: '',   // 由後端從 tenant analysis_llm_model 決定
           messages: [],
           content: text,
         },
-        (stage) => setLoadingStage(stage)
+        (step: AgentStepEvent) => {
+          setAgentSteps((prev) => [...prev, step])
+          // 所有查詢結束（最後一個 step 是 done）→ 進入 finalizing
+          if (step.phase === 'done') setAgentFinalizing(true)
+        }
       )
       const meta: ResponseMeta | undefined =
         res.usage != null
@@ -1200,10 +1179,6 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
               finish_reason: null,
             }
           : undefined
-      const chartData =
-        res.chart_data && res.chart_data.labels && (res.chart_data.data || res.chart_data.datasets)
-          ? toChartData(res.chart_data)
-          : undefined
       const dbg = res.debug && typeof res.debug === 'object' ? (res.debug as Record<string, unknown>) : undefined
       setMessages((prev) => [
         ...prev,
@@ -1211,7 +1186,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
           role: 'assistant',
           content: res.content,
           meta,
-          chartData,
+          // Agent BI 不顯示圖表（多步驟分析的圖表無法自動產生有意義的視覺化）
           ...(dbg && Object.keys(dbg).length > 0 ? { computeDebug: dbg } : {}),
         },
       ])
@@ -1224,12 +1199,21 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
       setMessages((prev) => [...prev, { role: 'assistant', content: `錯誤：${msg}` }])
     } finally {
       setIsLoading(false)
-      setLoadingStage(null)
+      // 完成後稍作停留再關閉 overlay
+      setTimeout(() => {
+        setAgentSteps([])
+        setAgentFinalizing(false)
+      }, 600)
     }
   }
 
   return (
     <div className="relative flex h-full flex-col p-4 text-[18px]">
+      <AgentProgressOverlay
+        steps={agentSteps}
+        visible={agentSteps.length > 0}
+        finalizing={agentFinalizing}
+      />
       {toastMessage && (
         <div
           className="fixed bottom-8 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-gray-800 px-4 py-2 text-[18px] text-white shadow-lg"
@@ -1553,6 +1537,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
             onSubmit={handleSendMessage}
             isLoading={isLoading}
             loadingStage={loadingStage}
+            showChart={false}
             emptyPlaceholder={chatEmptyPlaceholder}
             emptyPlaceholderClassName={chatEmptyPlaceholderClassName}
             submitDisabled={chatSubmitDisabled}
@@ -1644,8 +1629,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
           </header>
           <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden border-b border-gray-200 bg-gray-50 px-4 py-3">
             <AISettingsPanelBasic
-              model={model}
-              onModelChange={setModelAndRef}
+              analysisModel={analysisModel}
               role={role}
               onRoleChange={setRoleAndRef}
               language={language}

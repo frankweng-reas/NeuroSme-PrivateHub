@@ -36,11 +36,12 @@ class KmDocumentResponse(BaseModel):
     knowledge_base_id: int | None
     doc_type: str
     created_at: str
+    char_count: int | None = None
 
     model_config = {"from_attributes": True}
 
 
-def _to_response(doc: KmDocument) -> KmDocumentResponse:
+def _to_response(doc: KmDocument, char_count: int | None = None) -> KmDocumentResponse:
     return KmDocumentResponse(
         id=doc.id,
         filename=doc.filename,
@@ -54,6 +55,7 @@ def _to_response(doc: KmDocument) -> KmDocumentResponse:
         knowledge_base_id=doc.knowledge_base_id,
         doc_type=doc.doc_type,
         created_at=doc.created_at.isoformat() if doc.created_at else "",
+        char_count=char_count,
     )
 
 
@@ -197,10 +199,11 @@ async def upload_km_document(
 
     use_model = resolve_tenant_model("", db, current.tenant_id)
 
+    pdf_char_count: int | None = None
     if is_supported_filename(filename):
-        llm_ctx = LLMContext(model=use_model, db=db, tenant_id=current.tenant_id) if use_model else None
-        pdf_result = await doc_extract(file_bytes, llm_ctx=llm_ctx)
+        pdf_result = await doc_extract(file_bytes, mode="text")
         extracted_text = _clean_pdf_text(pdf_result.text)
+        pdf_char_count = len(extracted_text)
     else:
         extracted_text = km_extract_text(file_bytes, content_type, filename)
 
@@ -270,7 +273,7 @@ async def upload_km_document(
     )
 
     db.refresh(doc)
-    return _to_response(doc)
+    return _to_response(doc, char_count=pdf_char_count)
 
 
 @router.get("/documents", response_model=list[KmDocumentResponse])
@@ -281,16 +284,20 @@ def list_km_documents(
     db: Session = Depends(get_db),
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):
-    """列出可存取的知識庫文件（公共 + 自己的私有）。"""
-    # [LEGACY 相容] owner_user_id 過濾只用於早期無 KB 的舊文件。
-    # 有 KB 的文件應走 KB.created_by + KB.scope 判斷（見 km_service.py RAG 篩選）。
-    query = db.query(KmDocument).filter(
-        KmDocument.tenant_id == current.tenant_id,
-        (
-            (KmDocument.scope == "public")
-            | (KmDocument.owner_user_id == current.id)
-        ),
-    )
+    """列出可存取的知識庫文件（admin 看全部；一般人看公共 + 自己的私有）。"""
+    is_admin = current.role in ("admin", "super_admin")
+    if is_admin:
+        query = db.query(KmDocument).filter(
+            KmDocument.tenant_id == current.tenant_id,
+        )
+    else:
+        query = db.query(KmDocument).filter(
+            KmDocument.tenant_id == current.tenant_id,
+            (
+                (KmDocument.scope == "public")
+                | (KmDocument.owner_user_id == current.id)
+            ),
+        )
 
     if scope == "private":
         query = query.filter(KmDocument.owner_user_id == current.id)
