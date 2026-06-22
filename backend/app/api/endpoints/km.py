@@ -2,7 +2,7 @@
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -379,12 +379,26 @@ class KmChunkResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class KmChunkDetailResponse(BaseModel):
+    """跨文件知識條目回應（含來源文件資訊）"""
+    id: int
+    document_id: int
+    chunk_index: int
+    content: str
+    metadata: dict | None = None
+    doc_filename: str | None = None
+
+
 class KmChunkUpdateBody(BaseModel):
     content: str
 
 
 class KmChunkCreateBody(BaseModel):
     content: str
+
+
+class BatchDeleteChunksBody(BaseModel):
+    chunk_ids: list[int]
 
 
 def _get_doc_and_check_kb_permission(
@@ -501,6 +515,34 @@ def update_chunk(
     return chunk
 
 
+@router.delete("/chunks/batch", status_code=204)
+def batch_delete_chunks(
+    body: Annotated[BatchDeleteChunksBody, Body()],
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """批次刪除 Chunk，自動更新各文件的 chunk_count。"""
+    doc_delta: dict[int, int] = {}
+    for chunk_id in body.chunk_ids:
+        chunk = db.get(KmChunk, chunk_id)
+        if not chunk:
+            continue
+        try:
+            _get_doc_and_check_kb_permission(chunk.document_id, current, db)
+        except HTTPException:
+            continue
+        doc_delta[chunk.document_id] = doc_delta.get(chunk.document_id, 0) + 1
+        db.delete(chunk)
+
+    for doc_id, delta in doc_delta.items():
+        doc = db.get(KmDocument, doc_id)
+        if doc and doc.chunk_count is not None:
+            doc.chunk_count = max(0, doc.chunk_count - delta)
+
+    db.commit()
+    return None
+
+
 @router.delete("/chunks/{chunk_id}", status_code=204)
 def delete_chunk(
     chunk_id: int,
@@ -577,3 +619,55 @@ def add_chunk(
     db.commit()
     db.refresh(new_chunk)
     return new_chunk
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 知識條目（跨文件）
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.get("/knowledge-bases/{kb_id}/chunks", response_model=list[KmChunkDetailResponse])
+def list_kb_chunks(
+    kb_id: int,
+    q: str | None = Query(default=None),
+    document_id: int | None = Query(default=None),
+    limit: int = Query(default=50, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """列出 KB 內所有知識條目，支援文字搜尋與來源篩選。"""
+    kb = db.get(KmKnowledgeBase, kb_id)
+    if not kb or kb.tenant_id != current.tenant_id:
+        raise HTTPException(status_code=404, detail="知識庫不存在")
+    if not _is_kb_owner_or_admin(kb, current):
+        raise HTTPException(status_code=403, detail="無權存取此知識庫")
+
+    query = (
+        db.query(KmChunk)
+        .join(KmDocument, KmChunk.document_id == KmDocument.id)
+        .filter(KmDocument.knowledge_base_id == kb_id)
+    )
+    if q:
+        query = query.filter(KmChunk.content.ilike(f"%{q}%"))
+    if document_id is not None:
+        query = query.filter(KmChunk.document_id == document_id)
+
+    chunks = (
+        query
+        .order_by(KmChunk.document_id, KmChunk.chunk_index)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        KmChunkDetailResponse(
+            id=c.id,
+            document_id=c.document_id,
+            chunk_index=c.chunk_index,
+            content=c.content,
+            metadata=c.metadata_,
+            doc_filename=c.document.filename if c.document else None,
+        )
+        for c in chunks
+    ]

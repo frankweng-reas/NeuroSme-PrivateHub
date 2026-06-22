@@ -86,7 +86,7 @@ CHUNK_STRATEGIES: dict[str, dict] = {
     "policy":        {"chunk_size": 800,   "overlap": 150, "top_k": 6},
     "article":       {"chunk_size": 1500,  "overlap": 200, "top_k": 4},
     "reference":     {"chunk_size": 60000, "overlap": 0,   "top_k": 10},
-    "structured_md": {"chunk_size": 1200,  "overlap": 0,   "top_k": 6},
+    "structured_md": {"chunk_size": 2000,  "overlap": 0,   "top_k": 6},
     "doc_image":     {"chunk_size": 4000,  "overlap": 0,   "top_k": 4},
 }
 DOC_TYPES = frozenset(CHUNK_STRATEGIES.keys())
@@ -277,20 +277,34 @@ def _chunk_faq(text: str) -> list[str]:
     return _chunk_sliding(text, chunk_size=300, overlap=50)
 
 
-def _strip_yaml_front_matter(text: str) -> str:
-    """移除 YAML Front Matter（--- ... --- 區塊），回傳剩餘內容。"""
+def _strip_yaml_front_matter(text: str) -> tuple[str | None, str]:
+    """移除 YAML Front Matter（--- ... --- 區塊），回傳 (title, 剩餘內容)。
+    title 從 front matter 的 `title:` 欄位提取；無 front matter 或無 title 時回傳 None。
+    """
     stripped = text.lstrip()
     if not stripped.startswith("---"):
-        return text
+        return None, text
     end = stripped.find("\n---", 3)
     if end == -1:
-        return text
-    return stripped[end + 4:].lstrip()
+        return None, text
+    fm_block = stripped[3:end]  # --- 之間的內容
+    body = stripped[end + 4:].lstrip()
+
+    # 從 front matter 提取 title（格式：title: 文字）
+    title: str | None = None
+    for line in fm_block.splitlines():
+        line = line.strip()
+        if line.startswith("title:"):
+            title = line[len("title:"):].strip() or None
+            break
+
+    return title, body
 
 
-def _chunk_by_heading(text: str, max_size: int = 1200, min_size: int = 150) -> list[str]:
+def _chunk_by_heading(text: str, max_size: int = 1200, min_size: int = 150, doc_title: str | None = None) -> list[str]:
     """章節感知切分：依 Markdown 標題（## / ### / ####）切分，並前綴完整麵包屑路徑。
 
+    doc_title：文件標題（來自 YAML front matter），作為麵包屑最頂層（level 1）。
     演算法：
       1. 以 ## / ### / #### 為邊界切成節（sections）
       2. 太短的節（< min_size）合併至下一節
@@ -322,15 +336,19 @@ def _chunk_by_heading(text: str, max_size: int = 1200, min_size: int = 150) -> l
 
     # ── 2. 建立麵包屑追蹤（level → title）──────────────────────
     breadcrumb: dict[int, str] = {}
+    if doc_title:
+        breadcrumb[1] = doc_title  # level 1 = 文件標題（固定不清除）
 
     def _build_breadcrumb(level: int, title: str) -> str:
         """更新麵包屑並回傳完整路徑字串。"""
         if level == 0:
-            return ""
+            return " > ".join(breadcrumb[lv] for lv in sorted(breadcrumb)) if breadcrumb else ""
         breadcrumb[level] = title
-        # 清除比當前層級更深的舊標題
+        # 清除比當前層級更深的舊標題（但保留 level 1 文件標題）
         for deeper in [k for k in breadcrumb if k > level]:
             del breadcrumb[deeper]
+        if doc_title:
+            breadcrumb[1] = doc_title  # 確保 level 1 不被清除
         parts = [breadcrumb[lv] for lv in sorted(breadcrumb)]
         return " > ".join(parts)
 
@@ -402,9 +420,9 @@ def chunk_text(
         return _chunk_faq(text)
 
     if doc_type == "structured_md":
-        clean = _strip_yaml_front_matter(text)
+        doc_title, clean = _strip_yaml_front_matter(text)
         s = _strategy("structured_md")
-        return _chunk_by_heading(clean, max_size=s["chunk_size"])
+        return _chunk_by_heading(clean, max_size=s["chunk_size"], doc_title=doc_title)
 
     s = _strategy(doc_type)
     size = chunk_size if chunk_size is not None else s["chunk_size"]

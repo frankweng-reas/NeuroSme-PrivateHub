@@ -178,8 +178,30 @@ export interface KmChunk {
   content: string
 }
 
+export interface KmChunkDetail {
+  id: number
+  document_id: number
+  chunk_index: number
+  content: string
+  metadata: Record<string, unknown> | null
+  doc_filename: string | null
+}
+
 export async function listDocChunks(docId: number): Promise<KmChunk[]> {
   return apiFetch<KmChunk[]>(`/km/documents/${docId}/chunks`)
+}
+
+export async function listKbChunks(
+  kbId: number,
+  options: { q?: string; document_id?: number; limit?: number; offset?: number } = {},
+): Promise<KmChunkDetail[]> {
+  const params = new URLSearchParams()
+  if (options.q) params.set('q', options.q)
+  if (options.document_id != null) params.set('document_id', String(options.document_id))
+  if (options.limit != null) params.set('limit', String(options.limit))
+  if (options.offset != null) params.set('offset', String(options.offset))
+  const qs = params.toString()
+  return apiFetch<KmChunkDetail[]>(`/km/knowledge-bases/${kbId}/chunks${qs ? `?${qs}` : ''}`)
 }
 
 export async function updateChunk(chunkId: number, content: string): Promise<KmChunk> {
@@ -192,6 +214,14 @@ export async function updateChunk(chunkId: number, content: string): Promise<KmC
 
 export async function deleteChunk(chunkId: number): Promise<void> {
   return apiFetch<void>(`/km/chunks/${chunkId}`, { method: 'DELETE' })
+}
+
+export async function batchDeleteChunks(chunkIds: number[]): Promise<void> {
+  return apiFetch<void>('/km/chunks/batch', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chunk_ids: chunkIds }),
+  })
 }
 
 export async function addChunk(docId: number, content: string): Promise<KmChunk> {

@@ -332,18 +332,51 @@ OLLAMA_HOST=127.0.0.1:11437 ollama ps
 
 ## 9. NeuroSme 連線設定
 
-在 NeuroSme 後台 **LLM Provider 設定**：
+所有 LLM / Embedding / STT 設定皆透過 **NeuroSme 管理後台 → LLM Provider 設定** 操作，無需修改 compose 檔或環境變數。
+
+### 9.1 LLM + Embedding（Ollama）
 
 | 欄位 | 值 |
 | --- | --- |
 | Provider | Local / 本機 |
-| API Base URL | http://{Ollama主機IP}:11434 |
-| Chat Model ID | local/gemma4:26b |
-| Embedding Model ID | local/nomic-embed-text:latest |
+| API Base URL | `http://{Ollama主機IP}:11434` |
+| Chat Model ID | `local/gemma4:26b` |
+| Embedding Model ID | `local/nomic-embed-text:latest` |
 | API Key | 任意字串（本機 Ollama 不驗證） |
 
 > NeuroSme 走 Ollama 原生 `/api/chat`（`local/` 前綴），支援 `think` 參數。  
 > Docker 內的 NeuroSme 若 Ollama 在宿主機，Base URL 改填 `http://host.docker.internal:11434`。
+
+### 9.2 STT（faster-whisper）
+
+STT 服務採用獨立 Docker 容器 `fedirz/faster-whisper-server`，與 Ollama 分開部署。
+
+**啟動方式（一次性，已在 ollama server 上執行）：**
+
+```bash
+docker run -d --restart unless-stopped \
+  --name faster-whisper \
+  -p 8002:8000 \
+  -e WHISPER__MODEL=medium \
+  -e WHISPER__INFERENCE_DEVICE=cpu \
+  fedirz/faster-whisper-server:latest-cpu
+```
+
+| 項目 | 值 |
+| --- | --- |
+| 模型 | `medium`（平衡精度與速度；可改 `large-v3` 提升精度） |
+| 裝置 | `cpu`（無 GPU 支援時使用） |
+| 對外 Port | `8002` |
+| API 格式 | OpenAI Whisper 相容（`/v1/audio/transcriptions`） |
+
+**NeuroSme 後台 STT 設定：**
+
+| 欄位 | 值 |
+| --- | --- |
+| STT API Base URL | `http://{Ollama主機IP}:8002` |
+| STT Model | `Systran/faster-whisper-medium` |
+
+> Docker 內的 NeuroSme 若 faster-whisper 在宿主機，Base URL 改填 `http://host.docker.internal:8002`。
 
 ---
 

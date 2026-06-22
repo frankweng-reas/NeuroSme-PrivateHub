@@ -1,8 +1,7 @@
 # NeuroSme On-Prem 完整部署
 #
-# ⚠ Repo 開發 compose 預設使用 ghcr.io/...:*:latest（需 Registry 權限）；對外發行之 on‑prem 套件為
-#   docker-compose.onprem.yml + neurosme-*:<版本>（由 start.sh 之 docker load 載入）。
-#   若以 scp 更新客戶機，請以「發行 tarball 版本」為底再合併 backend.extra_hosts／註解，勿將本檔直接覆蓋至僅載入離線鏡像的環境（會強制 docker pull）。
+# Image 名稱由 build-onprem.sh 在打包時自動替換為帶版本號的本地 image（neurosme-frontend:vX.Y.Z 等），
+# 由 start.sh 的 docker load 載入，不需連線至任何 Registry。
 #
 # 架構：
 #   caddy (port 443 HTTPS / port 80 → redirect) → frontend / backend / localauth
@@ -40,13 +39,13 @@ services:
 
   # ── 前端（React SPA） ────────────────────────────────────────
   frontend:
-    image: ghcr.io/frankweng-reas/neurosme-frontend:latest
+    image: neurosme-frontend:latest
     restart: unless-stopped
     # 不暴露 port 給外部；透過 nginx 路由
 
   # ── NeuroSme 後端 ────────────────────────────────────────────
   backend:
-    image: ghcr.io/frankweng-reas/neurosme-backend:latest
+    image: neurosme-backend:latest
     restart: unless-stopped
     # 讓容器內固定用 host.docker.internal 連主機上的 Ollama（網段隨 compose 變化仍可用）
     extra_hosts:
@@ -73,7 +72,7 @@ services:
 
   # ── NeuroSme 資料庫 ──────────────────────────────────────────
   neurosme-db:
-    image: ghcr.io/frankweng-reas/neurosme2-postgres:latest
+    image: neurosme2-postgres:latest
     restart: unless-stopped
     environment:
       POSTGRES_USER: neurosme
@@ -89,7 +88,7 @@ services:
 
   # ── LocalAuth（認證服務） ─────────────────────────────────────
   localauth:
-    image: ghcr.io/frankweng-reas/localauth:latest
+    image: localauth:latest
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://localauth:ccb7e57879127b441728934b2fa56dc3db1d40ceae05084c@localauth-db:5432/localauth

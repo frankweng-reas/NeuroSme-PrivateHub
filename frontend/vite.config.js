@@ -95,7 +95,7 @@ export default defineConfig(function (_a) {
                 '/api': {
                     target: "http://localhost:".concat(apiPort),
                     changeOrigin: true,
-                    timeout: 900000, // 等待連線建立（ms）
+                    timeout: 900000, // 等待連線建立（ms）；PDF OCR 可能較久
                     proxyTimeout: 900000, // 等待 backend 回應（ms）
                 },
                 '/auth': {
