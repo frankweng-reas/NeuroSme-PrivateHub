@@ -26,7 +26,7 @@ from app.services.agent_usage import log_agent_usage
 
 logger = logging.getLogger(__name__)
 
-EMBEDDING_DIM = 768
+EMBEDDING_DIM = 1024
 CHUNK_SIZE = 1500
 CHUNK_OVERLAP = 200
 
@@ -532,21 +532,33 @@ def embed_texts_sync(
             return [item["embedding"] for item in response.data], prompt_tokens
 
         if provider == "local":
-            # 直接呼叫 Ollama /api/embeddings，避免 LiteLLM 在服務未啟動時長時間阻塞
+            # 直接呼叫 Ollama /api/embed（新版），避免 LiteLLM 在服務未啟動時長時間阻塞
             import httpx
 
             model_name = model.removeprefix("ollama/")
             base = (api_base or "http://localhost:11434").rstrip("/")
-            timeout = httpx.Timeout(5.0, read=15.0)
+            timeout = httpx.Timeout(10.0, read=60.0)
             embeddings: list[list[float]] = []
             with httpx.Client(timeout=timeout) as client:
                 for text in texts:
                     resp = client.post(
-                        f"{base}/api/embeddings",
-                        json={"model": model_name, "prompt": text},
+                        f"{base}/api/embed",
+                        json={"model": model_name, "input": text},
                     )
+                    if resp.status_code != 200:
+                        # fallback 到舊 endpoint（舊版 Ollama 相容）
+                        resp = client.post(
+                            f"{base}/api/embeddings",
+                            json={"model": model_name, "prompt": text},
+                        )
                     resp.raise_for_status()
-                    embeddings.append(resp.json()["embedding"])
+                    data = resp.json()
+                    # /api/embed 回傳 {"embeddings": [[...]]}
+                    # /api/embeddings 回傳 {"embedding": [...]}
+                    if "embeddings" in data:
+                        embeddings.append(data["embeddings"][0])
+                    else:
+                        embeddings.append(data["embedding"])
             return embeddings, None
 
         kwargs = dict(model=model, input=texts, api_key=api_key, timeout=15)

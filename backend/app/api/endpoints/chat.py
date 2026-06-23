@@ -38,7 +38,7 @@ from app.services.llm_service import (
     _persist_chat_llm_request,
     _twcc_model_id,
 )
-from app.services.llm_caller import build_llm_kwargs_resolved
+from app.services.llm_caller import build_llm_kwargs_resolved, _ThinkStripper, _strip_think_blocks
 from app.services.llm_utils import apply_api_base
 
 router = APIRouter()
@@ -88,7 +88,7 @@ def _parse_response(resp) -> ChatResponse:
     if not resp.choices:
         raise ValueError("LiteLLM 回傳無 choices")
     choice = resp.choices[0]
-    content = (choice.message.content or "") if choice.message else ""
+    content = _strip_think_blocks((choice.message.content or "") if choice.message else "")
     usage = None
     if resp.usage:
         usage = UsageMeta(
@@ -1005,6 +1005,7 @@ async def chat_completions_stream(
                     persist_fail(str(e), "litellm_error")
                     yield _sse_event_error(e)
                     return
+                think_stripper = _ThinkStripper()
                 async for chunk in stream_resp:
                     mod = getattr(chunk, "model", None)
                     if mod:
@@ -1024,7 +1025,7 @@ async def chat_completions_stream(
                     ch0 = chunk.choices[0]
                     delta = getattr(ch0, "delta", None)
                     if delta and getattr(delta, "content", None):
-                        piece = delta.content
+                        piece = think_stripper.feed(delta.content)
                         if piece:
                             parts.append(piece)
                             yield _sse_line({"event": "delta", "text": piece})

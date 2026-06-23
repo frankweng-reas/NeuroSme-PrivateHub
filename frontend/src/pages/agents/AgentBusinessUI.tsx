@@ -1188,6 +1188,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
           meta,
           // Agent BI 不顯示圖表（多步驟分析的圖表無法自動產生有意義的視覺化）
           ...(dbg && Object.keys(dbg).length > 0 ? { computeDebug: dbg } : {}),
+          ...(res.download_data && res.download_data.length > 0 ? { downloadData: res.download_data } : {}),
         },
       ])
     } catch (err) {

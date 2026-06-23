@@ -22,6 +22,7 @@
   - LiteLLM 呼叫失敗             → 拋 LLMCallError（包含原始 exception）
   上層 endpoint 可自行決定是否轉成 HTTPException
 """
+import re
 import logging
 import time
 from collections.abc import AsyncGenerator
@@ -32,6 +33,91 @@ from sqlalchemy.orm import Session
 from app.services.llm_service import LLMResolveResult, UsageMeta, _get_llm_params, _get_provider_name
 
 logger = logging.getLogger(__name__)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# <think>...</think> 過濾（用於 reasoning model 回應）
+# ──────────────────────────────────────────────────────────────────────────────
+
+_THINK_OPEN_TAGS = ["<think>", "<|channel>thought"]
+_THINK_CLOSE_TAGS = ["</think>", "<channel|>"]
+
+
+class _ThinkStripper:
+    """串流狀態機：過濾多種 thinking 區塊格式（跨 chunk 安全）
+
+    支援格式：
+      - <think>...</think>          標準格式（Ollama DeepSeek / Qwen3 等）
+      - <|channel>thought...<channel|>  Ardge AI / Gemma 4 格式
+    """
+
+    # open/close tag 最長長度，用於 partial-match 保護
+    _MAX_TAG_LEN = max(len(t) for t in _THINK_OPEN_TAGS + _THINK_CLOSE_TAGS)
+
+    def __init__(self) -> None:
+        self._in_think = False
+        self._close_tag = ""   # 目前 thinking 區塊對應的結束標籤
+        self._pending = ""
+
+    def feed(self, text: str) -> str:
+        result = ""
+        buf = self._pending + text
+        self._pending = ""
+
+        while buf:
+            if self._in_think:
+                end = buf.find(self._close_tag)
+                if end >= 0:
+                    self._in_think = False
+                    buf = buf[end + len(self._close_tag):]
+                    if buf.startswith("\n"):
+                        buf = buf[1:]
+                else:
+                    keep = max(0, len(buf) - len(self._close_tag))
+                    self._pending = buf[keep:]
+                    buf = ""
+            else:
+                # 尋找最早出現的 open tag
+                earliest_start = -1
+                matched_open = ""
+                matched_close = ""
+                for open_tag, close_tag in zip(_THINK_OPEN_TAGS, _THINK_CLOSE_TAGS):
+                    pos = buf.find(open_tag)
+                    if pos >= 0 and (earliest_start < 0 or pos < earliest_start):
+                        earliest_start = pos
+                        matched_open = open_tag
+                        matched_close = close_tag
+
+                if earliest_start >= 0:
+                    result += buf[:earliest_start]
+                    self._in_think = True
+                    self._close_tag = matched_close
+                    buf = buf[earliest_start + len(matched_open):]
+                else:
+                    # 尾部部分前綴保護
+                    partial_start = -1
+                    for i in range(1, self._MAX_TAG_LEN):
+                        for open_tag in _THINK_OPEN_TAGS:
+                            prefix = open_tag[:i]
+                            if buf.endswith(prefix):
+                                candidate = len(buf) - i
+                                if partial_start < 0 or candidate < partial_start:
+                                    partial_start = candidate
+                    if partial_start >= 0:
+                        result += buf[:partial_start]
+                        self._pending = buf[partial_start:]
+                    else:
+                        result += buf
+                    buf = ""
+
+        return result
+
+
+def _strip_think_blocks(text: str) -> str:
+    """非串流版本：移除完整的 thinking 區塊"""
+    text = re.sub(r"<think>.*?</think>\n?", "", text, flags=re.DOTALL)
+    text = re.sub(r"<\|channel>thought.*?<channel\|>\n?", "", text, flags=re.DOTALL)
+    return text
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -109,6 +195,12 @@ def build_llm_kwargs(
     if model.startswith("local/") or resolved.litellm_model.startswith("ollama_chat/"):
         kwargs.setdefault("think", False)
 
+    # 自訂 OpenAI-compatible provider：嘗試透過 extra_body 停用 thinking
+    # 伺服器若不支援此參數通常會忽略；若支援則可減少 thinking 延遲
+    if resolved.is_custom_provider:
+        kwargs.setdefault("extra_body", {})
+        kwargs["extra_body"].setdefault("enable_thinking", False)
+
     return kwargs
 
 
@@ -139,6 +231,9 @@ def build_llm_kwargs_resolved(
     resolved.apply_to_kwargs(kwargs)
     if original_model.startswith("local/") or resolved.litellm_model.startswith("ollama_chat/"):
         kwargs.setdefault("think", False)
+    if resolved.is_custom_provider:
+        kwargs.setdefault("extra_body", {})
+        kwargs["extra_body"].setdefault("enable_thinking", False)
     return kwargs
 
 
@@ -184,7 +279,7 @@ async def call_llm(
         raise LLMCallError(f"LLM 呼叫失敗：{exc}", cause=exc) from exc
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
-    answer = resp.choices[0].message.content or ""
+    answer = _strip_think_blocks(resp.choices[0].message.content or "")
 
     usage: UsageMeta | None = None
     if hasattr(resp, "usage") and resp.usage:
@@ -237,7 +332,10 @@ async def call_llm_stream(
         logger.error("call_llm_stream failed model=%s: %s", model, exc)
         raise LLMCallError(f"LLM 串流呼叫失敗：{exc}", cause=exc) from exc
 
+    stripper = _ThinkStripper()
     async for chunk in response:
         delta = chunk.choices[0].delta if chunk.choices else None
         if delta and delta.content:
-            yield delta.content
+            filtered = stripper.feed(delta.content)
+            if filtered:
+                yield filtered

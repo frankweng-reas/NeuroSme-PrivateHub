@@ -51,6 +51,7 @@ import ConfirmModal from '@/components/ConfirmModal'
 const PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
   gemini: 'Google AI Studio',
+  custom: '自訂（OpenAI 相容）',
   vertex: 'Google Vertex AI',
   twcc: '台智雲 TWCC',
   local: '本機模型 (Local)',
@@ -60,6 +61,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 const PROVIDER_COLORS: Record<string, string> = {
   openai: 'bg-green-200 text-green-900',
   gemini: 'bg-blue-200 text-blue-900',
+  custom: 'bg-gray-200 text-gray-900',
   vertex: 'bg-cyan-200 text-cyan-900',
   twcc: 'bg-orange-200 text-orange-900',
   local: 'bg-purple-200 text-purple-900',
@@ -69,16 +71,17 @@ const PROVIDER_COLORS: Record<string, string> = {
 const PROVIDER_CARD_COLORS: Record<string, string> = {
   openai: 'border-green-100 bg-green-50/50',
   gemini: 'border-blue-100 bg-blue-50/50',
+  custom: 'border-gray-100 bg-gray-50/50',
   vertex: 'border-cyan-100 bg-cyan-50/50',
   twcc:   'border-orange-100 bg-orange-50/50',
   local:  'border-purple-100 bg-purple-50/50',
   anthropic: 'border-amber-100 bg-amber-50/50',
 }
 
-// 系統固定 768 維，僅此兩種 model 相容
+// 系統固定 1024 維，僅此兩種 model 相容
 const EMBEDDING_MODELS: Record<string, { model: string; note: string }[]> = {
-  openai: [{ model: 'text-embedding-3-small', note: '768 維（截斷）' }],
-  local:  [{ model: 'nomic-embed-text',        note: '768 維（原生）' }],
+  openai: [{ model: 'text-embedding-3-small', note: '1024 維（截斷）' }],
+  local:  [{ model: 'bge-m3-4096',             note: '1024 維（原生，GPU 相容版）' }],
 }
 
 // 語音支援兩種服務
@@ -875,13 +878,14 @@ export default function AdminLLMSettings() {
                   <option value="anthropic">Anthropic</option>
                   <option value="twcc">台智雲 TWCC</option>
                   <option value="local">本機模型 (Local / Ollama / LM Studio)</option>
+                  <option value="custom">自訂（OpenAI 相容 API）</option>
                 </select>
               </Field>
 
-              <Field label="顯示名稱">
+              <Field label="顯示名稱" required={form.provider === 'custom'} hint={form.provider === 'custom' ? '自訂 Provider 需填入名稱以便區分（例：Ardge AI、客戶 LLM Server）' : undefined}>
                 <input
                   type="text"
-                  placeholder="例：OpenAI（公司帳號）"
+                  placeholder={form.provider === 'custom' ? '例：Ardge AI Server' : '例：OpenAI（公司帳號）'}
                   value={form.label}
                   onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))}
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-gray-400"
@@ -961,13 +965,15 @@ export default function AdminLLMSettings() {
 
               {form.provider !== 'vertex' && <Field
                 label="API Base URL"
-                required={form.provider === 'twcc' || form.provider === 'local'}
+                required={form.provider === 'twcc' || form.provider === 'local' || form.provider === 'custom'}
                 hint={
                   form.provider === 'twcc'
                     ? '台智雲必填，例：https://api-ams.twcc.ai/api/models/conversation'
-                    : form.provider === 'local'
-                      ? undefined
-                      : '選填，用於 Azure OpenAI 或 OpenAI-compatible Proxy'
+                    : form.provider === 'custom'
+                      ? '必填，OpenAI-compatible 服務的 base URL（含 /v1）'
+                      : form.provider === 'local'
+                        ? undefined
+                        : '選填，用於 Azure OpenAI 或 OpenAI-compatible Proxy'
                 }
               >
                 <input
@@ -977,7 +983,9 @@ export default function AdminLLMSettings() {
                       ? 'https://api-ams.twcc.ai/api/models/conversation'
                       : form.provider === 'local'
                         ? 'http://192.168.1.10:11434'
-                        : 'https://your-proxy.example.com/v1'
+                        : form.provider === 'custom'
+                          ? 'https://your-llm-server.example.com/ai/v1'
+                          : 'https://your-proxy.example.com/v1'
                   }
                   value={form.api_base_url}
                   onChange={(e) => setForm((f) => ({ ...f, api_base_url: e.target.value }))}
@@ -988,6 +996,9 @@ export default function AdminLLMSettings() {
                     <p>設定成 Ollama / LM Studio 服務位址，例：<code className="rounded bg-gray-100 px-1">http://192.168.1.10:11434</code></p>
                     <p>NeuroSme 與 Ollama 在同一台主機時請用：<code className="rounded bg-gray-100 px-1">http://host.docker.internal:11434</code></p>
                   </div>
+                )}
+                {form.provider === 'custom' && (
+                  <p className="mt-1 text-base text-gray-400">填入廠商提供的 API 位址（符合 OpenAI /chat/completions 格式即可）</p>
                 )}
               </Field>}
 
@@ -1003,6 +1014,7 @@ export default function AdminLLMSettings() {
                             form.provider === 'gemini'     ? 'Model ID，例：gemini/gemini-2.5-flash' :
                             form.provider === 'anthropic'  ? 'Model ID，例：anthropic/claude-3-5-haiku-20241022' :
                             form.provider === 'twcc'       ? 'Model ID，例：twcc/Llama3.3-FFM-70B-32K' :
+                            form.provider === 'custom'     ? 'Model ID，例：gemma-4-31b-instruct-gguf' :
                                                              'Model ID，例：gpt-4o-mini'
                           }
                           value={entry.model}
@@ -1300,9 +1312,9 @@ export default function AdminLLMSettings() {
                   </Field>
                 )}
 
-                {/* 768 維說明 */}
+                {/* 1024 維說明 */}
                 <div className="rounded-lg bg-gray-50 border border-gray-200 p-3 text-base text-gray-500">
-                  ℹ️ 系統使用 768 維向量，僅支援以上模型
+                  ℹ️ 系統使用 1024 維向量，僅支援以上模型
                 </div>
 
                 {/* 情境 C：勾選確認才能儲存 */}

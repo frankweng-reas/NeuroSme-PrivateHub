@@ -325,7 +325,7 @@ def _internal_message_for_intent_validation_failure(kind: str) -> str:
 
 
 def _chart_result_to_detail_lines(chart_result: dict[str, Any]) -> list[str]:
-    """將 compute_aggregate 的 chart_result 轉為給 LLM 的「類別 = 數值」格式"""
+    """將 compute_aggregate 的 chart_result 轉為給 LLM 的「類別 = 數值」格式。"""
     detail_lines: list[str] = []
     labels = chart_result.get("labels")
     if not isinstance(labels, list) or not labels:
@@ -350,10 +350,10 @@ def _chart_result_to_detail_lines(chart_result: dict[str, Any]) -> list[str]:
             if isinstance(ds, dict) and isinstance(ds.get("data"), list):
                 n = len(ds["data"])
                 min_ds_len = n if min_ds_len is None else min(min_ds_len, n)
-        n_rows = len(display_labels)
+        total_rows = len(display_labels)
         if min_ds_len is not None:
-            n_rows = min(n_rows, min_ds_len)
-        for i in range(n_rows):
+            total_rows = min(total_rows, min_ds_len)
+        for i in range(total_rows):
             x_label = display_labels[i]
             parts = []
             for ds in datasets:

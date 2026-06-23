@@ -67,6 +67,7 @@ PROVIDER_DEFAULT_MODELS: dict[str, list[str]] = {
         "local/llama3.2:latest",
         "local/mistral:latest",
     ],
+    "custom": [],
 }
 
 _TWCC_OPTION_LABELS: dict[str, str] = {
@@ -78,6 +79,10 @@ def _model_display_label(model: str) -> str:
     m = (model or "").strip()
     if not m:
         return m
+    if m.startswith("custom:"):
+        # custom:{id}/{model_name} → model_name
+        slash_idx = m.find("/")
+        return m[slash_idx + 1:] if slash_idx >= 0 else m[7:]
     if m.startswith("local/"):
         return m[len("local/"):]
     if m.startswith("gemini/gemini-"):
@@ -136,7 +141,11 @@ def _collect_tenant_model_options(db: Session, tenant_id: str) -> list[LLMModelO
             dm_note = next((n for m, n in entries if m == dm), None)
             entries = [(dm, dm_note)] + [(m, n) for m, n in entries if m != dm]
         for mid, note in entries:
-            add_model(mid, note)
+            # custom provider 的 model ID 帶上 config id，讓下游能找回正確的 api_base/api_key
+            if cfg.provider == "custom":
+                add_model(f"custom:{cfg.id}/{mid}", note)
+            else:
+                add_model(mid, note)
 
     return ordered
 
@@ -323,16 +332,33 @@ def create_llm_config(
         raise HTTPException(status_code=400, detail=f"不支援的 provider，有效值：{sorted(VALID_PROVIDERS)}")
 
     # 同一租戶同一 provider 不允許重複新增
-    existing = (
-        db.query(LLMProviderConfig)
-        .filter(LLMProviderConfig.tenant_id == tenant_id, LLMProviderConfig.provider == body.provider)
-        .first()
-    )
-    if existing:
-        raise HTTPException(
-            status_code=400,
-            detail=f"此租戶已有 {body.provider} 的 Provider 設定，請直接編輯現有設定。",
+    # custom provider 以 label 區分，允許多筆（但需有不同 label）
+    if body.provider == "custom":
+        label_val = (body.label or "").strip()
+        if not label_val:
+            raise HTTPException(status_code=400, detail="自訂 Provider 必須填入顯示名稱（Label）以便區分")
+        existing = (
+            db.query(LLMProviderConfig)
+            .filter(
+                LLMProviderConfig.tenant_id == tenant_id,
+                LLMProviderConfig.provider == "custom",
+                LLMProviderConfig.label == label_val,
+            )
+            .first()
         )
+        if existing:
+            raise HTTPException(status_code=400, detail=f"已有同名的自訂 Provider「{label_val}」，請改用不同名稱或直接編輯現有設定。")
+    else:
+        existing = (
+            db.query(LLMProviderConfig)
+            .filter(LLMProviderConfig.tenant_id == tenant_id, LLMProviderConfig.provider == body.provider)
+            .first()
+        )
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"此租戶已有 {body.provider} 的 Provider 設定，請直接編輯現有設定。",
+            )
 
     cfg = LLMProviderConfig(
         tenant_id=tenant_id,
@@ -418,6 +444,7 @@ _TEST_DEFAULT_MODELS: dict[str, str] = {
     "anthropic": "anthropic/claude-3-5-haiku-20241022",
     "vertex": "vertex_ai/gemini-2.5-flash",
     "twcc": "twcc/Llama3.3-FFM-70B-32K",
+    "custom": "",
 }
 
 _TWCC_MODEL_MAP: dict[str, str] = {
@@ -469,6 +496,9 @@ async def test_llm_config(
 
     # 決定測試用 model：優先使用呼叫端傳入的 model，否則用 provider 預設
     model = (body.model or "").strip() or _TEST_DEFAULT_MODELS.get(cfg.provider, "gpt-4o-mini")
+    # 若 model 帶有 custom:{id}/ 前綴，去掉只保留 model name
+    if model.startswith("custom:") and "/" in model:
+        model = model[model.index("/") + 1:]
 
     t0 = time.monotonic()
     try:
@@ -536,6 +566,27 @@ async def test_llm_config(
                 "think": False,
             }
             apply_api_base(kwargs, api_base_raw)
+            resp = await litellm.acompletion(**kwargs)
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            reply = (resp.choices[0].message.content or "").strip()
+            return {"ok": True, "elapsed_ms": elapsed_ms, "reply": reply[:100]}
+
+        elif cfg.provider == "custom":
+            # 自訂 OpenAI-compatible Provider
+            api_base_raw = (cfg.api_base_url or "").rstrip("/")
+            if not api_base_raw:
+                raise HTTPException(status_code=400, detail="自訂 Provider 需設定 API Base URL")
+            if not model:
+                raise HTTPException(status_code=400, detail="請指定測試用的 Model ID")
+            kwargs: dict = {
+                "model": f"openai/{model}",
+                "messages": _TEST_MESSAGES,
+                "api_base": api_base_raw,
+                "api_key": api_key if api_key != "local" else "custom",
+                "max_tokens": 20,
+                "timeout": 30,
+                "temperature": 0,
+            }
             resp = await litellm.acompletion(**kwargs)
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             reply = (resp.choices[0].message.content or "").strip()
@@ -670,8 +721,9 @@ def migrate_embedding_config(
     current: User = Depends(get_current_user),
 ):
     """
-    遷移 Embedding model：清空向量索引、更新鎖定設定、version +1。
-    此操作不可逆，需傳 confirm=true。原始文件不刪除，需重新上傳以 re-embed。
+    遷移 Embedding model：僅清空 embedding 向量（保留 chunk 文字內容），更新鎖定設定、version +1。
+    chunk 文字保留，無需重新上傳文件；切換後透過「重新整合」重新 embed 即可。
+    需傳 confirm=true。
     """
     tenant_id = _require_tenant_admin(db, current)
 
@@ -697,24 +749,28 @@ def migrate_embedding_config(
             detail=f"Provider '{body.provider}' 尚未設定或已停用，請先設定 API Key。",
         )
 
-    # 清空向量索引（刪除該 tenant 所有 km_chunks）
+    # 只清空 embedding 向量，保留 chunk 文字內容，以便後續重新 embed
+    import sqlalchemy as _sa
     doc_ids = db.query(KmDocument.id).filter(KmDocument.tenant_id == tenant_id).subquery()
-    deleted = db.query(KmChunk).filter(KmChunk.document_id.in_(doc_ids)).delete(synchronize_session=False)
+    nulled = (
+        db.query(KmChunk)
+        .filter(KmChunk.document_id.in_(doc_ids))
+        .update({KmChunk.embedding: None}, synchronize_session=False)
+    )
 
-    # 將文件狀態重設為 pending，提示使用者重新上傳
+    # 將文件狀態重設為 pending，提示使用者重新整合以 re-embed
     db.query(KmDocument).filter(
         KmDocument.tenant_id == tenant_id,
         KmDocument.status == "ready",
     ).update(
         {
             "status": "pending",
-            "error_message": f"Embedding model 已遷移至 {body.provider}/{body.model}，請重新上傳文件以建立索引。",
+            "error_message": f"Embedding model 已遷移至 {body.provider}/{body.model}，請點擊「重新整合」重新建立向量索引。",
         },
         synchronize_session=False,
     )
 
     # 更新 tenant_configs
-    from datetime import datetime, timezone
     tc = _get_or_create_tenant_config(db, tenant_id)
     tc.embedding_provider = body.provider
     tc.embedding_model = body.model
@@ -725,8 +781,8 @@ def migrate_embedding_config(
 
     import logging
     logging.getLogger(__name__).info(
-        "Embedding 遷移完成：tenant=%s provider=%s model=%s 清除 chunks=%d",
-        tenant_id, body.provider, body.model, deleted,
+        "Embedding 遷移完成：tenant=%s provider=%s model=%s 清空 embedding 筆數=%d（chunk 文字保留）",
+        tenant_id, body.provider, body.model, nulled,
     )
     return _tc_response(tc)
 

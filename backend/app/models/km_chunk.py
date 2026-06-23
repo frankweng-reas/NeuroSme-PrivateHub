@@ -19,7 +19,7 @@ class KmChunk(Base):
     )
     chunk_index = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
-    embedding = Column(Vector(768), nullable=True)
+    embedding = Column(Vector(1024), nullable=True)
     content_tsv = Column(TSVECTOR, nullable=True)
     metadata_ = Column("metadata", JSON, nullable=True)
 

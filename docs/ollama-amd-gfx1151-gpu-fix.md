@@ -371,6 +371,7 @@ sudo systemctl enable ollama-warmup
 - `gemma4:e4b` 等待 Ollama 修復 Vulkan MoE 支援後才可用
 - Ollama v0.21.x Host header 安全驗證：nginx 必須送 `Host: localhost`，否則 403
 - Embedding model（nomic-embed-text）自動分流，不需特別設定，VRAM 佔用可忽略
+- **bge-m3 必須使用 `bge-m3-4096` custom model**（num_ctx=4096）：原始 bge-m3 預設 num_ctx=8192，compute buffer 需要 4.4 GB 單一 Vulkan 分配，超過 Vulkan driver 上限（約 4 GB）→ 崩潰。測試結果：6144 OK，8192 FAIL。4096 可涵蓋所有 chunk 類型（最大 doc_image 4000 字元 ≈ 2700 tokens），並留有充足緩衝。建立方式：`ollama create bge-m3-4096 -f Modelfile`（`FROM bge-m3 / PARAMETER num_ctx 4096`）
 
 ---
 

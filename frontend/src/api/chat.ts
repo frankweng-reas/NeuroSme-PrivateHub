@@ -327,12 +327,21 @@ export interface AgentChartEntry {
   chart_data: ChartItem
 }
 
+export interface DownloadDataItem {
+  query: string
+  labels?: string[]
+  datasets?: { label: string; data: number[]; valueLabel?: string }[]
+  data?: number[]
+  title?: string
+}
+
 export interface ChatResponseCompute {
   content: string
   model: string
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
   chart_data?: ChartItem
   charts?: AgentChartEntry[]   // Agent BI 多步驟圖表
+  download_data?: DownloadDataItem[]  // Agent BI 各子查詢原始資料（供下載 CSV）
   debug?: Record<string, unknown>
 }
 
@@ -479,6 +488,7 @@ export async function chatAgentBiStream(
           usage: (data.usage as ChatResponseCompute['usage']) ?? undefined,
           chart_data: data.chart_data as ChatResponseCompute['chart_data'],
           charts: data.charts as ChatResponseCompute['charts'],
+          download_data: data.download_data as ChatResponseCompute['download_data'],
         }
       }
     } catch { /* ignore */ }

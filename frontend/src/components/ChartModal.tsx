@@ -68,7 +68,8 @@ function isTimeSeriesLabels(labels: string[]): boolean {
     /^\d{4}[-/]?\d{1,2}/.test(sample) ||  // 2025-01, 2025/03, 20250301
     /^\d{4}[-/]?Q\d/.test(sample) ||       // 2025-Q1, 2025Q2
     /^\d{1,2}月$/.test(sample) ||          // 3月, 12月（v4 MONTH 分組）
-    /^Q\d$/.test(sample)                   // Q1, Q2（v4 QUARTER 分組）
+    /^Q\d$/.test(sample) ||                // Q1, Q2（v4 QUARTER 分組）
+    /^\d{1,2}\/\d{1,2}/.test(sample)      // 6/22, 6/22 (一)（月/日格式）
   )
 }
 

@@ -1,12 +1,181 @@
 /** Agent 頁面共用聊天元件：訊息列表、輸入框、loading、捲到底 */
-import { useEffect, useRef, useState } from 'react'
-import { BarChart3, ChevronDown, Copy, FileDown, Loader2, X } from 'lucide-react'
+import React, { useEffect, useRef, useState } from 'react'
+import { BarChart3, ChevronDown, Copy, Download, FileDown, Loader2, X } from 'lucide-react'
 import type { ExamplePromptItem } from '@/types/examplePrompts'
 import ChartModal, { type ChartData } from '@/components/ChartModal'
 import PdfPreviewModal from '@/components/PdfPreviewModal'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
+
+/** 將 DownloadItem[] 轉成 CSV 字串並觸發瀏覽器下載 */
+function downloadAsCSV(items: DownloadItem[], filename = 'analysis.csv') {
+  const rows: string[] = []
+  items.forEach((item, idx) => {
+    if (idx > 0) rows.push('')  // 每個子查詢之間空一行
+    rows.push(`# ${item.query}`)
+    const datasets = item.datasets ?? []
+    const labels = item.labels ?? []
+    if (datasets.length > 0) {
+      const headers = ['類別', ...datasets.map(d => d.label || d.valueLabel || `數值${datasets.indexOf(d)+1}`)]
+      rows.push(headers.map(h => `"${h.replace(/"/g, '""')}"`).join(','))
+      for (let i = 0; i < labels.length; i++) {
+        const vals = [labels[i], ...datasets.map(d => d.data?.[i] ?? '')]
+        rows.push(vals.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
+      }
+    } else if (item.data && item.data.length === labels.length) {
+      rows.push('"類別","數值"')
+      labels.forEach((lbl, i) => {
+        rows.push(`"${lbl.replace(/"/g, '""')}","${item.data![i]}"`)
+      })
+    }
+  })
+  const bom = '\uFEFF'  // UTF-8 BOM，讓 Excel 正確識別中文
+  const blob = new Blob([bom + rows.join('\n')], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+/** 遞迴取出 React node 的純文字 */
+function extractTextFromNode(node: React.ReactNode): string {
+  if (typeof node === 'string') return node
+  if (typeof node === 'number') return String(node)
+  if (!node) return ''
+  if (Array.isArray(node)) return node.map(extractTextFromNode).join('')
+  if (React.isValidElement(node)) return extractTextFromNode((node.props as { children?: React.ReactNode }).children)
+  return ''
+}
+
+/** 從 react-markdown table 的 children 走訪出 2D 陣列（含表頭列） */
+function extractTableDataFromChildren(children: React.ReactNode): string[][] {
+  const rows: string[][] = []
+  React.Children.forEach(children, (section) => {
+    if (!React.isValidElement(section)) return
+    const sectionChildren = (section.props as { children?: React.ReactNode }).children
+    React.Children.forEach(sectionChildren, (row) => {
+      if (!React.isValidElement(row)) return
+      const cells: string[] = []
+      const rowChildren = (row.props as { children?: React.ReactNode }).children
+      React.Children.forEach(rowChildren, (cell) => {
+        if (!React.isValidElement(cell)) return
+        cells.push(extractTextFromNode((cell.props as { children?: React.ReactNode }).children))
+      })
+      if (cells.length > 0) rows.push(cells)
+    })
+  })
+  return rows
+}
+
+/** 將表格 2D 陣列轉為 ChartData（第一個非數值欄為 label，其餘數值欄為 datasets） */
+function tableDataToChartData(rows: string[][]): ChartData | null {
+  if (rows.length < 2) return null
+  const headers = rows[0]
+  const dataRows = rows.slice(1)
+
+  const parseNum = (v: string): number | null => {
+    const t = v.trim()
+    if (!t) return null
+    // 必須以數字或負號開頭，且不含中文、不含內部連字號（避免日期/代碼誤判）
+    if (!/^-?\d/.test(t)) return null
+    if (/[\u4e00-\u9fff]/.test(t)) return null
+    if (/\d-\d/.test(t)) return null
+    const n = parseFloat(t.replace(/,/g, '').replace(/[^\d.-]/g, ''))
+    return isNaN(n) ? null : n
+  }
+
+  // 第一個「至少有一列非空非數值」的欄 → label 欄
+  const labelColIdx = headers.findIndex((_, ci) =>
+    dataRows.some((r) => { const v = (r[ci] ?? '').trim(); return v !== '' && parseNum(v) === null })
+  )
+  if (labelColIdx === -1) return null
+
+  const labels = dataRows.map((r) => (r[labelColIdx] ?? '').trim())
+
+  // 其餘欄，資料全部能解析為數字的才算 dataset
+  const datasets = headers
+    .map((h, ci) => {
+      if (ci === labelColIdx) return null
+      const nums = dataRows.map((r) => parseNum((r[ci] ?? '').trim()))
+      if (nums.every((n) => n === null)) return null
+      return { label: h, data: nums.map((n) => n ?? 0) }
+    })
+    .filter(Boolean) as { label: string; data: number[] }[]
+
+  if (datasets.length === 0) return null
+  return { chartType: 'bar', labels, datasets }
+}
+
+/** Markdown 表格 + 表格下方「下載 CSV」與「圖表」按鈕 */
+function TableWithDownload({ children, ...props }: React.HTMLAttributes<HTMLTableElement>) {
+  const tableData = extractTableDataFromChildren(children as React.ReactNode)
+  const chartable = tableDataToChartData(tableData)
+  const [chartOpen, setChartOpen] = useState(false)
+
+  function handleDownload() {
+    const now = new Date()
+    const ts = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0'),
+    ].join('') + '-' + [
+      String(now.getHours()).padStart(2, '0'),
+      String(now.getMinutes()).padStart(2, '0'),
+    ].join('')
+    const csv = tableData
+      .map((row) => row.map((cell) => `"${cell.replace(/"/g, '""')}"`).join(','))
+      .join('\n')
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `analysis-${ts}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  // tableData.length > 1：至少有表頭 + 一列資料才顯示按鈕
+  return (
+    <div className="my-2">
+      <div className="overflow-x-auto">
+        <table
+          className="min-w-full border-collapse border border-gray-200 text-[16px]"
+          {...props}
+        >
+          {children}
+        </table>
+      </div>
+      {tableData.length > 1 && (
+        <div className="mt-1 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleDownload}
+            className="flex items-center gap-1 rounded px-2 py-1 text-[14px] text-emerald-700 transition-colors hover:bg-emerald-50"
+          >
+            <Download className="h-3.5 w-3.5" />
+            下載 CSV
+          </button>
+          {chartable && (
+            <button
+              type="button"
+              onClick={() => setChartOpen(true)}
+              className="flex items-center gap-1 rounded px-2 py-1 text-[14px] text-blue-600 transition-colors hover:bg-blue-50"
+            >
+              <BarChart3 className="h-3.5 w-3.5" />
+              圖表
+            </button>
+          )}
+        </div>
+      )}
+      {chartOpen && chartable && (
+        <ChartModal open data={chartable} onClose={() => setChartOpen(false)} />
+      )}
+    </div>
+  )
+}
 
 const CHAT_MARKDOWN_COMPONENTS = {
   a: ({ children, ...props }: React.HTMLAttributes<HTMLAnchorElement> & { href?: string }) => (
@@ -80,13 +249,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
     </pre>
   ),
   hr: () => <hr className="my-3 border-gray-200" />,
-  table: ({ children, ...props }: React.HTMLAttributes<HTMLTableElement>) => (
-    <div className="my-2 overflow-x-auto">
-      <table className="min-w-full border-collapse border border-gray-200 text-[16px]" {...props}>
-        {children}
-      </table>
-    </div>
-  ),
+  table: TableWithDownload,
   thead: ({ children, ...props }: React.HTMLAttributes<HTMLTableSectionElement>) => (
     <thead className="bg-gray-100" {...props}>
       {children}
@@ -124,6 +287,14 @@ export interface AgentChartEntry {
   chartData: ChartData
 }
 
+export interface DownloadItem {
+  query: string
+  labels?: string[]
+  datasets?: { label: string; data: number[]; valueLabel?: string }[]
+  data?: number[]
+  title?: string
+}
+
 export interface Message {
   role: 'user' | 'assistant'
   content: string
@@ -131,6 +302,7 @@ export interface Message {
   chartData?: ChartData
   charts?: AgentChartEntry[]   // Agent BI 多步驟圖表（有時同時有 chartData = 最後一張）
   sources?: { filename: string }[]
+  downloadData?: DownloadItem[]  // Agent BI 各子查詢原始資料（供下載 CSV）
 }
 
 /** 三階段 loading 文字（意圖解析 → 計算 → 分析建議） */
@@ -423,6 +595,17 @@ export default function AgentChat({
                           >
                             <FileDown className="h-4 w-4" />
                             PDF
+                          </button>
+                        )}
+                        {m.downloadData && m.downloadData.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => downloadAsCSV(m.downloadData!, 'analysis.csv')}
+                            title="下載分析資料（CSV）"
+                            className="flex items-center gap-1 rounded-2xl px-2 py-1 text-[18px] text-emerald-700 transition-colors hover:bg-emerald-50"
+                          >
+                            <Download className="h-4 w-4" />
+                            CSV
                           </button>
                         )}
                       </div>

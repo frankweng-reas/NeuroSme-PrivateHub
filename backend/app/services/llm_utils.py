@@ -22,6 +22,8 @@ def get_provider_from_model(model: str) -> str:
         return "local"
     if m.startswith("anthropic/") or m.startswith("claude-"):
         return "anthropic"
+    if m.startswith("custom:"):
+        return "custom"
     return "openai"
 
 
