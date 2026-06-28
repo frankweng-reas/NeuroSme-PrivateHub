@@ -14,6 +14,14 @@ export interface AgentBiRequest {
   schema_id?: string
 }
 
+export interface AgentBiMultiRequest {
+  project_ids: string[]
+  model: string
+  question: string
+  agent_id?: string
+  user_prompt?: string
+}
+
 export type AgentBiEventType =
   | 'start'
   | 'agent_step'
@@ -25,11 +33,14 @@ export interface AgentBiEvent {
   content?: string
   step?: number
   query?: string
+  topic_name?: string   // 多主題模式：該步驟查詢的主題名稱
   phase?: 'running' | 'done'
   success?: boolean
   stage?: string
   error_stage?: string
   chart_data?: Record<string, unknown> | null
+  model?: string
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
 }
 
 export async function agentBiStream(
@@ -98,9 +109,102 @@ export async function agentBiStream(
       if (raw.stage === 'done') {
         finalContent = raw.content ?? ''
         if (raw.error_stage) {
-          onEvent({ type: 'error', content: raw.content, stage: raw.stage, error_stage: raw.error_stage })
+          onEvent({ type: 'error', content: raw.content, stage: raw.stage, error_stage: raw.error_stage, usage: raw.usage, model: raw.model })
         } else {
-          onEvent({ type: 'done', content: raw.content, chart_data: raw.chart_data as Record<string, unknown> | null, stage: raw.stage })
+          onEvent({ type: 'done', content: raw.content, chart_data: raw.chart_data as Record<string, unknown> | null, stage: raw.stage, usage: raw.usage, model: raw.model })
+        }
+        return
+      }
+    } catch { /* ignore */ }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (value) buffer += decoder.decode(value, { stream: true })
+
+    let sep: number
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const block = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      if (block.trim()) processBlock(block)
+    }
+
+    if (done) break
+  }
+
+  return finalContent
+}
+
+
+export async function agentBiMultiStream(
+  req: AgentBiMultiRequest,
+  onEvent: (event: AgentBiEvent) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  const token = localStorage.getItem(TOKEN_KEY)
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  }
+
+  const res = await fetch(`${API_BASE}/chat/completions-agent-bi-multi-stream`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      content: req.question,
+      project_ids: req.project_ids,
+      agent_id: req.agent_id ?? '',
+      user_prompt: req.user_prompt ?? '',
+    }),
+    signal,
+  })
+
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      const text = await res.text()
+      try {
+        const body = JSON.parse(text)
+        detail = typeof body?.detail === 'string' ? body.detail
+          : Array.isArray(body?.detail) && body.detail[0]?.msg ? body.detail[0].msg : undefined
+      } catch {
+        detail = text || undefined
+      }
+    } catch { /* ignore */ }
+    throw new Error(detail || `API Error: ${res.status}`)
+  }
+
+  const reader = res.body?.getReader()
+  if (!reader) throw new Error('無法讀取串流')
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let finalContent = ''
+
+  function processBlock(block: string): void {
+    const match = block.match(/^data:\s*(.+)$/m)
+    if (!match) return
+    try {
+      const raw = JSON.parse(match[1])
+
+      if (raw.type === 'agent_step') {
+        onEvent({
+          type: 'agent_step',
+          step: raw.step,
+          query: raw.query,
+          topic_name: raw.topic_name,
+          phase: raw.phase,
+          success: raw.success,
+        })
+        return
+      }
+
+      if (raw.stage === 'done') {
+        finalContent = raw.content ?? ''
+        if (raw.error_stage) {
+          onEvent({ type: 'error', content: raw.content, stage: raw.stage, error_stage: raw.error_stage, usage: raw.usage, model: raw.model })
+        } else {
+          onEvent({ type: 'done', content: raw.content, chart_data: raw.chart_data as Record<string, unknown> | null, stage: raw.stage, usage: raw.usage, model: raw.model })
         }
         return
       }

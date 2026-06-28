@@ -12,6 +12,7 @@ import {
   X,
 } from 'lucide-react'
 import ConfirmModal from '@/components/ConfirmModal'
+import ErrorModal from '@/components/ErrorModal'
 import HelpModal from '@/components/HelpModal'
 import {
   createBiSchema,
@@ -71,11 +72,20 @@ const WIZARD_STEPS = ['基本資訊', '欄位定義', '維度層級']
 
 // ─── Helpers ─────────────────────────────────────────
 
+const DIM_TIME_SAMPLE_RE = /^\d{4}[-/]?\d{1,2}([-/]\d{1,2})?$|^\d{4}\d{2}\d{2}$|^\d{4}-?[Qq][1-4]$/
+
+function validateDimTimeSamples(cols: SchemaColumn[]): string | null {
+  const bad = cols.filter(c => c.attr === 'dim_time' && c.sampleData.trim() && !DIM_TIME_SAMPLE_RE.test(c.sampleData.trim()))
+  if (!bad.length) return null
+  const names = bad.map(c => `「${c.aliases || c.columnName}」(範例：${c.sampleData})`).join('、')
+  return `時間維度欄位的範例資料格式不支援：${names}。請使用標準日期格式，例如 2026-03、2026-03-01、2026/03/01。`
+}
+
 function inferDataType(v: string, col: string): SchemaColumn['dataType'] {
   const val = v.trim(); const c = col.toLowerCase()
   if (!val) return 'str'
   const timeKw = ['日期', '時間', 'timestamp', 'date', '月份', '月', 'month', 'year']
-  if (/^\d{4}[-/]?\d{1,2}([-/]\d{1,2})?$|^\d{4}\d{2}\d{2}$/.test(val) || timeKw.some(k => c.includes(k))) return 'time'
+  if (/^\d{4}[-/]?\d{1,2}([-/]\d{1,2})?$|^\d{4}\d{2}\d{2}$|^\d{4}-?[Qq][1-4]$/.test(val) || timeKw.some(k => c.includes(k))) return 'time'
   const numKw = ['金額', '數量', '營收', '銷售', 'amount', 'quantity', 'sales', 'count', 'price', 'value', 'profit', '毛利', '成本']
   if (/^-?\d+(\.\d+)?$/.test(val.replace(/,/g, '')) || numKw.some(k => c.includes(k))) return 'num'
   return 'str'
@@ -174,6 +184,9 @@ export default function SchemaManagerOverlayV2({ agentId, onClose, onSchemaChang
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [errModal, setErrModal] = useState<{ title?: string; message: string } | null>(null)
+  const [noDimTimeOpen, setNoDimTimeOpen] = useState(false)
+  const noDimTimePendingRef = useRef<(() => void) | null>(null)
   const [toDelete, setToDelete] = useState<BiSchemaItem | null>(null)
   const [dropdownId, setDropdownId] = useState<string | null>(null)
   const [toasts, setToasts] = useState<ToastItem[]>([])
@@ -288,6 +301,21 @@ export default function SchemaManagerOverlayV2({ agentId, onClose, onSchemaChang
     if (colsRef.current.length === 0) { toast('請至少保留一個欄位', 'error'); return }
     const badHier = hierRef.current.find(g => !g.label.trim() || !g.cols.filter(Boolean).length)
     if (badHier) { toast('維度層級需填寫名稱並選擇至少一個欄位', 'error'); return }
+    const dimTimeErr = validateDimTimeSamples(colsRef.current)
+    if (dimTimeErr) {
+      setErrModal({ title: '時間維度格式錯誤', message: dimTimeErr })
+      return
+    }
+    const hasDimTime = colsRef.current.some(c => c.attr === 'dim_time')
+    if (!hasDimTime) {
+      noDimTimePendingRef.current = () => { void _doUpdate() }
+      setNoDimTimeOpen(true)
+      return
+    }
+    void _doUpdate()
+  }
+
+  const _doUpdate = async () => {
     setSaving(true)
     try {
       await updateBiSchema(selectedIdRef.current, {
@@ -322,7 +350,21 @@ export default function SchemaManagerOverlayV2({ agentId, onClose, onSchemaChang
   // wizard nav
   const wizNext = () => {
     if (step === 1) { if (!nameRef.current.trim()) { toast('請填寫名稱', 'error'); return }; setStep(2) }
-    else if (step === 2) { if (colsRef.current.length === 0) { toast('請至少新增一個欄位', 'error'); return }; setStep(3) }
+    else if (step === 2) {
+      if (colsRef.current.length === 0) { toast('請至少新增一個欄位', 'error'); return }
+      const dimTimeErr = validateDimTimeSamples(colsRef.current)
+      if (dimTimeErr) {
+        setErrModal({ title: '時間維度格式錯誤', message: dimTimeErr })
+        return
+      }
+      const hasDimTime = colsRef.current.some(c => c.attr === 'dim_time')
+      if (!hasDimTime) {
+        noDimTimePendingRef.current = () => setStep(3)
+        setNoDimTimeOpen(true)
+        return
+      }
+      setStep(3)
+    }
     else { void handleCreate() }
   }
   const wizPrev = () => { if (step > 1) setStep(s => (s - 1) as WizardStep) }
@@ -673,7 +715,7 @@ export default function SchemaManagerOverlayV2({ agentId, onClose, onSchemaChang
               </div>
               <div className="flex shrink-0 items-center justify-between rounded-b-2xl border-t border-slate-200 bg-gray-50 px-8 py-4">
                 <button type="button" onClick={step === 1 ? () => setView('idle') : wizPrev}
-                  className="flex items-center gap-1.5 rounded-xl border border-gray-300 bg-white px-4 py-2 text-base text-gray-700 transition-colors hover:bg-gray-50">
+                  className="flex items-center gap-1.5 rounded-xl border-2 border-gray-400 bg-white px-4 py-2 text-base font-medium text-gray-600 shadow-sm transition-colors hover:border-gray-500 hover:bg-gray-100">
                   <ChevronLeft className="h-4 w-4" />{step === 1 ? '取消' : '上一步'}
                 </button>
                 <button type="button" onClick={wizNext} disabled={saving}
@@ -731,6 +773,18 @@ export default function SchemaManagerOverlayV2({ agentId, onClose, onSchemaChang
         confirmText={deleting ? '刪除中…' : '刪除'} variant="danger"
         onConfirm={() => { if (!deleting) void handleDelete() }}
         onCancel={() => { if (!deleting) { setConfirmOpen(false); setToDelete(null) } }} />
+
+      <ErrorModal open={errModal !== null} title={errModal?.title} message={errModal?.message ?? ''}
+        onClose={() => setErrModal(null)} />
+
+      <ConfirmModal open={noDimTimeOpen}
+        title="未設定時間維度"
+        message={"此資料範本沒有任何「時間維度」欄位。\n\n缺少時間維度將無法進行月趨勢、同期比較等時間相關分析。\n\n建議將日期類欄位的屬性設為「時間維度」。"}
+        cancelText="返回設定"
+        confirmText="繼續不設定"
+        variant="primary"
+        onConfirm={() => { setNoDimTimeOpen(false); noDimTimePendingRef.current?.(); noDimTimePendingRef.current = null }}
+        onCancel={() => { setNoDimTimeOpen(false); noDimTimePendingRef.current = null }} />
 
       {/* Toasts */}
       <div className="pointer-events-none fixed bottom-6 right-6 z-[60] flex flex-col-reverse gap-2">

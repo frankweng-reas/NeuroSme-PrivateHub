@@ -77,6 +77,19 @@ def _time_filter_lhs_sql(col_sql: str) -> str:
     """時間欄位 filter 左側：TRY_CAST(col AS DATE)。"""
     return f"TRY_CAST({col_sql} AS DATE)"
 
+
+_YYYY_MM_RE = re.compile(r"^\d{4}-\d{2}$")
+
+
+def _normalize_date_val(v: Any) -> str:
+    """將日期值正規化為 DuckDB 可接受的 YYYY-MM-DD 字串。
+    若輸入為 YYYY-MM 格式（如 '2026-03'），自動補 '-01' 變為 '2026-03-01'。
+    """
+    s = str(v).strip()
+    if _YYYY_MM_RE.match(s):
+        return s + "-01"
+    return s
+
 _GROUP_FN = re.compile(
     r"^\s*([A-Za-z_][a-zA-Z0-9_]*)\s*\(\s*(col_[a-zA-Z0-9_]+)\s*\)\s*$",
     re.IGNORECASE,
@@ -125,9 +138,11 @@ def _filter_clause_sql(
             return None
         lo, hi = v[0], v[1]
         if is_time:
+            lo_norm = _normalize_date_val(lo)
+            hi_norm = _normalize_date_val(hi)
             return (
-                f"{typed_col} BETWEEN CAST({_sql_literal(lo)} AS DATE) "
-                f"AND CAST({_sql_literal(hi)} AS DATE)"
+                f"{typed_col} BETWEEN CAST({_sql_literal(lo_norm)} AS DATE) "
+                f"AND CAST({_sql_literal(hi_norm)} AS DATE)"
             )
         return f"{typed_col} BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}"
     if op == "in":
@@ -150,7 +165,7 @@ def _filter_clause_sql(
     if sql_op is None:
         return None
     if is_time:
-        return f"{typed_col} {sql_op} CAST({_sql_literal(f.val)} AS DATE)"
+        return f"{typed_col} {sql_op} CAST({_sql_literal(_normalize_date_val(f.val))} AS DATE)"
     return f"{raw_col} {sql_op} {_sql_literal(f.val)}"
 
 

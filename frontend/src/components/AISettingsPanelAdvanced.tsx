@@ -1,6 +1,10 @@
-/** 進階設定：從 Skill 庫選取並套用 User Prompt */
+/** 進階設定：從 Skill 庫開窗選取並套用 User Prompt */
 import { useCallback, useEffect, useState } from 'react'
+import { X, Zap } from 'lucide-react'
 import { listLlmSkills, type LlmSkill } from '@/api/llmSkills'
+import SkillPickerModal from '@/components/SkillPickerModal'
+
+// ── AISettingsPanelAdvanced ───────────────────────────────────────────────────
 
 export interface AISettingsPanelAdvancedProps {
   userPrompt: string
@@ -15,7 +19,8 @@ export default function AISettingsPanelAdvanced({
 }: AISettingsPanelAdvancedProps) {
   const [skills, setSkills] = useState<LlmSkill[]>([])
   const [skillsLoading, setSkillsLoading] = useState(true)
-  const [selectedSkillId, setSelectedSkillId] = useState<number | null>(null)
+  const [showSkillModal, setShowSkillModal] = useState(false)
+  const [appliedSkillTitle, setAppliedSkillTitle] = useState<string | null>(null)
 
   const fetchSkills = useCallback(async () => {
     setSkillsLoading(true)
@@ -33,29 +38,12 @@ export default function AISettingsPanelAdvanced({
     fetchSkills()
   }, [fetchSkills])
 
-  function handleSelectSkill(e: React.ChangeEvent<HTMLSelectElement>) {
-    const val = e.target.value
-    if (val === '') {
-      setSelectedSkillId(null)
-      return
-    }
-    const id = Number(val)
-    const skill = skills.find((s) => s.id === id)
-    if (skill) {
-      setSelectedSkillId(id)
-      onUserPromptChange(skill.prompt)
-      onToast(`已套用：${skill.title}`)
-    }
+  function handleApplySkill(skill: LlmSkill) {
+    onUserPromptChange(skill.prompt)
+    setAppliedSkillTitle(skill.title)
+    setShowSkillModal(false)
+    onToast(`已套用：${skill.title}`)
   }
-
-  // 依 category 分組顯示
-  const grouped = skills.reduce<Record<string, LlmSkill[]>>((acc, s) => {
-    const cat = s.category ?? '其他'
-    if (!acc[cat]) acc[cat] = []
-    acc[cat].push(s)
-    return acc
-  }, {})
-  const categories = Object.keys(grouped).sort()
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
@@ -63,26 +51,30 @@ export default function AISettingsPanelAdvanced({
         進階設定
       </h3>
 
-      {/* Skill 選擇 */}
-      <div className="flex min-w-0 shrink-0 w-full items-center gap-2">
+      {/* Skill 選擇按鈕 */}
+      <div className="flex shrink-0 items-center gap-2">
         <label className="shrink-0 text-[16px] font-medium text-gray-700">Skill</label>
-        <select
-          value={selectedSkillId ?? ''}
-          onChange={handleSelectSkill}
+        <button
+          type="button"
           disabled={skillsLoading}
-          className="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-[16px] focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-400 disabled:opacity-50"
+          onClick={() => setShowSkillModal(true)}
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-left text-[15px] text-gray-600 hover:border-teal-400 hover:bg-teal-50/30 disabled:opacity-50 transition-colors"
         >
-          <option value="">選擇 Skill 套用…</option>
-          {categories.map((cat) => (
-            <optgroup key={cat} label={cat}>
-              {grouped[cat].map((s) => (
-                <option key={s.id} value={s.id} title={s.description ?? undefined}>
-                  {s.title}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
+          <Zap className="h-4 w-4 shrink-0 text-teal-600" />
+          <span className="truncate">
+            {skillsLoading ? '載入中…' : appliedSkillTitle ?? '選擇 Skill 套用…'}
+          </span>
+        </button>
+        {appliedSkillTitle && (
+          <button
+            type="button"
+            onClick={() => { setAppliedSkillTitle(null); onUserPromptChange('') }}
+            className="shrink-0 rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            title="清除 Skill"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
       </div>
       {skills.length === 0 && !skillsLoading && (
         <p className="text-[13px] text-gray-400">尚無 Skill，請管理員至後台新增。</p>
@@ -97,6 +89,14 @@ export default function AISettingsPanelAdvanced({
           className="h-full min-h-[80px] w-full resize-y rounded-lg border border-gray-300 bg-white p-2 text-[16px] text-gray-800 placeholder:text-gray-400 focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-400"
         />
       </div>
+
+      {showSkillModal && (
+        <SkillPickerModal
+          skills={skills}
+          onApply={handleApplySkill}
+          onClose={() => setShowSkillModal(false)}
+        />
+      )}
     </div>
   )
 }

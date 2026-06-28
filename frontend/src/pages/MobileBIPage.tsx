@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { TOKEN_KEY } from '@/contexts/AuthContext'
 import { chatAgentBiStream, type AgentStepEvent } from '@/api/chat'
+import { agentBiMultiStream } from '@/api/agentBi'
 import { transcribeAudio, getSpeechStatus } from '@/api/speech'
 import VoiceInput from '@/components/VoiceInput'
 import { listBiProjects, type BiProjectItem } from '@/api/biProjects'
@@ -32,6 +33,15 @@ interface Message {
   content: string
   charts?: AgentChartEntry[]
   error?: boolean
+}
+
+/** 統一單/多主題模式的步驟事件 */
+interface StepEvent {
+  step: number
+  query: string
+  phase: 'running' | 'done'
+  success?: boolean
+  topic_name?: string   // 多主題模式才有
 }
 
 // ── Table chart helpers (共用自 AgentChat 邏輯) ────────────────────────────────
@@ -132,15 +142,15 @@ function TableWithActions({ children, ...props }: React.HTMLAttributes<HTMLTable
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const BI_AGENT_ID = 'business'
-
+const BI_SELECTED_KEY = 'bi_selected_project_ids'
 // ── Progress overlay (inline, mobile-optimised) ───────────────────────────────
 
 function ProgressOverlay({
   steps, visible, finalizing,
-}: { steps: AgentStepEvent[]; visible: boolean; finalizing: boolean }) {
+}: { steps: StepEvent[]; visible: boolean; finalizing: boolean }) {
   if (!visible) return null
 
-  const stepMap = new Map<number, AgentStepEvent>()
+  const stepMap = new Map<number, StepEvent>()
   for (const s of steps) {
     const prev = stepMap.get(s.step)
     if (!prev || s.phase === 'done') stepMap.set(s.step, s)
@@ -148,7 +158,7 @@ function ProgressOverlay({
   const display = Array.from(stepMap.values()).sort((a, b) => a.step - b.step)
 
   return (
-    <div className="absolute bottom-20 left-0 right-0 flex justify-center px-4 z-30 pointer-events-none">
+    <div className="fixed bottom-[72px] left-0 right-0 flex justify-center px-4 z-30 pointer-events-none">
       <div className="w-full max-w-sm rounded-2xl border border-gray-200 bg-white/95 px-4 py-3 shadow-xl backdrop-blur-sm pointer-events-auto">
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">分析中</p>
         <div className="space-y-1.5">
@@ -162,7 +172,12 @@ function ProgressOverlay({
                 <XCircle className="h-3.5 w-3.5 shrink-0 text-red-400" />
               )}
               <span className="truncate text-sm text-gray-700">
-                {s.query.length > 40 ? s.query.slice(0, 40) + '…' : s.query}
+                {s.topic_name && (
+                  <span className="mr-1 rounded-full bg-indigo-50 px-1.5 py-0.5 text-xs text-indigo-600 font-medium">
+                    {s.topic_name}
+                  </span>
+                )}
+                {s.query.length > 36 ? s.query.slice(0, 36) + '…' : s.query}
               </span>
             </div>
           ))}
@@ -181,48 +196,98 @@ function ProgressOverlay({
 // ── Project Picker bottom sheet ───────────────────────────────────────────────
 
 function ProjectPicker({
-  open, projects, selected, onSelect, onClose,
+  open, projects, selected, onConfirm, onClose,
 }: {
   open: boolean
   projects: BiProjectItem[]
-  selected: BiProjectItem | null
-  onSelect: (p: BiProjectItem) => void
+  selected: BiProjectItem[]
+  onConfirm: (ps: BiProjectItem[]) => void
   onClose: () => void
 }) {
+  const [draft, setDraft] = useState<Set<string>>(new Set(selected.map((p) => p.project_id)))
+
+  // 每次開啟時同步外部選擇狀態
+  useEffect(() => {
+    if (open) setDraft(new Set(selected.map((p) => p.project_id)))
+  }, [open, selected])
+
+  function toggle(p: BiProjectItem) {
+    setDraft((prev) => {
+      const next = new Set(prev)
+      if (next.has(p.project_id)) {
+        next.delete(p.project_id)
+      } else {
+        if (next.size >= 5) return prev
+        next.add(p.project_id)
+      }
+      return next
+    })
+  }
+
+  function handleConfirm() {
+    const result = projects.filter((p) => draft.has(p.project_id))
+    onConfirm(result)
+    onClose()
+  }
+
   if (!open) return null
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-end">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative rounded-t-2xl bg-white shadow-xl max-h-[70vh] flex flex-col">
+      <div className="relative rounded-t-2xl bg-white shadow-xl max-h-[75vh] flex flex-col">
         <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-100">
-          <span className="text-base font-semibold text-gray-800">選擇分析主題</span>
+          <div>
+            <span className="text-base font-semibold text-gray-800">選擇分析主題</span>
+            <span className="ml-2 text-sm text-gray-400">可多選，最多 5 個</span>
+          </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
             <X className="h-5 w-5" />
           </button>
         </div>
         <div className="overflow-y-auto flex-1">
-          {projects.map((p) => (
-            <button
-              key={p.project_id}
-              onClick={() => { onSelect(p); onClose() }}
-              className={`w-full flex items-center gap-3 px-5 py-4 text-left transition-colors ${
-                selected?.project_id === p.project_id
-                  ? 'bg-[#1C3939]/5 text-[#1C3939]'
-                  : 'hover:bg-gray-50 text-gray-700'
-              }`}
-            >
-              <BarChart2 className={`h-5 w-5 shrink-0 ${selected?.project_id === p.project_id ? 'text-[#1C3939]' : 'text-gray-400'}`} />
-              <div className="min-w-0">
-                <p className="font-medium truncate">{p.project_name}</p>
-                {p.project_desc && (
-                  <p className="text-sm text-gray-400 truncate mt-0.5">{p.project_desc}</p>
-                )}
-              </div>
-              {selected?.project_id === p.project_id && (
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-[#1C3939] ml-auto" />
-              )}
-            </button>
-          ))}
+          {projects.map((p) => {
+            const checked = draft.has(p.project_id)
+            const disabled = !checked && draft.size >= 5
+            return (
+              <button
+                key={p.project_id}
+                onClick={() => !disabled && toggle(p)}
+                disabled={disabled}
+                className={`w-full flex items-center gap-3 px-5 py-4 text-left transition-colors border-b border-gray-50 last:border-0 ${
+                  checked ? 'bg-[#1C3939]/5' : disabled ? 'opacity-40' : 'hover:bg-gray-50'
+                }`}
+              >
+                <div className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors ${
+                  checked ? 'border-[#1C3939] bg-[#1C3939]' : 'border-gray-300'
+                }`}>
+                  {checked && (
+                    <svg className="h-3 w-3 text-white" viewBox="0 0 12 12" fill="none">
+                      <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  )}
+                </div>
+                <BarChart2 className={`h-5 w-5 shrink-0 ${checked ? 'text-[#1C3939]' : 'text-gray-400'}`} />
+                <div className="min-w-0">
+                  <p className={`font-medium truncate ${checked ? 'text-[#1C3939]' : 'text-gray-700'}`}>{p.project_name}</p>
+                  {p.project_desc && (
+                    <p className="text-sm text-gray-400 truncate mt-0.5">{p.project_desc}</p>
+                  )}
+                </div>
+              </button>
+            )
+          })}
+        </div>
+        {/* 確認按鈕 */}
+        <div className="border-t border-gray-100 px-5 py-4">
+          <button
+            onClick={handleConfirm}
+            disabled={draft.size === 0}
+            className="w-full rounded-xl bg-[#1C3939] py-3 text-sm font-medium text-white disabled:opacity-40 active:scale-[0.98] transition-all"
+          >
+            {draft.size === 0 ? '請選擇主題'
+              : draft.size === 1 ? '確認選擇'
+              : `確認（${draft.size} 個主題跨主題分析）`}
+          </button>
         </div>
       </div>
     </div>
@@ -231,15 +296,18 @@ function ProjectPicker({
 
 // ── Example Questions bottom sheet ────────────────────────────────────────────
 
+type ExampleGroup = { project: string; questions: string[] }
+
 function ExampleSheet({
-  open, examples, onSelect, onClose,
+  open, groups, onSelect, onClose,
 }: {
   open: boolean
-  examples: string[]
+  groups: ExampleGroup[]
   onSelect: (q: string) => void
   onClose: () => void
 }) {
   if (!open) return null
+  const total = groups.reduce((n, g) => n + g.questions.length, 0)
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-end">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
@@ -251,18 +319,27 @@ function ExampleSheet({
           </button>
         </div>
         <div className="overflow-y-auto flex-1">
-          {examples.length === 0 ? (
+          {total === 0 ? (
             <p className="px-5 py-6 text-sm text-gray-400 text-center">此主題尚無範例問題</p>
           ) : (
-            examples.map((q, i) => (
-              <button
-                key={i}
-                onClick={() => { onSelect(q); onClose() }}
-                className="w-full flex items-start gap-3 px-5 py-4 text-left hover:bg-gray-50 transition-colors border-b border-gray-50 last:border-0"
-              >
-                <Lightbulb className="h-4 w-4 mt-0.5 shrink-0 text-amber-400" />
-                <span className="text-sm text-gray-700 leading-relaxed">{q}</span>
-              </button>
+            groups.map((g) => (
+              <div key={g.project}>
+                {groups.length > 1 && (
+                  <div className="px-5 py-2 bg-gray-50 border-b border-gray-100">
+                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{g.project}</span>
+                  </div>
+                )}
+                {g.questions.map((q, i) => (
+                  <button
+                    key={i}
+                    onClick={() => { onSelect(q); onClose() }}
+                    className="w-full flex items-start gap-3 px-5 py-4 text-left hover:bg-gray-50 transition-colors border-b border-gray-50 last:border-0"
+                  >
+                    <Lightbulb className="h-4 w-4 mt-0.5 shrink-0 text-amber-400" />
+                    <span className="text-sm text-gray-700 leading-relaxed">{q}</span>
+                  </button>
+                ))}
+              </div>
             ))
           )}
         </div>
@@ -357,18 +434,20 @@ export default function MobileBIPage() {
   // Projects
   const [projects, setProjects] = useState<BiProjectItem[]>([])
   const [projectsLoading, setProjectsLoading] = useState(true)
-  const [selectedProject, setSelectedProject] = useState<BiProjectItem | null>(null)
+  const [selectedProjects, setSelectedProjects] = useState<BiProjectItem[]>([])
   const [pickerOpen, setPickerOpen] = useState(false)
 
   // Chat
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [agentSteps, setAgentSteps] = useState<AgentStepEvent[]>([])
+  const [agentSteps, setAgentSteps] = useState<StepEvent[]>([])
   const [agentFinalizing, setAgentFinalizing] = useState(false)
 
-  // Example questions（從 project_config.sampleQuestions 衍生，per-project）
-  const examples = selectedProject?.project_config?.sampleQuestions ?? []
+  // Example questions：所有選中主題的範例問題，分組顯示
+  const exampleGroups: ExampleGroup[] = selectedProjects
+    .map((p) => ({ project: p.project_name, questions: p.project_config?.sampleQuestions ?? [] }))
+    .filter((g) => g.questions.length > 0)
   const [exampleOpen, setExampleOpen] = useState(false)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -385,7 +464,13 @@ export default function MobileBIPage() {
     listBiProjects(BI_AGENT_ID)
       .then((list) => {
         setProjects(list)
-        if (list.length > 0) setSelectedProject(list[0])
+        // 從 localStorage 還原上次選擇，驗證 project_id 還存在
+        try {
+          const saved = JSON.parse(localStorage.getItem(BI_SELECTED_KEY) ?? '[]') as string[]
+          const restored = list.filter((p) => saved.includes(p.project_id))
+          if (restored.length > 0) setSelectedProjects(restored)
+          // 若 localStorage 無記錄，預設不選任何主題
+        } catch { /* 解析失敗就不預設 */ }
       })
       .catch(() => {})
       .finally(() => setProjectsLoading(false))
@@ -399,16 +484,14 @@ export default function MobileBIPage() {
     e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`
   }
 
-  const canSend = !isLoading && !!selectedProject && input.trim().length > 0
+  const canSend = !isLoading && selectedProjects.length > 0 && input.trim().length > 0
 
   const handleSend = useCallback(async (overrideText?: string) => {
     const content = (overrideText ?? input).trim()
-    if (!content || !selectedProject || isLoading) return
+    if (!content || selectedProjects.length === 0 || isLoading) return
 
     setInput('')
-    if (inputRef.current) {
-      inputRef.current.style.height = 'auto'
-    }
+    if (inputRef.current) inputRef.current.style.height = 'auto'
 
     const userMsg: Message = { role: 'user', content }
     setMessages((prev) => [...prev, userMsg])
@@ -417,56 +500,91 @@ export default function MobileBIPage() {
     setAgentFinalizing(false)
 
     try {
-      const result = await chatAgentBiStream(
-        {
-          content,
-          project_id: selectedProject.project_id,
-          schema_id: selectedProject.schema_id ?? undefined,
-          agent_id: BI_AGENT_ID,
-          system_prompt: '',
-          user_prompt: '',
-          data: '',
-          model: '',
-          messages: [],
-        },
-        (step) => {
-          setAgentSteps((prev) => [...prev, step])
-          if (step.phase === 'done') setAgentFinalizing(true)
-        },
-      )
-      setTimeout(() => {
-        setAgentSteps([])
-        setAgentFinalizing(false)
-      }, 600)
+      if (selectedProjects.length >= 2) {
+        // ── 多主題模式 ──────────────────────────────────────────────────────
+        const resultContent = await agentBiMultiStream(
+          {
+            project_ids: selectedProjects.map((p) => p.project_id),
+            model: '',
+            question: content,
+            agent_id: BI_AGENT_ID,
+          },
+          (event) => {
+            if (event.type === 'agent_step') {
+              const step: StepEvent = {
+                step: event.step ?? 0,
+                query: event.query ?? '',
+                phase: event.phase ?? 'running',
+                success: event.success,
+                topic_name: event.topic_name,
+              }
+              setAgentSteps((prev) => [...prev, step])
+              if (event.phase === 'done') setAgentFinalizing(true)
+            }
+          },
+        )
+        setTimeout(() => { setAgentSteps([]); setAgentFinalizing(false) }, 600)
+        setMessages((prev) => [...prev, { role: 'assistant', content: resultContent }])
 
-      const assistantMsg: Message = {
-        role: 'assistant',
-        content: result.content,
-        charts: result.charts as AgentChartEntry[] | undefined,
+      } else {
+        // ── 單主題模式（原有邏輯）───────────────────────────────────────────
+        const proj = selectedProjects[0]
+        const result = await chatAgentBiStream(
+          {
+            content,
+            project_id: proj.project_id,
+            schema_id: proj.schema_id ?? undefined,
+            agent_id: BI_AGENT_ID,
+            system_prompt: '',
+            user_prompt: '',
+            data: '',
+            model: '',
+            messages: [],
+          },
+          (step: AgentStepEvent) => {
+            setAgentSteps((prev) => [...prev, {
+              step: step.step,
+              query: step.query,
+              phase: step.phase,
+              success: step.success,
+            }])
+            if (step.phase === 'done') setAgentFinalizing(true)
+          },
+        )
+        setTimeout(() => { setAgentSteps([]); setAgentFinalizing(false) }, 600)
+        setMessages((prev) => [...prev, {
+          role: 'assistant',
+          content: result.content,
+          charts: result.charts as AgentChartEntry[] | undefined,
+        }])
       }
-      setMessages((prev) => [...prev, assistantMsg])
     } catch (err) {
-      const errorMsg: Message = {
+      setMessages((prev) => [...prev, {
         role: 'assistant',
         content: err instanceof Error ? err.message : '分析失敗，請稍後再試',
         error: true,
-      }
-      setMessages((prev) => [...prev, errorMsg])
+      }])
       setAgentSteps([])
       setAgentFinalizing(false)
     } finally {
       setIsLoading(false)
     }
-  }, [input, selectedProject, isLoading])
+  }, [input, selectedProjects, isLoading])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       void handleSend()
     }
   }
 
-  const noData = selectedProject && !projectsLoading
+  const noData = selectedProjects.length > 0 && !projectsLoading
+
+  // 頂部顯示文字
+  const topBarLabel = projectsLoading ? '載入中…'
+    : selectedProjects.length === 0 ? '選擇主題'
+    : selectedProjects.length === 1 ? selectedProjects[0].project_name
+    : `多主題 (${selectedProjects.length})`
 
   return (
     <div className="fixed inset-0 flex flex-col bg-gray-50" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
@@ -478,11 +596,14 @@ export default function MobileBIPage() {
         <button
           onClick={() => setPickerOpen(true)}
           disabled={projectsLoading || projects.length === 0}
-          className="flex items-center gap-1.5 rounded-lg bg-white/10 hover:bg-white/20 px-3 py-1.5 text-white text-sm transition-colors disabled:opacity-40 max-w-[55%]"
+          className="flex items-center gap-1.5 rounded-lg bg-white/10 hover:bg-white/20 px-3 py-1.5 text-white text-sm transition-colors disabled:opacity-40 max-w-[60%]"
         >
-          <span className="truncate">
-            {projectsLoading ? '載入中…' : (selectedProject?.project_name ?? '選擇主題')}
-          </span>
+          {selectedProjects.length >= 2 && (
+            <span className="rounded-full bg-indigo-400/50 px-1.5 py-0.5 text-xs font-medium text-white mr-0.5">
+              多主題
+            </span>
+          )}
+          <span className="truncate">{topBarLabel}</span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0" />
         </button>
       </div>
@@ -497,16 +618,28 @@ export default function MobileBIPage() {
               <div className="w-16 h-16 rounded-2xl bg-[#1C3939]/10 flex items-center justify-center mb-4">
                 <BarChart2 className="h-8 w-8 text-[#1C3939]" />
               </div>
-              {!selectedProject ? (
+              {selectedProjects.length === 0 ? (
                 <>
                   <p className="text-gray-700 font-medium mb-1">請先選擇分析主題</p>
                   <p className="text-gray-400 text-sm">點擊右上角選擇要查詢的主題</p>
                 </>
+              ) : selectedProjects.length >= 2 ? (
+                <>
+                  <p className="text-gray-700 font-medium mb-1">跨主題分析模式</p>
+                  <div className="flex flex-wrap justify-center gap-1.5 mt-2 mb-3">
+                    {selectedProjects.map((p) => (
+                      <span key={p.project_id} className="rounded-full bg-[#1C3939]/10 px-2.5 py-1 text-xs font-medium text-[#1C3939]">
+                        {p.project_name}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="text-gray-400 text-sm">輸入跨主題問題，AI 自動分解查詢</p>
+                </>
               ) : (
                 <>
-                  <p className="text-gray-700 font-medium mb-1">{selectedProject.project_name}</p>
+                  <p className="text-gray-700 font-medium mb-1">{selectedProjects[0].project_name}</p>
                   <p className="text-gray-400 text-sm mb-4">輸入問題開始分析，或點擊下方燈泡查看範例</p>
-                  {examples.slice(0, 3).map((q, i) => (
+                  {exampleGroups[0]?.questions.slice(0, 3).map((q, i) => (
                     <button
                       key={i}
                       onClick={() => setInput(q)}
@@ -560,8 +693,12 @@ export default function MobileBIPage() {
               value={input}
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
-              placeholder={selectedProject ? `詢問「${selectedProject.project_name}」的問題…` : '請先選擇分析主題'}
-              disabled={isLoading || !selectedProject}
+              placeholder={
+                selectedProjects.length === 0 ? '請先選擇分析主題'
+                : selectedProjects.length >= 2 ? `詢問跨主題問題…`
+                : `詢問「${selectedProjects[0].project_name}」的問題…`
+              }
+              disabled={isLoading || selectedProjects.length === 0}
               rows={1}
               className="flex-1 resize-none rounded-xl border border-gray-300 bg-gray-50 px-3 py-2.5 text-sm leading-relaxed focus:border-[#1C3939] focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#1C3939]/30 disabled:opacity-50 transition-colors overflow-hidden"
               style={{ minHeight: '40px', maxHeight: '120px' }}
@@ -612,16 +749,19 @@ export default function MobileBIPage() {
       <ProjectPicker
         open={pickerOpen}
         projects={projects}
-        selected={selectedProject}
-        onSelect={(p) => {
-          setSelectedProject(p)
+        selected={selectedProjects}
+        onConfirm={(ps) => {
+          setSelectedProjects(ps)
           setMessages([])
+          try {
+            localStorage.setItem(BI_SELECTED_KEY, JSON.stringify(ps.map((p) => p.project_id)))
+          } catch { /* ignore */ }
         }}
         onClose={() => setPickerOpen(false)}
       />
       <ExampleSheet
         open={exampleOpen}
-        examples={examples}
+        groups={exampleGroups}
         onSelect={(q) => setInput(q)}
         onClose={() => setExampleOpen(false)}
       />

@@ -355,6 +355,75 @@ def _detect_and_patch_enum_values(
         logger.exception("更新 bi_schemas[%s] enum_values 失敗", schema_id)
 
 
+def _patch_dim_time_samples(
+    all_rows: list[dict[str, Any]],
+    schema_def: dict[str, Any],
+    schema_id: str,
+    db: Session,
+) -> None:
+    """CSV 匯入後，將 dim_time 欄位的 schema sample 同步成實際儲存格式。
+
+    csv_transform._parse_timestamp 會把各種日期格式正規化為 YYYY-MM-DD（或 YYYY-MM-DD HH:MM:SS）。
+    若 schema 的 sample 仍是原始 CSV 格式（如 2026-03），LLM 會生成錯誤的 filter。
+    此函數從轉換後的 all_rows 取第一個非空值，更新 schema sample，確保 LLM 看到正確格式。
+    """
+    if not all_rows or not schema_def:
+        return
+
+    columns: dict[str, Any] = schema_def.get("columns") or {}
+    dim_time_fields = [
+        field for field, meta in columns.items()
+        if isinstance(meta, dict) and (meta.get("attr") or "").strip().lower() == "dim_time"
+    ]
+    if not dim_time_fields:
+        return
+
+    bi_schema_row = db.query(BiSchema).filter(BiSchema.id == schema_id).first()
+    if not bi_schema_row or not bi_schema_row.schema_json:
+        return
+
+    schema_json: dict[str, Any] = copy.deepcopy(dict(bi_schema_row.schema_json))
+    cols_json: dict[str, Any] = schema_json.get("columns") or {}
+    changed = False
+
+    for field in dim_time_fields:
+        if field not in cols_json or not isinstance(cols_json[field], dict):
+            continue
+
+        # 從 all_rows 取第一個非空的轉換後值
+        actual_sample: str | None = None
+        for row in all_rows:
+            v = row.get(field)
+            if v is not None and str(v).strip():
+                actual_sample = str(v).strip()
+                break
+
+        if not actual_sample:
+            continue
+
+        current_sample = cols_json[field].get("sample", "")
+        if actual_sample != current_sample:
+            cols_json[field]["sample"] = actual_sample
+            changed = True
+            logger.info(
+                "bi_schemas[%s] %s sample 更新: %r → %r",
+                schema_id, field, current_sample, actual_sample,
+            )
+
+    if not changed:
+        return
+
+    schema_json["columns"] = cols_json
+    bi_schema_row.schema_json = schema_json
+    db.add(bi_schema_row)
+    try:
+        db.commit()
+        logger.info("bi_schemas[%s] dim_time sample 已更新", schema_id)
+    except Exception:
+        db.rollback()
+        logger.exception("更新 bi_schemas[%s] dim_time sample 失敗", schema_id)
+
+
 @router.post("/{project_id}/import-csv", status_code=status.HTTP_200_OK)
 def import_csv_to_duckdb(
     project_id: str,
@@ -455,6 +524,10 @@ def import_csv_to_duckdb(
                 _detect_and_patch_enum_values(all_rows, sdef, sid, db)
             except Exception:
                 logger.exception("_detect_and_patch_enum_values 失敗（schema_id=%s），略過", sid)
+            try:
+                _patch_dim_time_samples(all_rows, sdef, sid, db)
+            except Exception:
+                logger.exception("_patch_dim_time_samples 失敗（schema_id=%s），略過", sid)
     return out
 
 
