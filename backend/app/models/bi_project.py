@@ -19,5 +19,6 @@ class BiProject(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     conversation_data = Column(JSONB, nullable=True)
     schema_id = Column(String(100), nullable=True)
+    project_config = Column(JSONB, nullable=True)
 
     sources = relationship("BiSource", back_populates="project", cascade="all, delete-orphan")

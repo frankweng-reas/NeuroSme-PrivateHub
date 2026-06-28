@@ -23,16 +23,16 @@ import {
   getTenantConfig,
   listLLMConfigs,
   migrateEmbedding,
-  testEmbedding,
+  testEmbeddingCandidate,
   testLLMConfig,
   updateAnalysisModel,
   updateDefaultLLM,
   updateLLMConfig,
   updateSpeechConfig,
-  testSpeechConfig,
+  testSpeechCandidate,
 } from '@/api/llmConfigs'
 import type {
-  EmbeddingTestResult,
+  EmbeddingTestCandidateResult,
   LLMProviderConfigCreate,
   LLMProviderConfigUpdate,
   LLMTestResult,
@@ -78,16 +78,19 @@ const PROVIDER_CARD_COLORS: Record<string, string> = {
   anthropic: 'border-amber-100 bg-amber-50/50',
 }
 
-// 系統固定 1024 維，僅此兩種 model 相容
-const EMBEDDING_MODELS: Record<string, { model: string; note: string }[]> = {
-  openai: [{ model: 'text-embedding-3-small', note: '1024 維（截斷）' }],
-  local:  [{ model: 'bge-m3-4096',             note: '1024 維（原生，GPU 相容版）' }],
+// 系統固定 1024 維，以下為各 provider 的預設建議模型（可自訂輸入）
+const EMBEDDING_MODEL_DEFAULTS: Record<string, string> = {
+  openai: 'text-embedding-3-small',
+  gemini: 'text-embedding-004',
+  vertex: 'text-embedding-004',
+  local:  'bge-m3-4096',
 }
 
-// 語音支援兩種服務
-const SPEECH_MODELS: Record<string, { model: string; label: string; note: string }> = {
-  local:  { model: 'Systran/faster-whisper-medium', label: '本機模型 (Local)',  note: '地端 faster-whisper-server，預設端口 8002' },
-  openai: { model: 'whisper-1',                     label: 'OpenAI Whisper',    note: '雲端 API，沿用 Provider 連線設定中的 OpenAI Key' },
+// 語音服務預設 model
+const SPEECH_MODEL_DEFAULTS: Record<string, string> = {
+  local:  'Systran/faster-whisper-medium',
+  openai: 'whisper-1',
+  custom: '',
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -161,20 +164,24 @@ export default function AdminLLMSettings() {
 
   // embedding config
   const [showEmbeddingForm, setShowEmbeddingForm] = useState(false)
-  const [embeddingForm, setEmbeddingForm] = useState({ provider: 'openai', model: '', confirm: false })
+  // embeddingMode: 'local' = 本機模型；'custom' = 自訂（openai / gemini / ...）
+  const [embeddingMode, setEmbeddingMode] = useState<'local' | 'custom'>('local')
+  const [embeddingForm, setEmbeddingForm] = useState({ provider: 'local', model: '', confirm: false })
   const [savingEmbedding, setSavingEmbedding] = useState(false)
 
-  // embedding test
-  const [testingEmbedding, setTestingEmbedding] = useState(false)
-  const [embeddingTestResult, setEmbeddingTestResult] = useState<EmbeddingTestResult | null>(null)
+  // embedding candidate test (in modal - before saving)
+  const [testingEmbeddingCandidate, setTestingEmbeddingCandidate] = useState(false)
+  const [embeddingCandidateResult, setEmbeddingCandidateResult] = useState<EmbeddingTestCandidateResult | null>(null)
 
   // speech config
   const [showSpeechForm, setShowSpeechForm] = useState(false)
+  const [speechMode, setSpeechMode] = useState<'local' | 'custom'>('local')
   const [speechForm, setSpeechForm] = useState({ provider: 'local', base_url: '', api_key: '', model: '' })
   const [savingSpeech, setSavingSpeech] = useState(false)
   const [_showSpeechApiKey, setShowSpeechApiKey] = useState(false)
-  const [testingSpeech, setTestingSpeech] = useState(false)
-  const [speechTestResult, setSpeechTestResult] = useState<SpeechTestResult | null>(null)
+  // candidate test in modal (only for local)
+  const [testingSpeechCandidate, setTestingSpeechCandidate] = useState(false)
+  const [speechCandidateResult, setSpeechCandidateResult] = useState<SpeechTestResult | null>(null)
   const [showDisableSpeechConfirm, setShowDisableSpeechConfirm] = useState(false)
   const [disablingSpeech, setDisablingSpeech] = useState(false)
 
@@ -386,24 +393,111 @@ export default function AdminLLMSettings() {
 
   // ── Embedding config ─────────────────────────────────────────────────────
 
+  /** 將 embeddingForm.provider 轉成 embed_texts_sync 用的基礎 provider 字串 */
+  function baseProvider(provider: string): string {
+    return provider.startsWith('custom:') ? 'custom' : provider
+  }
+
+  /** 從 provider 字串（含 custom:{id} 格式）解析顯示用 label */
+  function resolveEmbeddingLabel(provider: string): string {
+    if (provider.startsWith('custom:')) {
+      const id = parseInt(provider.split(':')[1])
+      const cfg = configs.find((c) => c.id === id)
+      return cfg?.label || `自訂 #${id}`
+    }
+    return PROVIDER_LABELS[provider] ?? provider
+  }
+
+  /** 從 provider 字串解析顯示用 color class */
+  function resolveEmbeddingColor(provider: string): string {
+    return PROVIDER_COLORS[baseProvider(provider)] ?? 'bg-gray-100 text-gray-700'
+  }
+
+  // ── Speech config helpers ─────────────────────────────────────────────────
+
+  /** 從 provider 字串（含 custom:{id} 格式）解析 STT 顯示用 label */
+  function resolveSpeechLabel(provider: string): string {
+    if (!provider) return '未設定'
+    if (provider === 'local') return '本機模型 (Local)'
+    if (provider.startsWith('custom:')) {
+      const id = parseInt(provider.split(':')[1])
+      const cfg = configs.find((c) => c.id === id)
+      return cfg?.label ? `自訂・${cfg.label}` : `自訂 #${id}`
+    }
+    return PROVIDER_LABELS[provider] ?? provider
+  }
+
+  /** 從 provider 字串解析 STT 顯示用 color class */
+  function resolveSpeechColor(provider: string): string {
+    if (!provider) return 'bg-gray-100 text-gray-700'
+    return PROVIDER_COLORS[baseProvider(provider)] ?? 'bg-gray-100 text-gray-700'
+  }
+
   function openEmbeddingForm() {
-    // 只列出已在 Provider 連線設定中啟用且有 embedding 支援的 provider
-    const activeSupportedProviders = [...new Set(
-      configs.filter((c) => c.is_active && EMBEDDING_MODELS[c.provider]).map((c) => c.provider)
-    )]
-    const defaultProvider =
-      (tenantConfig?.embedding_provider && EMBEDDING_MODELS[tenantConfig.embedding_provider])
-        ? tenantConfig.embedding_provider
-        : activeSupportedProviders[0] ?? 'openai'
-    const defaultModel =
-      tenantConfig?.embedding_model ?? EMBEDDING_MODELS[defaultProvider]?.[0]?.model ?? ''
-    setEmbeddingForm({ provider: defaultProvider, model: defaultModel, confirm: false })
+    const currentProvider = tenantConfig?.embedding_provider ?? 'local'
+    const currentModel = tenantConfig?.embedding_model ?? ''
+    const isLocal = currentProvider === 'local'
+    const mode: 'local' | 'custom' = isLocal ? 'local' : 'custom'
+
+    const nonLocalConfigs = configs.filter((c) => c.is_active && c.provider !== 'local')
+
+    // 解析目前設定的 provider key（可能是 "custom:8" 或 "openai" 等）
+    let resolvedProvider: string
+    if (isLocal) {
+      resolvedProvider = 'local'
+    } else if (nonLocalConfigs.some((c) => {
+      const key = c.provider === 'custom' ? `custom:${c.id}` : c.provider
+      return key === currentProvider
+    })) {
+      resolvedProvider = currentProvider
+    } else {
+      // fallback 到第一個非 local active config
+      const first = nonLocalConfigs[0]
+      resolvedProvider = first ? (first.provider === 'custom' ? `custom:${first.id}` : first.provider) : 'openai'
+    }
+
+    const resolvedModel = currentModel || EMBEDDING_MODEL_DEFAULTS[baseProvider(resolvedProvider)] || ''
+
+    setEmbeddingMode(mode)
+    setEmbeddingForm({ provider: resolvedProvider, model: resolvedModel, confirm: false })
+    setEmbeddingCandidateResult(null)
     setShowEmbeddingForm(true)
+  }
+
+  async function handleTestEmbeddingCandidate() {
+    if (!embeddingForm.provider || !embeddingForm.model.trim()) {
+      showToast('請先選擇 Provider 並輸入 Model', 'error')
+      return
+    }
+    setTestingEmbeddingCandidate(true)
+    setEmbeddingCandidateResult(null)
+    try {
+      const result = await testEmbeddingCandidate({
+        provider: embeddingForm.provider,
+        model: embeddingForm.model.trim(),
+      })
+      setEmbeddingCandidateResult(result)
+      if (result.ok && !result.dim_warning) {
+        showToast('測試成功：連線正常，維度正確', 'success')
+      } else if (result.ok && result.dim_warning) {
+        showToast(`測試連線成功，但${result.dim_warning}`, 'error')
+      }
+    } catch (err) {
+      const msg = err instanceof ApiError ? (err.detail ?? err.message) : '測試失敗'
+      showToast(msg, 'error')
+      setEmbeddingCandidateResult({ ok: false, elapsed_ms: 0, model: embeddingForm.model, error: msg })
+    } finally {
+      setTestingEmbeddingCandidate(false)
+    }
   }
 
   async function handleSaveEmbedding() {
     if (!embeddingForm.provider || !embeddingForm.model.trim()) {
       showToast('請選擇 Provider 與 Model', 'error'); return
+    }
+    // 建議先測試再儲存
+    if (!embeddingCandidateResult?.ok) {
+      showToast('請先點擊「測試連線」確認設定正確', 'error'); return
     }
     const isLocked = !!tenantConfig?.embedding_locked_at
     if (isLocked && !embeddingForm.confirm) {
@@ -419,6 +513,7 @@ export default function AdminLLMSettings() {
       setTenantConfig(tc)
       setShowEmbeddingForm(false)
       setEmbeddingForm({ provider: 'openai', model: '', confirm: false })
+      setEmbeddingCandidateResult(null)
       showToast(
         isLocked ? 'Embedding 已更新，請重新上傳文件以重建索引' : 'Embedding Model 已設定',
         'success',
@@ -431,45 +526,62 @@ export default function AdminLLMSettings() {
     }
   }
 
-  async function handleTestEmbedding() {
-    setTestingEmbedding(true)
-    setEmbeddingTestResult(null)
-    try {
-      const result = await testEmbedding()
-      setEmbeddingTestResult(result)
-    } catch (err) {
-      const msg = err instanceof ApiError ? (err.detail ?? err.message) : '測試失敗'
-      setEmbeddingTestResult({ ok: false, elapsed_ms: 0, model: '', error: msg })
-    } finally {
-      setTestingEmbedding(false)
-    }
-  }
-
   function openSpeechForm() {
-    const provider = tenantConfig?.speech_provider ?? 'local'
-    const model = tenantConfig?.speech_model || SPEECH_MODELS[provider]?.model || ''
+    const currentProvider = tenantConfig?.speech_provider ?? 'local'
+    const isLocal = currentProvider === 'local'
+    const mode: 'local' | 'custom' = isLocal ? 'local' : 'custom'
+
+    const nonLocalSpeechConfigs = configs.filter((c) => c.is_active && c.provider !== 'local')
+
+    // 解析目前設定的 provider key（可能是 "custom:8" 或 "openai" 等）
+    let resolvedProvider = currentProvider
+    if (!isLocal) {
+      const matchFound = nonLocalSpeechConfigs.some((c) => {
+        const key = c.provider === 'custom' ? `custom:${c.id}` : c.provider
+        return key === currentProvider
+      })
+      if (!matchFound) {
+        // fallback 到第一個非 local active config
+        const first = nonLocalSpeechConfigs[0]
+        resolvedProvider = first
+          ? (first.provider === 'custom' ? `custom:${first.id}` : first.provider)
+          : 'openai'
+      }
+    }
+
+    const resolvedModel = tenantConfig?.speech_model
+      || SPEECH_MODEL_DEFAULTS[baseProvider(resolvedProvider)]
+      || ''
+
+    setSpeechMode(mode)
     setSpeechForm({
-      provider,
+      provider: resolvedProvider,
       base_url: tenantConfig?.speech_base_url ?? '',
       api_key: '',
-      model,
+      model: resolvedModel,
     })
     setShowSpeechApiKey(false)
-    setSpeechTestResult(null)
+    // 若目前已設定為 local 並已存有 base_url，視為已驗證（儲存過的設定）
+    // 使用者若修改 base_url，onChange 會重置此結果，需重新測試
+    const preVerified = isLocal && !!tenantConfig?.speech_base_url
+    setSpeechCandidateResult(preVerified ? { ok: true, elapsed_ms: 0 } : null)
     setShowSpeechForm(true)
   }
 
   async function handleSaveSpeech() {
     if (!speechForm.provider) { showToast('請選擇 Provider', 'error'); return }
-    if (speechForm.provider === 'local' && !speechForm.base_url.trim()) {
-      showToast('本機模型需填寫 Base URL', 'error'); return
+    if (speechMode === 'local') {
+      if (!speechForm.base_url.trim()) { showToast('本機模型需填寫 Base URL', 'error'); return }
+      if (!speechCandidateResult?.ok) { showToast('請先點擊「測試連線」確認設定正確', 'error'); return }
+    } else {
+      if (!speechForm.model.trim()) { showToast('請填寫模型名稱', 'error'); return }
     }
     setSavingSpeech(true)
     try {
       const tc = await updateSpeechConfig({
         provider: speechForm.provider,
-        base_url: speechForm.base_url.trim() || null,
-        api_key: speechForm.api_key || undefined,   // undefined = 不變更
+        base_url: speechMode === 'local' ? (speechForm.base_url.trim() || null) : null,
+        api_key: speechForm.api_key || undefined,
         model: speechForm.model.trim() || null,
       })
       setTenantConfig(tc)
@@ -482,17 +594,25 @@ export default function AdminLLMSettings() {
     }
   }
 
-  async function handleTestSpeech() {
-    setTestingSpeech(true)
-    setSpeechTestResult(null)
+  async function handleTestSpeechCandidate() {
+    if (speechMode === 'local' && !speechForm.base_url.trim()) {
+      showToast('請先填寫 Base URL', 'error')
+      return
+    }
+    setTestingSpeechCandidate(true)
+    setSpeechCandidateResult(null)
     try {
-      const result = await testSpeechConfig()
-      setSpeechTestResult(result)
+      const result = await testSpeechCandidate({
+        provider: speechForm.provider,
+        base_url: speechMode === 'local' ? speechForm.base_url.trim() : undefined,
+      })
+      setSpeechCandidateResult(result)
+      if (result.ok) showToast('測試成功：語音服務連線正常', 'success')
     } catch (err) {
       const msg = err instanceof ApiError ? (err.detail ?? err.message) : '測試失敗'
-      setSpeechTestResult({ ok: false, error: msg })
+      setSpeechCandidateResult({ ok: false, error: msg })
     } finally {
-      setTestingSpeech(false)
+      setTestingSpeechCandidate(false)
     }
   }
 
@@ -585,14 +705,6 @@ export default function AdminLLMSettings() {
                   <span className="text-base font-medium text-gray-500 uppercase tracking-wide">Embedding Model</span>
                   <div className="flex items-center gap-1">
                     <button
-                      onClick={() => void handleTestEmbedding()}
-                      disabled={testingEmbedding || !tenantConfig?.embedding_model}
-                      className="flex items-center gap-1 rounded px-2 py-1 text-base text-gray-500 hover:text-blue-600 hover:bg-blue-50 disabled:opacity-50 transition-colors"
-                    >
-                      <Zap className={`h-3.5 w-3.5 ${testingEmbedding ? 'animate-pulse' : ''}`} />
-                      {testingEmbedding ? '測試中...' : '測試'}
-                    </button>
-                    <button
                       onClick={openEmbeddingForm}
                       className="flex items-center gap-1 rounded px-2 py-1 text-base text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors"
                     >
@@ -603,8 +715,8 @@ export default function AdminLLMSettings() {
                 {tenantConfig?.embedding_model ? (
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
-                      <span className={`rounded-full px-2.5 py-0.5 text-base font-semibold ${PROVIDER_COLORS[tenantConfig.embedding_provider ?? ''] ?? 'bg-gray-100 text-gray-700'}`}>
-                        {PROVIDER_LABELS[tenantConfig.embedding_provider ?? ''] ?? tenantConfig.embedding_provider}
+                      <span className={`rounded-full px-2.5 py-0.5 text-base font-semibold ${resolveEmbeddingColor(tenantConfig.embedding_provider ?? '')}`}>
+                        {resolveEmbeddingLabel(tenantConfig.embedding_provider ?? '')}
                       </span>
                       <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-base text-gray-500">
                         v{tenantConfig.embedding_version ?? 1}
@@ -630,14 +742,6 @@ export default function AdminLLMSettings() {
                 <div className="flex items-center justify-between">
                   <span className="text-base font-medium text-gray-500 uppercase tracking-wide">語音模型 (STT)</span>
                   <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => void handleTestSpeech()}
-                      disabled={testingSpeech || !tenantConfig?.speech_base_url}
-                      className="flex items-center gap-1 rounded px-2 py-1 text-base text-gray-500 hover:text-blue-600 hover:bg-blue-50 disabled:opacity-50 transition-colors"
-                    >
-                      <Zap className={`h-3.5 w-3.5 ${testingSpeech ? 'animate-pulse' : ''}`} />
-                      {testingSpeech ? '測試中...' : '測試'}
-                    </button>
                     {tenantConfig?.speech_provider && (
                       <button
                         onClick={() => setShowDisableSpeechConfirm(true)}
@@ -657,8 +761,8 @@ export default function AdminLLMSettings() {
                 {tenantConfig?.speech_provider ? (
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
-                      <span className={`rounded-full px-2.5 py-0.5 text-base font-semibold ${tenantConfig.speech_provider === 'openai' ? 'bg-green-100 text-green-800' : 'bg-purple-100 text-purple-800'}`}>
-                        {tenantConfig.speech_provider === 'openai' ? 'OpenAI Whisper' : '本機模型 (Local)'}
+                      <span className={`rounded-full px-2.5 py-0.5 text-base font-semibold ${resolveSpeechColor(tenantConfig.speech_provider)}`}>
+                        {resolveSpeechLabel(tenantConfig.speech_provider)}
                       </span>
                     </div>
                     {tenantConfig.speech_model && (
@@ -1215,13 +1319,13 @@ export default function AdminLLMSettings() {
       {showEmbeddingForm && (() => {
         const isLocked = !!tenantConfig?.embedding_locked_at
         const isAlreadySet = !!tenantConfig?.embedding_model
-        const activeSupportedProviders = [...new Set(
-          configs.filter((c) => c.is_active && EMBEDDING_MODELS[c.provider]).map((c) => c.provider)
-        )]
-        const modelsForProvider = EMBEDDING_MODELS[embeddingForm.provider] ?? []
+        // 非 local 的 active configs（每個 config 獨立列出，支援多個自訂 provider）
+        const nonLocalConfigs = configs.filter((c) => c.is_active && c.provider !== 'local')
+        const hasLocal = configs.some((c) => c.is_active && c.provider === 'local')
+        const defaultModelForProvider = EMBEDDING_MODEL_DEFAULTS[baseProvider(embeddingForm.provider)] ?? ''
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-            <div className="w-full max-w-md rounded-xl bg-white shadow-2xl">
+            <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl">
               <ModalHeader title="設定 Embedding Model" onClose={() => setShowEmbeddingForm(false)} />
               <div className="px-6 py-5 space-y-4">
 
@@ -1242,79 +1346,176 @@ export default function AdminLLMSettings() {
                   </div>
                 )}
 
-                {/* Provider 選擇：只列已在 Provider 連線設定中啟用的 */}
-                <Field label="Provider" required>
-                  {activeSupportedProviders.length === 0 ? (
-                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-base text-gray-500">
-                      請先至「Provider 連線設定」新增並啟用 <strong>OpenAI</strong> 或<strong>本機模型 (Local)</strong>
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {activeSupportedProviders.map((p) => (
-                        <label
-                          key={p}
-                          className={`flex items-center gap-3 rounded-lg border px-4 py-3 cursor-pointer transition-colors ${
-                            embeddingForm.provider === p
-                              ? 'border-gray-400 bg-gray-50'
-                              : 'border-gray-200 hover:border-gray-300'
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="embedding_provider"
-                            value={p}
-                            checked={embeddingForm.provider === p}
-                            onChange={() => {
-                              const firstModel = EMBEDDING_MODELS[p]?.[0]?.model ?? ''
-                              setEmbeddingForm((f) => ({ ...f, provider: p, model: firstModel }))
-                            }}
-                            className="h-4 w-4 text-gray-600"
-                          />
-                          <div className="flex-1">
-                            <span className={`rounded-full px-2.5 py-0.5 text-base font-semibold ${PROVIDER_COLORS[p] ?? 'bg-gray-100 text-gray-700'}`}>
-                              {PROVIDER_LABELS[p] ?? p}
-                            </span>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                  )}
+                {/* 模式選擇：本機 / 自訂 */}
+                <Field label="類型" required>
+                  <div className="grid grid-cols-2 gap-2">
+                    {/* 本機模型 */}
+                    <label className={`flex items-center gap-3 rounded-lg border px-4 py-3 cursor-pointer transition-colors ${
+                      !hasLocal ? 'opacity-40 cursor-not-allowed' :
+                      embeddingMode === 'local' ? 'border-gray-400 bg-gray-50' : 'border-gray-200 hover:border-gray-300'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="embedding_mode"
+                        checked={embeddingMode === 'local'}
+                        disabled={!hasLocal}
+                        onChange={() => {
+                          setEmbeddingMode('local')
+                          setEmbeddingForm((f) => ({
+                            ...f,
+                            provider: 'local',
+                            model: EMBEDDING_MODEL_DEFAULTS['local'] ?? 'bge-m3-4096',
+                          }))
+                          setEmbeddingCandidateResult(null)
+                        }}
+                        className="h-4 w-4 text-gray-600"
+                      />
+                      <div>
+                        <p className="text-base font-medium text-gray-800">本機模型</p>
+                        <p className="text-sm text-gray-400">地端 Ollama</p>
+                      </div>
+                    </label>
+
+                    {/* 自訂 */}
+                    <label className={`flex items-center gap-3 rounded-lg border px-4 py-3 cursor-pointer transition-colors ${
+                      embeddingMode === 'custom' ? 'border-gray-400 bg-gray-50' : 'border-gray-200 hover:border-gray-300'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="embedding_mode"
+                        checked={embeddingMode === 'custom'}
+                        onChange={() => {
+                          const firstCfg = nonLocalConfigs[0]
+                          const firstKey = firstCfg
+                            ? (firstCfg.provider === 'custom' ? `custom:${firstCfg.id}` : firstCfg.provider)
+                            : 'openai'
+                          setEmbeddingMode('custom')
+                          setEmbeddingForm((f) => ({
+                            ...f,
+                            provider: firstKey,
+                            model: EMBEDDING_MODEL_DEFAULTS[baseProvider(firstKey)] ?? '',
+                          }))
+                          setEmbeddingCandidateResult(null)
+                        }}
+                        className="h-4 w-4 text-gray-600"
+                      />
+                      <div>
+                        <p className="text-base font-medium text-gray-800">自訂</p>
+                        <p className="text-sm text-gray-400">OpenAI、Gemini 等</p>
+                      </div>
+                    </label>
+                  </div>
                 </Field>
 
-                {/* Model 選擇：固定清單 */}
-                {modelsForProvider.length > 0 && (
-                  <Field label="Model" required>
-                    <div className="space-y-2">
-                      {modelsForProvider.map((entry) => (
-                        <label
-                          key={entry.model}
-                          className={`flex items-center gap-3 rounded-lg border px-4 py-3 cursor-pointer transition-colors ${
-                            embeddingForm.model === entry.model
-                              ? 'border-gray-400 bg-gray-50'
-                              : 'border-gray-200 hover:border-gray-300'
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="embedding_model"
-                            value={entry.model}
-                            checked={embeddingForm.model === entry.model}
-                            onChange={() => setEmbeddingForm((f) => ({ ...f, model: entry.model }))}
-                            className="h-4 w-4 text-gray-600"
-                          />
-                          <div className="flex-1 min-w-0">
-                            <p className="font-mono text-base text-gray-800">{entry.model}</p>
-                            <p className="text-base text-gray-400">{entry.note}</p>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
+                {/* 自訂模式：選擇 Provider（每個 config 獨立列出，支援多個自訂） */}
+                {embeddingMode === 'custom' && (
+                  <Field label="Provider" required>
+                    {nonLocalConfigs.length === 0 ? (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-base text-gray-500">
+                        請先至「Provider 連線設定」新增並啟用至少一個非本機 Provider
+                      </div>
+                    ) : (
+                      <select
+                        value={embeddingForm.provider}
+                        onChange={(e) => {
+                          const key = e.target.value
+                          setEmbeddingForm((f) => ({
+                            ...f,
+                            provider: key,
+                            model: EMBEDDING_MODEL_DEFAULTS[baseProvider(key)] ?? '',
+                          }))
+                          setEmbeddingCandidateResult(null)
+                        }}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-gray-400 focus:outline-none"
+                      >
+                        {nonLocalConfigs.map((cfg) => {
+                          const key = cfg.provider === 'custom' ? `custom:${cfg.id}` : cfg.provider
+                          const label = cfg.provider === 'custom'
+                            ? (cfg.label ? `自訂・${cfg.label}` : `自訂 #${cfg.id}`)
+                            : (PROVIDER_LABELS[cfg.provider] ?? cfg.provider)
+                          return <option key={key} value={key}>{label}</option>
+                        })}
+                      </select>
+                    )}
                   </Field>
                 )}
 
-                {/* 1024 維說明 */}
-                <div className="rounded-lg bg-gray-50 border border-gray-200 p-3 text-base text-gray-500">
-                  ℹ️ 系統使用 1024 維向量，僅支援以上模型
+                {/* Model 輸入 */}
+                <Field label="Model" required>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={embeddingForm.model}
+                      onChange={(e) => {
+                        setEmbeddingForm((f) => ({ ...f, model: e.target.value }))
+                        setEmbeddingCandidateResult(null)
+                      }}
+                      placeholder={`例：${defaultModelForProvider || 'text-embedding-3-small'}`}
+                      className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-base font-mono focus:border-gray-400 focus:outline-none"
+                    />
+                    <button
+                      onClick={handleTestEmbeddingCandidate}
+                      disabled={testingEmbeddingCandidate || !embeddingForm.model.trim()}
+                      className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <Zap className={`h-4 w-4 ${testingEmbeddingCandidate ? 'animate-pulse text-amber-500' : ''}`} />
+                      {testingEmbeddingCandidate ? '測試中...' : '測試連線'}
+                    </button>
+                  </div>
+                  {defaultModelForProvider && (
+                    <p className="mt-1.5 text-sm text-gray-500">
+                      建議：<code className="text-gray-700">{defaultModelForProvider}</code>
+                    </p>
+                  )}
+                </Field>
+
+                {/* 測試結果顯示 */}
+                {embeddingCandidateResult && (
+                  <div className={`rounded-lg border p-3 text-base ${
+                    embeddingCandidateResult.ok && !embeddingCandidateResult.dim_warning
+                      ? 'border-green-200 bg-green-50'
+                      : embeddingCandidateResult.ok
+                        ? 'border-amber-200 bg-amber-50'
+                        : 'border-red-200 bg-red-50'
+                  }`}>
+                    <div className="flex items-center gap-2 mb-1">
+                      {embeddingCandidateResult.ok && !embeddingCandidateResult.dim_warning ? (
+                        <span className="text-green-700 font-semibold">✓ 測試成功</span>
+                      ) : embeddingCandidateResult.ok ? (
+                        <span className="text-amber-700 font-semibold">⚠ 連線成功但維度不符</span>
+                      ) : (
+                        <span className="text-red-700 font-semibold">✗ 測試失敗</span>
+                      )}
+                      <span className="text-gray-500 text-sm">({embeddingCandidateResult.elapsed_ms}ms)</span>
+                    </div>
+                    {embeddingCandidateResult.ok && embeddingCandidateResult.dimensions && (
+                      <p className="text-sm text-gray-700">
+                        維度：<code className="font-mono">{embeddingCandidateResult.dimensions}</code>
+                        {embeddingCandidateResult.dimensions === 1024 ? (
+                          <span className="text-green-600 ml-1">✓ 符合系統要求</span>
+                        ) : (
+                          <span className="text-red-600 ml-1">✗ 需為 1024 維</span>
+                        )}
+                      </p>
+                    )}
+                    {embeddingCandidateResult.dim_warning && (
+                      <p className="text-sm text-amber-700 mt-1">{embeddingCandidateResult.dim_warning}</p>
+                    )}
+                    {embeddingCandidateResult.error && (
+                      <p className="text-sm text-red-700 mt-1 break-all">{embeddingCandidateResult.error}</p>
+                    )}
+                  </div>
+                )}
+
+                {/* 1024 維警告與說明 */}
+                <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-base text-amber-800">
+                  <p className="font-semibold flex items-center gap-1.5 mb-1">
+                    <AlertTriangle className="h-4 w-4" /> 重要限制
+                  </p>
+                  <p>系統使用 <strong>1024 維</strong>向量，請確保選用的 embedding model 支援輸出 1024 維，否則會報錯。</p>
+                  <p className="mt-1.5 text-sm text-amber-700">
+                    例如：OpenAI text-embedding-3-small、Gemini text-embedding-004（可指定 dimensions）、本地 bge-m3-4096
+                  </p>
                 </div>
 
                 {/* 情境 C：勾選確認才能儲存 */}
@@ -1336,6 +1537,7 @@ export default function AdminLLMSettings() {
                 saving={savingEmbedding}
                 confirmLabel="儲存"
                 confirmDanger={isLocked}
+                confirmDisabled={!embeddingCandidateResult?.ok || !!embeddingCandidateResult?.dim_warning}
               />
             </div>
           </div>
@@ -1348,69 +1550,212 @@ export default function AdminLLMSettings() {
           <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl">
             <ModalHeader title="語音模型設定 (STT)" onClose={() => setShowSpeechForm(false)} />
             <div className="px-6 py-5 space-y-4">
+              {(() => {
+                const nonLocalSpeechConfigs = configs.filter((c) => c.is_active && c.provider !== 'local')
+                return (
+                  <>
+                    {/* 語音服務選擇：本機 / 自訂 */}
+                    <Field label="語音服務" required>
+                      <div className="space-y-2">
+                        {/* 本機模型 */}
+                        <label className={`flex items-start gap-3 rounded-lg border px-4 py-3 cursor-pointer transition-colors ${speechMode === 'local' ? 'border-gray-400 bg-gray-50' : 'border-gray-200 hover:border-gray-300'}`}>
+                          <input
+                            type="radio"
+                            name="speech_mode"
+                            checked={speechMode === 'local'}
+                            onChange={() => {
+                              setSpeechMode('local')
+                              const savedBaseUrl = tenantConfig?.speech_base_url ?? ''
+                              setSpeechForm((f) => ({
+                                ...f,
+                                provider: 'local',
+                                model: SPEECH_MODEL_DEFAULTS['local'],
+                                base_url: savedBaseUrl,
+                              }))
+                              // 若原本就儲存了 local base_url，視為已驗證
+                              const preVerified = tenantConfig?.speech_provider === 'local' && !!savedBaseUrl
+                              setSpeechCandidateResult(preVerified ? { ok: true, elapsed_ms: 0 } : null)
+                            }}
+                            className="mt-1 h-4 w-4 text-gray-600"
+                          />
+                          <div className="flex-1 min-w-0 space-y-0.5">
+                            <span className="rounded-full px-2.5 py-0.5 text-base font-semibold bg-purple-100 text-purple-800">本機模型 (Local)</span>
+                            <p className="text-base text-gray-400 mt-1">地端 faster-whisper-server，預設端口 8002</p>
+                          </div>
+                        </label>
+                        {/* 自訂 */}
+                        <label className={`flex items-start gap-3 rounded-lg border px-4 py-3 cursor-pointer transition-colors ${speechMode === 'custom' ? 'border-gray-400 bg-gray-50' : 'border-gray-200 hover:border-gray-300'}`}>
+                          <input
+                            type="radio"
+                            name="speech_mode"
+                            checked={speechMode === 'custom'}
+                            onChange={() => {
+                              setSpeechMode('custom')
+                              const firstCfg = nonLocalSpeechConfigs[0]
+                              const firstKey = firstCfg
+                                ? (firstCfg.provider === 'custom' ? `custom:${firstCfg.id}` : firstCfg.provider)
+                                : 'openai'
+                              setSpeechForm((f) => ({
+                                ...f,
+                                provider: firstKey,
+                                model: SPEECH_MODEL_DEFAULTS[baseProvider(firstKey)] ?? '',
+                              }))
+                              setSpeechCandidateResult(null)
+                            }}
+                            className="mt-1 h-4 w-4 text-gray-600"
+                          />
+                          <div className="flex-1 min-w-0 space-y-0.5">
+                            <span className="rounded-full px-2.5 py-0.5 text-base font-semibold bg-gray-100 text-gray-700">自訂</span>
+                            <p className="text-base text-gray-400 mt-1">使用已設定的 Provider（OpenAI Whisper、自訂 OpenAI 相容端點等）</p>
+                          </div>
+                        </label>
+                      </div>
+                    </Field>
 
-              {/* 語音服務選擇 */}
-              <Field label="語音服務" required>
-                <div className="space-y-2">
-                  {Object.entries(SPEECH_MODELS).map(([p, entry]) => {
-                    const needsOpenAI = p === 'openai'
-                    const hasOpenAIProvider = configs.some((c) => c.provider === 'openai' && c.is_active)
-                    const unavailable = needsOpenAI && !hasOpenAIProvider
-                    return (
-                      <label
-                        key={p}
-                        className={`flex items-start gap-3 rounded-lg border px-4 py-3 transition-colors ${
-                          unavailable
-                            ? 'cursor-not-allowed border-gray-100 bg-gray-50 opacity-50'
-                            : speechForm.provider === p
-                              ? 'cursor-pointer border-gray-400 bg-gray-50'
-                              : 'cursor-pointer border-gray-200 hover:border-gray-300'
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="speech_provider"
-                          value={p}
-                          disabled={unavailable}
-                          checked={speechForm.provider === p}
-                          onChange={() => setSpeechForm((f) => ({ ...f, provider: p, model: entry.model }))}
-                          className="mt-1 h-4 w-4 text-gray-600"
-                        />
-                        <div className="flex-1 min-w-0 space-y-0.5">
-                          <span className={`rounded-full px-2.5 py-0.5 text-base font-semibold ${p === 'openai' ? 'bg-green-100 text-green-800' : 'bg-purple-100 text-purple-800'}`}>
-                            {entry.label}
-                          </span>
-                          <p className="font-mono text-base text-gray-700 mt-1">{entry.model}</p>
-                          <p className="text-base text-gray-400">{entry.note}</p>
-                          {unavailable && (
-                            <p className="text-base text-amber-600">請先在「Provider 連線設定」啟用 OpenAI</p>
+                    {/* 本機模型：Base URL + 測試連線 */}
+                    {speechMode === 'local' && (
+                      <>
+                        <Field label="模型名稱" hint="">
+                          <input
+                            type="text"
+                            placeholder="Systran/faster-whisper-medium"
+                            value={speechForm.model}
+                            onChange={(e) => setSpeechForm((f) => ({ ...f, model: e.target.value }))}
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base font-mono focus:outline-none focus:ring-2 focus:ring-gray-400"
+                          />
+                        </Field>
+                        <Field label="Base URL" required hint="">
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              placeholder="http://192.168.1.10:8002"
+                              value={speechForm.base_url}
+                              onChange={(e) => {
+                                setSpeechForm((f) => ({ ...f, base_url: e.target.value }))
+                                setSpeechCandidateResult(null)
+                              }}
+                              className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-base font-mono focus:outline-none focus:ring-2 focus:ring-gray-400"
+                            />
+                            <button
+                              onClick={handleTestSpeechCandidate}
+                              disabled={testingSpeechCandidate || !speechForm.base_url.trim()}
+                              className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                            >
+                              <Zap className={`h-4 w-4 ${testingSpeechCandidate ? 'animate-pulse text-amber-500' : ''}`} />
+                              {testingSpeechCandidate ? '測試中...' : '測試連線'}
+                            </button>
+                          </div>
+                          <div className="mt-1 space-y-0.5 text-base text-gray-400">
+                            <p>設定成 whisper 服務位址，例：<code className="rounded bg-gray-100 px-1">http://192.168.1.10:8002</code></p>
+                            <p>NeuroSme 與 Whisper 在同一台主機時請用：<code className="rounded bg-gray-100 px-1">http://host.docker.internal:8002</code></p>
+                          </div>
+                        </Field>
+                        {/* 測試結果 */}
+                        {speechCandidateResult && (
+                          <div className={`rounded-lg border p-3 text-base ${speechCandidateResult.ok ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}>
+                            <div className="flex items-center gap-2">
+                              {speechCandidateResult.ok ? (
+                                <span className="text-green-700 font-semibold">✓ 連線成功</span>
+                              ) : (
+                                <span className="text-red-700 font-semibold">✗ 連線失敗</span>
+                              )}
+                              {speechCandidateResult.elapsed_ms != null && speechCandidateResult.elapsed_ms > 0 && (
+                                <span className="text-gray-500 text-sm">({speechCandidateResult.elapsed_ms}ms)</span>
+                              )}
+                            </div>
+                            {speechCandidateResult.error && (
+                              <p className="text-sm text-red-700 mt-1 break-all">{speechCandidateResult.error}</p>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {/* 自訂：Provider 下拉 + 模型輸入 + 測試連線 */}
+                    {speechMode === 'custom' && (
+                      <>
+                        <Field label="Provider" required>
+                          {nonLocalSpeechConfigs.length === 0 ? (
+                            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-base text-gray-500">
+                              請先至「Provider 連線設定」新增並啟用至少一個非本機 Provider
+                            </div>
+                          ) : (
+                            <select
+                              value={speechForm.provider}
+                              onChange={(e) => {
+                                const key = e.target.value
+                                setSpeechForm((f) => ({
+                                  ...f,
+                                  provider: key,
+                                  model: SPEECH_MODEL_DEFAULTS[baseProvider(key)] ?? '',
+                                }))
+                                setSpeechCandidateResult(null)
+                              }}
+                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-gray-400 focus:outline-none"
+                            >
+                              {nonLocalSpeechConfigs.map((cfg) => {
+                                const key = cfg.provider === 'custom' ? `custom:${cfg.id}` : cfg.provider
+                                const label = cfg.provider === 'custom'
+                                  ? `自訂・${cfg.label || cfg.id}`
+                                  : (PROVIDER_LABELS[cfg.provider] ?? cfg.provider)
+                                return <option key={cfg.id} value={key}>{label}</option>
+                              })}
+                            </select>
                           )}
-                        </div>
-                      </label>
-                    )
-                  })}
-                </div>
-              </Field>
-
-              {/* Local 需填 Base URL */}
-              {speechForm.provider === 'local' && (
-                <Field label="Base URL" required hint="">
-                  <input
-                    type="text"
-                    placeholder="http://192.168.1.10:8002"
-                    value={speechForm.base_url}
-                    onChange={(e) => setSpeechForm((f) => ({ ...f, base_url: e.target.value }))}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base font-mono focus:outline-none focus:ring-2 focus:ring-gray-400"
-                  />
-                  <div className="mt-1 space-y-0.5 text-base text-gray-400">
-                    <p>設定成 whisper 服務位址，例：<code className="rounded bg-gray-100 px-1">http://192.168.1.10:8002</code></p>
-                    <p>NeuroSme 與 Whisper 在同一台主機時請用：<code className="rounded bg-gray-100 px-1">http://host.docker.internal:8002</code></p>
-                  </div>
-                </Field>
-              )}
-
+                        </Field>
+                        <Field label="模型名稱" required hint="">
+                          <input
+                            type="text"
+                            placeholder={SPEECH_MODEL_DEFAULTS[baseProvider(speechForm.provider)] || '例：whisper-1'}
+                            value={speechForm.model}
+                            onChange={(e) => setSpeechForm((f) => ({ ...f, model: e.target.value }))}
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base font-mono focus:outline-none focus:ring-2 focus:ring-gray-400"
+                          />
+                          <p className="mt-1 text-base text-gray-400">OpenAI Whisper：<code className="rounded bg-gray-100 px-1">whisper-1</code></p>
+                        </Field>
+                        {/* 測試連線按鈕 */}
+                        {nonLocalSpeechConfigs.length > 0 && (
+                          <div className="flex flex-col gap-2">
+                            <button
+                              onClick={handleTestSpeechCandidate}
+                              disabled={testingSpeechCandidate}
+                              className="flex items-center gap-1.5 self-start rounded-lg border border-gray-300 bg-white px-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                            >
+                              <Zap className={`h-4 w-4 ${testingSpeechCandidate ? 'animate-pulse text-amber-500' : ''}`} />
+                              {testingSpeechCandidate ? '測試中...' : '測試連線'}
+                            </button>
+                            {speechCandidateResult && (
+                              <div className={`rounded-lg border p-3 text-base ${speechCandidateResult.ok ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}>
+                                <div className="flex items-center gap-2">
+                                  {speechCandidateResult.ok ? (
+                                    <span className="text-green-700 font-semibold">✓ 連線成功</span>
+                                  ) : (
+                                    <span className="text-red-700 font-semibold">✗ 連線失敗</span>
+                                  )}
+                                  {speechCandidateResult.elapsed_ms != null && speechCandidateResult.elapsed_ms > 0 && (
+                                    <span className="text-gray-500 text-sm">({speechCandidateResult.elapsed_ms}ms)</span>
+                                  )}
+                                </div>
+                                {speechCandidateResult.error && (
+                                  <p className="text-sm text-red-700 mt-1 break-all">{speechCandidateResult.error}</p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </>
+                )
+              })()}
             </div>
-            <ModalFooter onCancel={() => setShowSpeechForm(false)} onConfirm={handleSaveSpeech} saving={savingSpeech} confirmLabel="儲存" />
+            <ModalFooter
+              onCancel={() => setShowSpeechForm(false)}
+              onConfirm={handleSaveSpeech}
+              saving={savingSpeech}
+              confirmLabel="儲存"
+              confirmDisabled={speechMode === 'local' && !speechCandidateResult?.ok}
+            />
           </div>
         </div>
       )}
@@ -1476,64 +1821,7 @@ export default function AdminLLMSettings() {
         </div>
       )}
 
-      {/* ── Modal：語音測試結果 ── */}
-      {speechTestResult && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-md rounded-xl bg-white shadow-2xl">
-            <ModalHeader title="語音模型測試結果" onClose={() => setSpeechTestResult(null)} />
-            <div className="px-6 py-5 space-y-4">
-              {tenantConfig?.speech_model && (
-                <p className="font-mono text-base text-gray-600 break-all">{tenantConfig.speech_model}</p>
-              )}
-              <div className={`rounded-lg border px-5 py-4 space-y-2 ${speechTestResult.ok ? 'border-green-200 bg-green-50 text-green-800' : 'border-red-200 bg-red-50 text-red-800'}`}>
-                <div className="flex items-center gap-3 text-lg font-semibold">
-                  <span>{speechTestResult.ok ? '✅ 連通成功' : '❌ 連通失敗'}</span>
-                  {speechTestResult.elapsed_ms && speechTestResult.elapsed_ms > 0 && (
-                    <span className="text-base font-normal opacity-70">{speechTestResult.elapsed_ms} ms</span>
-                  )}
-                </div>
-                {speechTestResult.error && (
-                  <div className="text-base font-mono break-all">{speechTestResult.error}</div>
-                )}
-              </div>
-            </div>
-            <div className="px-6 py-4 border-t border-gray-100 flex justify-end">
-              <button onClick={() => setSpeechTestResult(null)} className="rounded-lg bg-gray-700 px-5 py-2 text-base font-medium text-white hover:bg-gray-600 transition-colors">關閉</button>
-            </div>
-          </div>
-        </div>
-      )}
 
-      {/* ── Modal：Embedding 測試結果 ── */}
-      {embeddingTestResult && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-md rounded-xl bg-white shadow-2xl">
-            <ModalHeader title="Embedding 測試結果" onClose={() => setEmbeddingTestResult(null)} />
-            <div className="px-6 py-5 space-y-4">
-              {embeddingTestResult.model && (
-                <p className="font-mono text-base text-gray-600 break-all">{embeddingTestResult.model}</p>
-              )}
-              <div className={`rounded-lg border px-5 py-4 space-y-2 ${embeddingTestResult.ok ? 'border-green-200 bg-green-50 text-green-800' : 'border-red-200 bg-red-50 text-red-800'}`}>
-                <div className="flex items-center gap-3 text-lg font-semibold">
-                  <span>{embeddingTestResult.ok ? '✅ 連通成功' : '❌ 連通失敗'}</span>
-                  {embeddingTestResult.elapsed_ms > 0 && (
-                    <span className="text-base font-normal opacity-70">{embeddingTestResult.elapsed_ms} ms</span>
-                  )}
-                </div>
-                {embeddingTestResult.ok && embeddingTestResult.dimensions && (
-                  <div className="text-base">向量維度：<span className="font-mono font-semibold">{embeddingTestResult.dimensions}</span></div>
-                )}
-                {embeddingTestResult.error && (
-                  <div className="text-base font-mono break-all">{embeddingTestResult.error}</div>
-                )}
-              </div>
-            </div>
-            <div className="px-6 py-4 border-t border-gray-100 flex justify-end">
-              <button onClick={() => setEmbeddingTestResult(null)} className="rounded-lg bg-gray-700 px-5 py-2 text-base font-medium text-white hover:bg-gray-600 transition-colors">關閉</button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ── Modal：參考設定 ── */}
       {showRefModal && (
@@ -1604,20 +1892,21 @@ function ModalHeader({ title, onClose }: { title: string; onClose: () => void })
 }
 
 function ModalFooter({
-  onCancel, onConfirm, saving, confirmLabel = '儲存', confirmDanger = false,
+  onCancel, onConfirm, saving, confirmLabel = '儲存', confirmDanger = false, confirmDisabled = false,
 }: {
   onCancel: () => void
   onConfirm: () => void
   saving: boolean
   confirmLabel?: string
   confirmDanger?: boolean
+  confirmDisabled?: boolean
 }) {
   return (
     <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-3">
       <button onClick={onCancel} className="rounded-lg border border-gray-300 px-4 py-2 text-base text-gray-600 hover:bg-gray-50 transition-colors">取消</button>
       <button
         onClick={onConfirm}
-        disabled={saving}
+        disabled={saving || confirmDisabled}
         className={`rounded-lg px-4 py-2 text-base font-medium text-white disabled:opacity-50 transition-colors ${confirmDanger ? 'bg-red-600 hover:bg-red-500' : 'bg-gray-700 hover:bg-gray-600'}`}
       >
         {saving ? '處理中...' : confirmLabel}

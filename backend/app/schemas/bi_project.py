@@ -21,6 +21,10 @@ class BiProjectUpdate(BaseModel):
         description="bi_schemas 主鍵 id；傳 null 或空字串可清除專案綁定",
         max_length=100,
     )
+    project_config: dict[str, Any] | None = Field(
+        None,
+        description="per-project AI 設定（userPrompt、suggestedFollowUpCount、sampleQuestions）",
+    )
 
 
 class BiProjectResponse(BaseModel):
@@ -32,6 +36,10 @@ class BiProjectResponse(BaseModel):
     schema_id: str | None = Field(
         None,
         description="bi_schemas 主鍵 id（非 name）；匯入 CSV 成功後由後端寫入",
+    )
+    project_config: dict[str, Any] | None = Field(
+        None,
+        description="per-project AI 設定（userPrompt、suggestedFollowUpCount、sampleQuestions）",
     )
 
     class Config:

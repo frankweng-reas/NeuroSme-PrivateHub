@@ -441,29 +441,50 @@ def _get_embed_params(db: Session, tenant_id: str) -> tuple[str, str, str | None
     再從 llm_provider_configs 取對應 provider 的 API key。
     回傳 (provider, model, api_key, api_base) 或 None（設定不存在）。
     model 直接使用 tenant_configs.embedding_model，不自動加前綴。
+
+    embedding_provider 格式：
+      "local" | "openai" | "gemini" | ...  → 依 provider 字串查第一個 active config
+      "custom:{config_id}"                  → 依 config_id 查特定 config（多個自訂時使用）
     """
     tc = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
     if not tc:
         return None
 
-    provider = tc.embedding_provider
+    stored_provider = tc.embedding_provider
     model_name = tc.embedding_model  # 直接使用，不加前綴
 
     # 尚未設定 embedding，回傳 None
-    if not provider or not model_name:
+    if not stored_provider or not model_name:
         return None
 
-    # 取對應 provider 的 API key
-    provider_cfg = (
-        db.query(LLMProviderConfig)
-        .filter(
-            LLMProviderConfig.tenant_id == tenant_id,
-            LLMProviderConfig.provider == provider,
-            LLMProviderConfig.is_active.is_(True),
+    # 解析 custom:{config_id} 格式
+    provider_cfg = None
+    if stored_provider.startswith("custom:"):
+        try:
+            config_id = int(stored_provider.split(":", 1)[1])
+            provider_cfg = (
+                db.query(LLMProviderConfig)
+                .filter(
+                    LLMProviderConfig.id == config_id,
+                    LLMProviderConfig.is_active.is_(True),
+                )
+                .first()
+            )
+        except (ValueError, IndexError):
+            pass
+        provider = "custom"
+    else:
+        provider = stored_provider
+        provider_cfg = (
+            db.query(LLMProviderConfig)
+            .filter(
+                LLMProviderConfig.tenant_id == tenant_id,
+                LLMProviderConfig.provider == provider,
+                LLMProviderConfig.is_active.is_(True),
+            )
+            .order_by(LLMProviderConfig.id)
+            .first()
         )
-        .order_by(LLMProviderConfig.id)
-        .first()
-    )
 
     api_key: str | None = None
     api_base: str | None = None
@@ -559,6 +580,26 @@ def embed_texts_sync(
                         embeddings.append(data["embeddings"][0])
                     else:
                         embeddings.append(data["embedding"])
+            return embeddings, None
+
+        # custom provider = OpenAI 相容端點，直接用 httpx 呼叫以避免 LiteLLM 送出 null 欄位
+        if provider == "custom":
+            import httpx
+            base = (api_base or "").rstrip("/")
+            headers: dict[str, str] = {}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            timeout = httpx.Timeout(10.0, read=60.0)
+            embeddings: list[list[float]] = []
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(
+                    f"{base}/embeddings",
+                    headers=headers,
+                    json={"model": model, "input": texts},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                embeddings = [item["embedding"] for item in data["data"]]
             return embeddings, None
 
         kwargs = dict(model=model, input=texts, api_key=api_key, timeout=15)

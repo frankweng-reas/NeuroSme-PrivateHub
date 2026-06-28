@@ -1,6 +1,6 @@
 /**
- * Agent BI API：multi-step tool calling 分析
- * POST /api/v1/agent/bi-stream (SSE)
+ * Agent BI API：multi-step tool calling 分析（Dev Lab 用）
+ * POST /api/v1/chat/completions-agent-bi-stream (SSE)
  */
 import { TOKEN_KEY } from '@/contexts/AuthContext'
 
@@ -16,9 +16,7 @@ export interface AgentBiRequest {
 
 export type AgentBiEventType =
   | 'start'
-  | 'thinking'
-  | 'tool_call'
-  | 'tool_result'
+  | 'agent_step'
   | 'done'
   | 'error'
 
@@ -26,17 +24,14 @@ export interface AgentBiEvent {
   type: AgentBiEventType
   content?: string
   step?: number
-  tool?: string
-  intent?: Record<string, unknown>
+  query?: string
+  phase?: 'running' | 'done'
   success?: boolean
-  result?: string
-  chart_data?: unknown
+  stage?: string
+  error_stage?: string
+  chart_data?: Record<string, unknown> | null
 }
 
-/**
- * 呼叫 Agent BI stream endpoint，每次收到 SSE 事件時呼叫 onEvent callback。
- * 回傳最終的 done 事件 content（或拋出錯誤）。
- */
 export async function agentBiStream(
   req: AgentBiRequest,
   onEvent: (event: AgentBiEvent) => void,
@@ -48,10 +43,20 @@ export async function agentBiStream(
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   }
 
-  const res = await fetch(`${API_BASE}/agent/bi-stream`, {
+  const res = await fetch(`${API_BASE}/chat/completions-agent-bi-stream`, {
     method: 'POST',
     headers,
-    body: JSON.stringify(req),
+    body: JSON.stringify({
+      content: req.question,   // 後端用 content
+      model: req.model,
+      project_id: req.project_id,
+      agent_id: req.agent_id ?? '',
+      schema_id: req.schema_id ?? '',
+      user_prompt: '',
+      system_prompt: '',
+      data: '',
+      messages: [],
+    }),
     signal,
   })
 
@@ -61,18 +66,12 @@ export async function agentBiStream(
       const text = await res.text()
       try {
         const body = JSON.parse(text)
-        detail =
-          typeof body?.detail === 'string'
-            ? body.detail
-            : Array.isArray(body?.detail) && body.detail[0]?.msg
-              ? body.detail[0].msg
-              : undefined
+        detail = typeof body?.detail === 'string' ? body.detail
+          : Array.isArray(body?.detail) && body.detail[0]?.msg ? body.detail[0].msg : undefined
       } catch {
         detail = text || undefined
       }
-    } catch {
-      /* ignore */
-    }
+    } catch { /* ignore */ }
     throw new Error(detail || `API Error: ${res.status}`)
   }
 
@@ -87,14 +86,25 @@ export async function agentBiStream(
     const match = block.match(/^data:\s*(.+)$/m)
     if (!match) return
     try {
-      const event = JSON.parse(match[1]) as AgentBiEvent
-      onEvent(event)
-      if (event.type === 'done') {
-        finalContent = event.content ?? ''
+      const raw = JSON.parse(match[1])
+
+      // agent_step 進度事件
+      if (raw.type === 'agent_step') {
+        onEvent({ type: 'agent_step', step: raw.step, query: raw.query, phase: raw.phase, success: raw.success })
+        return
       }
-    } catch {
-      /* ignore parse error */
-    }
+
+      // stage: done 完成事件
+      if (raw.stage === 'done') {
+        finalContent = raw.content ?? ''
+        if (raw.error_stage) {
+          onEvent({ type: 'error', content: raw.content, stage: raw.stage, error_stage: raw.error_stage })
+        } else {
+          onEvent({ type: 'done', content: raw.content, chart_data: raw.chart_data as Record<string, unknown> | null, stage: raw.stage })
+        }
+        return
+      }
+    } catch { /* ignore */ }
   }
 
   while (true) {

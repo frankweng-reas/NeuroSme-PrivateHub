@@ -66,6 +66,7 @@ services:
     volumes:
       - ${HOME}/neurosme-data/stored_files:/app/data/stored_files
       - ${HOME}/neurosme-data/duckdb:/app/data/duckdb
+      - ${HOME}/neurosme-data/csv_import:/app/data/csv_import
     depends_on:
       neurosme-db:
         condition: service_healthy

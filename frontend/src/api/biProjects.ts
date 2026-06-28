@@ -1,5 +1,11 @@
 import { apiFetch } from './client'
 
+export interface ProjectConfig {
+  userPrompt?: string
+  suggestedFollowUpCount?: string
+  sampleQuestions?: string[]
+}
+
 export interface BiProjectItem {
   project_id: string
   project_name: string
@@ -8,6 +14,8 @@ export interface BiProjectItem {
   conversation_data?: MessageStored[] | null
   /** 與匯入模板／分析意圖對齊的 bi_schemas id */
   schema_id?: string | null
+  /** per-project AI 設定（userPrompt、suggestedFollowUpCount、sampleQuestions） */
+  project_config?: ProjectConfig | null
 }
 
 /** 儲存於 DB 的訊息格式（與 Message 相容） */
@@ -49,6 +57,7 @@ export async function updateBiProject(
     conversation_data?: MessageStored[]
     /** bi_schemas.id；傳 null 可清除 */
     schema_id?: string | null
+    project_config?: ProjectConfig | null
   }
 ): Promise<BiProjectItem> {
   return apiFetch<BiProjectItem>(
@@ -85,6 +94,74 @@ export async function getDuckdbStatus(
 ): Promise<{ row_count: number; has_data: boolean }> {
   return apiFetch(
     `/bi-projects/${encodeURIComponent(projectId)}/duckdb-status?agent_id=${encodeURIComponent(agentId)}`
+  )
+}
+
+// ── 自動匯入設定 API ──────────────────────────────────────────────────────────
+
+export interface AutoImportConfig {
+  configured: boolean
+  id?: number
+  watch_path?: string
+  mode?: 'replace' | 'append'
+  interval_minutes?: number
+  enabled?: boolean
+  last_import_status?: 'never' | 'running' | 'success' | 'failed'
+  last_import_at?: string | null
+  last_import_rows?: number | null
+  last_error?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export async function clearDuckdbData(agentId: string, projectId: string): Promise<{ ok: boolean; message: string }> {
+  return apiFetch(
+    `/bi-projects/${encodeURIComponent(projectId)}/duckdb-data?agent_id=${encodeURIComponent(agentId)}`,
+    { method: 'DELETE' }
+  )
+}
+
+export async function getAutoImportBaseConfig(agentId: string): Promise<{ allowed_watch_base: string }> {
+  return apiFetch(
+    `/bi-projects/auto-import-config?agent_id=${encodeURIComponent(agentId)}`
+  )
+}
+
+export async function getAutoImport(agentId: string, projectId: string): Promise<AutoImportConfig> {
+  return apiFetch(
+    `/bi-projects/${encodeURIComponent(projectId)}/auto-import?agent_id=${encodeURIComponent(agentId)}`
+  )
+}
+
+export async function setAutoImport(
+  agentId: string,
+  projectId: string,
+  config: { watch_path: string; mode: 'replace' | 'append'; interval_minutes: number; enabled: boolean }
+): Promise<AutoImportConfig> {
+  return apiFetch(
+    `/bi-projects/${encodeURIComponent(projectId)}/auto-import?agent_id=${encodeURIComponent(agentId)}`,
+    { method: 'PUT', body: JSON.stringify(config) }
+  )
+}
+
+export async function toggleAutoImport(
+  agentId: string,
+  projectId: string,
+  enabled: boolean
+): Promise<{ enabled: boolean }> {
+  return apiFetch(
+    `/bi-projects/${encodeURIComponent(projectId)}/auto-import/toggle?agent_id=${encodeURIComponent(agentId)}`,
+    { method: 'PATCH', body: JSON.stringify({ enabled }) }
+  )
+}
+
+export async function triggerAutoImport(
+  agentId: string,
+  projectId: string
+): Promise<AutoImportConfig & { triggered: boolean }> {
+  return apiFetch(
+    `/bi-projects/${encodeURIComponent(projectId)}/auto-import/trigger?agent_id=${encodeURIComponent(agentId)}`,
+    { method: 'POST' }
   )
 }
 

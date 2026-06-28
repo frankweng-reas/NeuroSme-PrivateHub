@@ -19,16 +19,14 @@ interface StepItem {
 
 // ─── 子元件 ───────────────────────────────────────────────────────────────────
 
-function StepBadge({ type }: { type: AgentBiEvent['type'] }) {
+function StepBadge({ event }: { event: AgentBiEvent }) {
   const map: Record<string, { label: string; className: string }> = {
-    start:       { label: '開始',     className: 'bg-gray-100 text-gray-600' },
-    thinking:    { label: '思考中',   className: 'bg-blue-100 text-blue-700' },
-    tool_call:   { label: '呼叫工具', className: 'bg-amber-100 text-amber-700' },
-    tool_result: { label: '工具結果', className: 'bg-green-100 text-green-700' },
-    done:        { label: '完成',     className: 'bg-emerald-100 text-emerald-700' },
-    error:       { label: '錯誤',     className: 'bg-red-100 text-red-700' },
+    start:       { label: '開始',   className: 'bg-gray-100 text-gray-600' },
+    agent_step:  { label: event.phase === 'done' ? '完成查詢' : '查詢中', className: event.phase === 'done' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700' },
+    done:        { label: '完成',   className: 'bg-emerald-100 text-emerald-700' },
+    error:       { label: '錯誤',   className: 'bg-red-100 text-red-700' },
   }
-  const { label, className } = map[type] ?? { label: type, className: 'bg-gray-100 text-gray-500' }
+  const { label, className } = map[event.type] ?? { label: event.type, className: 'bg-gray-100 text-gray-500' }
   return (
     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${className}`}>
       {label}
@@ -51,54 +49,47 @@ function StepCard({ step }: { step: StepItem }) {
         ) : (
           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-gray-400" />
         )}
-        <StepBadge type={event.type} />
+        <StepBadge event={event} />
         {event.step !== undefined && (
           <span className="text-xs text-gray-400">步驟 {event.step}</span>
         )}
-        {event.tool && (
-          <code className="text-xs bg-gray-100 rounded px-1.5 py-0.5 text-gray-600">{event.tool}</code>
+        {!open && event.query && (
+          <span className="ml-1 truncate text-xs text-gray-500 max-w-xs">{event.query}</span>
         )}
-        {!open && event.content && (
+        {!open && event.content && !event.query && (
           <span className="ml-1 truncate text-xs text-gray-500 max-w-xs">{event.content}</span>
         )}
       </button>
 
       {open && (
         <div className="border-t border-gray-100 px-4 py-3 space-y-2 text-sm">
-          {/* thinking / start / error / done 的文字內容 */}
-          {event.content && (
-            <p className="text-gray-700 whitespace-pre-wrap leading-relaxed">{event.content}</p>
-          )}
-
-          {/* tool_call：顯示查詢描述 */}
-          {event.type === 'tool_call' && (event as AgentBiEvent & { query?: string }).query && (
-            <p className="rounded bg-amber-50 px-3 py-2 text-xs text-amber-800 font-mono">
-              {(event as AgentBiEvent & { query?: string }).query}
-            </p>
-          )}
-
-          {/* tool_result：顯示查詢結果 */}
-          {event.type === 'tool_result' && (
+          {/* agent_step：查詢描述 + 成功/失敗 */}
+          {event.type === 'agent_step' && (
             <>
-              <div className={`flex items-center gap-1.5 text-xs font-medium ${event.success ? 'text-green-600' : 'text-red-500'}`}>
-                <span>{event.success ? '✓ 查詢成功' : '✗ 查詢失敗'}</span>
-              </div>
-              {event.result && (
-                <pre className="overflow-auto rounded bg-gray-50 p-2 text-xs text-gray-600 whitespace-pre-wrap">
-                  {event.result}
-                </pre>
+              {event.query && (
+                <p className="rounded bg-amber-50 px-3 py-2 text-xs text-amber-800 font-mono">{event.query}</p>
               )}
-              {event.chart_data && (
-                <details>
-                  <summary className="cursor-pointer text-xs text-gray-400 hover:text-gray-600">
-                    查看 Chart Data
-                  </summary>
-                  <pre className="mt-1 overflow-auto rounded bg-gray-50 p-2 text-xs text-gray-600 max-h-48">
-                    {JSON.stringify(event.chart_data, null, 2)}
-                  </pre>
-                </details>
+              {event.phase === 'done' && (
+                <div className={`flex items-center gap-1.5 text-xs font-medium ${event.success !== false ? 'text-green-600' : 'text-red-500'}`}>
+                  <span>{event.success !== false ? '✓ 查詢成功' : '✗ 查詢失敗'}</span>
+                </div>
               )}
             </>
+          )}
+
+          {/* done / error：最終回覆或錯誤訊息 */}
+          {(event.type === 'done' || event.type === 'error') && event.content && (
+            <p className="text-gray-700 whitespace-pre-wrap leading-relaxed">{event.content}</p>
+          )}
+          {event.type === 'done' && event.chart_data && (
+            <details>
+              <summary className="cursor-pointer text-xs text-gray-400 hover:text-gray-600">
+                查看 Chart Data
+              </summary>
+              <pre className="mt-1 overflow-auto rounded bg-gray-50 p-2 text-xs text-gray-600 max-h-48">
+                {JSON.stringify(event.chart_data, null, 2)}
+              </pre>
+            </details>
           )}
         </div>
       )}

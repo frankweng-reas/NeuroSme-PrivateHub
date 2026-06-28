@@ -27,6 +27,7 @@ from app.schemas.tenant_config import (
     AnalysisModelUpdate,
     DefaultLLMUpdate,
     EmbeddingMigrateRequest,
+    EmbeddingTestCandidateRequest,
     SpeechConfigUpdate,
     TenantConfigResponse,
 )
@@ -730,19 +731,37 @@ def migrate_embedding_config(
     if not body.confirm:
         raise HTTPException(status_code=400, detail="必須傳 confirm=true 以確認此操作。")
 
-    if body.provider not in VALID_PROVIDERS:
+    # 支援 "custom:{config_id}" 格式（多個自訂 provider 時用來識別特定 config）
+    is_custom_by_id = body.provider.startswith("custom:")
+    base_provider = "custom" if is_custom_by_id else body.provider
+
+    if base_provider not in VALID_PROVIDERS:
         raise HTTPException(status_code=400, detail=f"不支援的 provider，有效值：{sorted(VALID_PROVIDERS)}")
 
     # 確認新 provider 已有有效設定
-    provider_cfg = (
-        db.query(LLMProviderConfig)
-        .filter(
-            LLMProviderConfig.tenant_id == tenant_id,
-            LLMProviderConfig.provider == body.provider,
-            LLMProviderConfig.is_active.is_(True),
+    if is_custom_by_id:
+        try:
+            config_id = int(body.provider.split(":", 1)[1])
+        except (ValueError, IndexError):
+            raise HTTPException(status_code=400, detail=f"無效的 provider 格式：{body.provider}")
+        provider_cfg = (
+            db.query(LLMProviderConfig)
+            .filter(
+                LLMProviderConfig.id == config_id,
+                LLMProviderConfig.is_active.is_(True),
+            )
+            .first()
         )
-        .first()
-    )
+    else:
+        provider_cfg = (
+            db.query(LLMProviderConfig)
+            .filter(
+                LLMProviderConfig.tenant_id == tenant_id,
+                LLMProviderConfig.provider == body.provider,
+                LLMProviderConfig.is_active.is_(True),
+            )
+            .first()
+        )
     if not provider_cfg and body.provider != "local":
         raise HTTPException(
             status_code=400,
@@ -770,7 +789,7 @@ def migrate_embedding_config(
         synchronize_session=False,
     )
 
-    # 更新 tenant_configs
+    # 更新 tenant_configs（直接存 body.provider，可能是 "custom:8" 格式）
     tc = _get_or_create_tenant_config(db, tenant_id)
     tc.embedding_provider = body.provider
     tc.embedding_model = body.model
@@ -826,6 +845,122 @@ async def test_embedding_config(
     except Exception as e:
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         return {"ok": False, "elapsed_ms": elapsed_ms, "model": embed_model, "error": str(e)[:300]}
+
+
+@router.post("/tenant-config/embedding/test-candidate")
+async def test_embedding_candidate(
+    body: EmbeddingTestCandidateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """測試候選的 embedding provider/model（尚未儲存），不影響現有向量資料。
+    
+    用於在「儲存」前先驗證新的 provider/model 組合是否可用、維度是否正確。
+    """
+    import asyncio
+    from app.services.km_service import embed_texts_sync
+    from app.core.encryption import decrypt_api_key
+
+    tenant_id = _require_tenant_admin(db, current)
+
+    # 支援 "custom:{config_id}" 格式
+    is_custom_by_id = body.provider.startswith("custom:")
+    actual_provider = "custom" if is_custom_by_id else body.provider
+
+    # 依格式查找對應的 provider config
+    if is_custom_by_id:
+        try:
+            config_id = int(body.provider.split(":", 1)[1])
+        except (ValueError, IndexError):
+            raise HTTPException(status_code=400, detail=f"無效的 provider 格式：{body.provider}")
+        provider_cfg = (
+            db.query(LLMProviderConfig)
+            .filter(
+                LLMProviderConfig.id == config_id,
+                LLMProviderConfig.is_active.is_(True),
+            )
+            .first()
+        )
+    else:
+        provider_cfg = (
+            db.query(LLMProviderConfig)
+            .filter(
+                LLMProviderConfig.tenant_id == tenant_id,
+                LLMProviderConfig.provider == actual_provider,
+                LLMProviderConfig.is_active.is_(True),
+            )
+            .first()
+        )
+
+    if not provider_cfg and actual_provider != "local":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider '{body.provider}' 尚未設定或已停用，請先設定 API Key。",
+        )
+
+    # 取得 API key 與 base URL
+    api_key: str | None = None
+    api_base: str | None = None
+
+    if provider_cfg:
+        api_base = provider_cfg.api_base_url or None
+        if provider_cfg.api_key_encrypted:
+            try:
+                api_key = decrypt_api_key(provider_cfg.api_key_encrypted)
+            except ValueError:
+                api_key = None
+
+    # local provider 特殊處理
+    if actual_provider == "local":
+        api_key = api_key or "local"
+        if not api_base:
+            api_base = "http://localhost:11434"
+    elif not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider '{body.provider}' 尚未設定 API Key。",
+        )
+
+    # 執行測試 embedding
+    t0 = time.monotonic()
+    try:
+        loop = asyncio.get_event_loop()
+        result, _tokens = await loop.run_in_executor(
+            None,
+            lambda: embed_texts_sync(
+                ["測試連線 OK"],
+                model=body.model,
+                api_key=api_key,
+                provider=actual_provider,
+                api_base=api_base,
+            ),
+        )
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        dim = len(result[0]) if result else 0
+
+        # 檢查維度是否符合系統要求
+        from app.services.km_service import EMBEDDING_DIM
+        dim_warning = None
+        if dim != EMBEDDING_DIM:
+            dim_warning = f"維度不符：系統要求 {EMBEDDING_DIM} 維，但此模型輸出 {dim} 維"
+
+        return {
+            "ok": True,
+            "elapsed_ms": elapsed_ms,
+            "model": body.model,
+            "provider": body.provider,
+            "dimensions": dim,
+            "dim_warning": dim_warning,
+        }
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        return {
+            "ok": False,
+            "elapsed_ms": elapsed_ms,
+            "model": body.model,
+            "provider": body.provider,
+            "error": str(e)[:300],
+        }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -884,4 +1019,94 @@ async def test_speech_config(
     except Exception as e:
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         return {"ok": False, "elapsed_ms": elapsed_ms, "error": str(e)[:200]}
+
+
+class SpeechTestCandidateRequest(BaseModel):
+    base_url: str = ""
+    provider: str = "local"   # "local" | "openai" | "custom:{id}"
+
+
+@router.post("/tenant-config/speech/test-candidate")
+async def test_speech_candidate(
+    body: SpeechTestCandidateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """測試候選的語音服務連線（尚未儲存），不影響現有設定。
+    - local：ping base_url/health
+    - openai / custom:{id}：從 LLMProviderConfig 取 base_url，ping /v1/models
+    """
+    tenant_id = _require_tenant_admin(db, current)
+
+    import httpx
+
+    t0 = time.monotonic()
+
+    if body.provider == "local":
+        base_url = body.base_url.rstrip("/")
+        if not base_url:
+            return {"ok": False, "error": "請填寫 Base URL"}
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{base_url}/health")
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            if resp.status_code == 200:
+                return {"ok": True, "elapsed_ms": elapsed_ms, "base_url": base_url}
+            return {"ok": False, "elapsed_ms": elapsed_ms, "error": f"服務回應 HTTP {resp.status_code}"}
+        except Exception as e:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            return {"ok": False, "elapsed_ms": elapsed_ms, "error": str(e)[:200]}
+    else:
+        # 自訂 provider（openai / custom:{id}）：從 LLMProviderConfig 取 api_base_url，打 /v1/models
+        if body.provider.startswith("custom:"):
+            config_id = int(body.provider.split(":")[1])
+            cfg = (
+                db.query(LLMProviderConfig)
+                .filter(
+                    LLMProviderConfig.tenant_id == tenant_id,
+                    LLMProviderConfig.id == config_id,
+                    LLMProviderConfig.is_active.is_(True),
+                )
+                .first()
+            )
+        else:
+            cfg = (
+                db.query(LLMProviderConfig)
+                .filter(
+                    LLMProviderConfig.tenant_id == tenant_id,
+                    LLMProviderConfig.provider == body.provider,
+                    LLMProviderConfig.is_active.is_(True),
+                )
+                .first()
+            )
+
+        if not cfg:
+            return {"ok": False, "error": f"找不到 Provider 設定（{body.provider}），請先在 Provider 連線設定中啟用"}
+
+        # api_base_url 已含 /v1（如 https://api.openai.com/v1），空則補預設
+        api_base = (cfg.api_base_url or "https://api.openai.com/v1").rstrip("/")
+        api_key: str | None = None
+        if cfg.api_key_encrypted:
+            try:
+                api_key = decrypt_api_key(cfg.api_key_encrypted)
+            except ValueError:
+                pass
+
+        headers: dict = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(f"{api_base}/models", headers=headers)
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            if resp.status_code in (200, 401, 403):
+                # 200 = 正常；401/403 = 伺服器有回應（key 問題，但端點存在）
+                ok = resp.status_code == 200
+                error = None if ok else f"認證失敗（HTTP {resp.status_code}），請確認 API Key"
+                return {"ok": ok, "elapsed_ms": elapsed_ms, "base_url": api_base, "error": error}
+            return {"ok": False, "elapsed_ms": elapsed_ms, "error": f"服務回應 HTTP {resp.status_code}"}
+        except Exception as e:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            return {"ok": False, "elapsed_ms": elapsed_ms, "error": str(e)[:200]}
 

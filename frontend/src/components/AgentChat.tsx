@@ -70,11 +70,24 @@ function extractTableDataFromChildren(children: React.ReactNode): string[][] {
   return rows
 }
 
-/** 將表格 2D 陣列轉為 ChartData（第一個非數值欄為 label，其餘數值欄為 datasets） */
+/** 圖表應排除的摘要列關鍵字（不分大小寫） */
+const SUMMARY_ROW_KEYWORDS = new Set([
+  '總計', '合計', '小計', '總和', '全部', '匯總', '加總',
+  'total', 'sum', 'grand total', 'subtotal', 'all', 'overall',
+])
+
+function isSummaryLabel(label: string): boolean {
+  const t = label.trim().toLowerCase()
+  return t === '' || SUMMARY_ROW_KEYWORDS.has(t)
+}
+
+/** 將表格 2D 陣列轉為 ChartData（第一個非數值欄為 label，其餘數值欄為 datasets）
+ *  自動排除總計/合計等摘要列，避免圖表失真。
+ */
 function tableDataToChartData(rows: string[][]): ChartData | null {
   if (rows.length < 2) return null
   const headers = rows[0]
-  const dataRows = rows.slice(1)
+  const allDataRows = rows.slice(1)
 
   const parseNum = (v: string): number | null => {
     const t = v.trim()
@@ -89,9 +102,13 @@ function tableDataToChartData(rows: string[][]): ChartData | null {
 
   // 第一個「至少有一列非空非數值」的欄 → label 欄
   const labelColIdx = headers.findIndex((_, ci) =>
-    dataRows.some((r) => { const v = (r[ci] ?? '').trim(); return v !== '' && parseNum(v) === null })
+    allDataRows.some((r) => { const v = (r[ci] ?? '').trim(); return v !== '' && parseNum(v) === null })
   )
   if (labelColIdx === -1) return null
+
+  // 過濾掉總計/合計/空 label 的摘要列
+  const dataRows = allDataRows.filter((r) => !isSummaryLabel(r[labelColIdx] ?? ''))
+  if (dataRows.length === 0) return null
 
   const labels = dataRows.map((r) => (r[labelColIdx] ?? '').trim())
 

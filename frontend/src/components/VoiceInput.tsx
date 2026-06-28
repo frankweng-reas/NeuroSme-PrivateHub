@@ -314,7 +314,14 @@ export default function VoiceInput({
                     }`}>
                       <span className={`h-1.5 w-1.5 rounded-full ${speechStatus.enabled ? 'bg-green-400' : 'bg-red-400'}`} />
                       {speechStatus.enabled
-                        ? `${speechStatus.provider === 'openai' ? 'OpenAI Whisper' : '本機 Whisper'}`
+                        ? (() => {
+                            const p = speechStatus.provider ?? ''
+                            const m = speechStatus.model ?? ''
+                            if (p === 'local') return m ? `本機 Whisper・${m}` : '本機 Whisper'
+                            if (p === 'openai') return m ? `OpenAI Whisper・${m}` : 'OpenAI Whisper'
+                            if (p.startsWith('custom:')) return m ? `自訂・${m}` : '自訂語音服務'
+                            return m ? `${p}・${m}` : p || '語音服務已啟用'
+                          })()
                         : (speechStatus.reason ?? '語音服務未啟用')}
                     </div>
                   )}

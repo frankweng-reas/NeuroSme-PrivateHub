@@ -42,5 +42,4 @@ router.include_router(writing.router, prefix="/writing-documents", tags=["writin
 router.include_router(llm_skills.router, prefix="/llm-skills", tags=["llm-skills"])
 router.include_router(export.router, prefix="/export", tags=["export"])
 router.include_router(estimator.router, prefix="/estimator", tags=["estimator"])
-router.include_router(agent_bi.router, prefix="/agent", tags=["agent-bi"])
 router.include_router(agent_bi.chat_router, prefix="/chat", tags=["agent-bi-chat"])

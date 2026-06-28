@@ -84,31 +84,8 @@ async def transcribe_audio(
     model = (tc and tc.speech_model) or ("whisper-1" if provider == "openai" else "Systran/faster-whisper-medium")
 
     # 依 provider 決定 base_url 與 api_key
-    if provider == "openai":
-        # 從 LLM Provider 設定取用 OpenAI API Key（不需重複設定）
-        from app.models.llm_provider_config import LLMProviderConfig
-        from app.core.encryption import decrypt_api_key
-        llm_cfg = (
-            db.query(LLMProviderConfig)
-            .filter(
-                LLMProviderConfig.tenant_id == tenant_id,
-                LLMProviderConfig.provider == "openai",
-                LLMProviderConfig.is_active.is_(True),
-            )
-            .first()
-        )
-        if not llm_cfg or not llm_cfg.api_key_encrypted:
-            raise HTTPException(
-                status_code=503,
-                detail="語音功能需要 OpenAI API Key，請先在 LLM Provider 設定中新增並啟用 OpenAI",
-            )
-        try:
-            api_key = decrypt_api_key(llm_cfg.api_key_encrypted)
-        except Exception:
-            raise HTTPException(status_code=500, detail="OpenAI API Key 解密失敗")
-        base_url = (llm_cfg.api_base_url or "https://api.openai.com").rstrip("/")
-    else:
-        # local 或其他：從 speech config 讀取
+    if provider == "local":
+        # 本機 faster-whisper-server
         base_url = (tc.speech_base_url or "").rstrip("/")
         if not base_url:
             raise HTTPException(
@@ -122,6 +99,49 @@ async def transcribe_audio(
                 api_key = decrypt_api_key(tc.speech_api_key_encrypted)
             except Exception:
                 logger.warning("speech: API key 解密失敗")
+    else:
+        # 自訂 provider（openai 或 custom:{id}）：從 LLM Provider 設定讀取
+        from app.models.llm_provider_config import LLMProviderConfig
+        from app.core.encryption import decrypt_api_key
+
+        if provider.startswith("custom:"):
+            config_id = int(provider.split(":")[1])
+            llm_cfg = (
+                db.query(LLMProviderConfig)
+                .filter(
+                    LLMProviderConfig.tenant_id == tenant_id,
+                    LLMProviderConfig.id == config_id,
+                    LLMProviderConfig.is_active.is_(True),
+                )
+                .first()
+            )
+            if not llm_cfg:
+                raise HTTPException(status_code=503, detail=f"找不到 Provider 設定（id={config_id}），請重新設定語音服務")
+        else:
+            # openai 或其他具名 provider
+            llm_cfg = (
+                db.query(LLMProviderConfig)
+                .filter(
+                    LLMProviderConfig.tenant_id == tenant_id,
+                    LLMProviderConfig.provider == provider,
+                    LLMProviderConfig.is_active.is_(True),
+                )
+                .first()
+            )
+            if not llm_cfg:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"語音功能需要 {provider} API Key，請先在 LLM Provider 設定中新增並啟用",
+                )
+
+        if not llm_cfg.api_key_encrypted:
+            raise HTTPException(status_code=503, detail="Provider 尚未設定 API Key")
+        try:
+            api_key = decrypt_api_key(llm_cfg.api_key_encrypted)
+        except Exception:
+            raise HTTPException(status_code=500, detail="API Key 解密失敗")
+        # api_base_url 已含 /v1（如 https://api.openai.com/v1）；空則補預設
+        base_url = (llm_cfg.api_base_url or "https://api.openai.com/v1").rstrip("/")
 
     # 讀取上傳內容
     audio_bytes = await file.read()
@@ -145,7 +165,8 @@ async def transcribe_audio(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    url = f"{base_url}/v1/audio/transcriptions"
+    # local 用 /v1/audio/transcriptions；custom provider 的 base_url 已含 /v1，直接接 /audio/transcriptions
+    url = f"{base_url}/v1/audio/transcriptions" if provider == "local" else f"{base_url}/audio/transcriptions"
     post_data: dict = {
         "model": model,
         "response_format": "verbose_json",
@@ -154,7 +175,7 @@ async def transcribe_audio(
     }
     if language:
         post_data["language"] = language
-    if provider != "openai":
+    if provider == "local":
         post_data["vad_filter"] = "true"
         if voice_prompt:
             post_data["hotwords"] = voice_prompt
@@ -223,18 +244,18 @@ async def speech_status(
     if not provider:
         return {"enabled": False, "reason": "語音模型未設定"}
 
-    if provider == "openai":
-        return {"enabled": True, "provider": "openai", "model": tc.speech_model or "whisper-1"}
-
-    base_url = ((tc and tc.speech_base_url) or "").rstrip("/")
-    if not base_url:
-        return {"enabled": False, "reason": "語音服務 Base URL 未設定"}
-
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{base_url}/health")
-        if resp.status_code == 200:
-            return {"enabled": True, "base_url": base_url, "model": tc.speech_model}
-        return {"enabled": False, "reason": f"服務回應 {resp.status_code}"}
-    except Exception as exc:
-        return {"enabled": False, "reason": str(exc)}
+    if provider == "local":
+        base_url = ((tc and tc.speech_base_url) or "").rstrip("/")
+        if not base_url:
+            return {"enabled": False, "reason": "語音服務 Base URL 未設定"}
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{base_url}/health")
+            if resp.status_code == 200:
+                return {"enabled": True, "base_url": base_url, "model": tc.speech_model}
+            return {"enabled": False, "reason": f"服務回應 {resp.status_code}"}
+        except Exception as exc:
+            return {"enabled": False, "reason": str(exc)}
+    else:
+        # 自訂 provider：只確認設定存在，不發網路請求
+        return {"enabled": True, "provider": provider, "model": tc.speech_model}

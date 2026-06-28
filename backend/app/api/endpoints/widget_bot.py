@@ -481,26 +481,8 @@ async def bot_widget_speech(
     )
 
     api_key = None
-    if provider == "openai":
-        from app.core.encryption import decrypt_api_key
-        from app.models.llm_provider_config import LLMProviderConfig
-        llm_cfg = (
-            db.query(LLMProviderConfig)
-            .filter(
-                LLMProviderConfig.tenant_id == tenant_id,
-                LLMProviderConfig.provider == "openai",
-                LLMProviderConfig.is_active.is_(True),
-            )
-            .first()
-        )
-        if not llm_cfg or not llm_cfg.api_key_encrypted:
-            raise HTTPException(status_code=503, detail="語音功能需要 OpenAI API Key，請管理員設定")
-        try:
-            api_key = decrypt_api_key(llm_cfg.api_key_encrypted)
-        except Exception:
-            raise HTTPException(status_code=500, detail="OpenAI API Key 解密失敗")
-        base_url = (llm_cfg.api_base_url or "https://api.openai.com").rstrip("/")
-    else:
+    if provider == "local":
+        # 本機 faster-whisper-server
         base_url = (tc.speech_base_url or "").rstrip("/")
         if not base_url:
             raise HTTPException(status_code=503, detail="語音服務 Base URL 未設定")
@@ -510,6 +492,43 @@ async def bot_widget_speech(
                 api_key = decrypt_api_key(tc.speech_api_key_encrypted)
             except Exception:
                 logger.warning("bot widget speech: API key 解密失敗")
+    else:
+        # 自訂 provider（openai 或 custom:{id}）：從 LLMProviderConfig 讀取
+        from app.core.encryption import decrypt_api_key
+        from app.models.llm_provider_config import LLMProviderConfig
+
+        if provider.startswith("custom:"):
+            config_id = int(provider.split(":")[1])
+            llm_cfg = (
+                db.query(LLMProviderConfig)
+                .filter(
+                    LLMProviderConfig.tenant_id == tenant_id,
+                    LLMProviderConfig.id == config_id,
+                    LLMProviderConfig.is_active.is_(True),
+                )
+                .first()
+            )
+            if not llm_cfg:
+                raise HTTPException(status_code=503, detail=f"找不到 Provider 設定（id={config_id}），請重新設定語音服務")
+        else:
+            llm_cfg = (
+                db.query(LLMProviderConfig)
+                .filter(
+                    LLMProviderConfig.tenant_id == tenant_id,
+                    LLMProviderConfig.provider == provider,
+                    LLMProviderConfig.is_active.is_(True),
+                )
+                .first()
+            )
+            if not llm_cfg or not llm_cfg.api_key_encrypted:
+                raise HTTPException(status_code=503, detail=f"語音功能需要 {provider} API Key，請管理員設定")
+
+        try:
+            api_key = decrypt_api_key(llm_cfg.api_key_encrypted)
+        except Exception:
+            raise HTTPException(status_code=500, detail="API Key 解密失敗")
+        # api_base_url 已含 /v1，空則補預設
+        base_url = (llm_cfg.api_base_url or "https://api.openai.com/v1").rstrip("/")
 
     audio_bytes = await file.read()
     if len(audio_bytes) == 0:
@@ -534,15 +553,18 @@ async def bot_widget_speech(
     }
     if language:
         post_data["language"] = language
-    if provider != "openai":
+    if provider == "local":
         post_data["vad_filter"] = "true"
         if voice_prompt:
             post_data["hotwords"] = voice_prompt
 
+    # local: base_url 不含 /v1，需補；custom/openai: api_base_url 已含 /v1
+    transcribe_url = f"{base_url}/v1/audio/transcriptions" if provider == "local" else f"{base_url}/audio/transcriptions"
+
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
-                f"{base_url}/v1/audio/transcriptions",
+                transcribe_url,
                 headers=headers,
                 files={"file": (filename, audio_bytes, content_type)},
                 data=post_data,

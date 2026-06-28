@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import logging
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -14,6 +15,7 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.bi_project import BiProject
 from app.models.bi_schema import BiSchema
+from app.models.scheduled_file_import import ScheduledFileImport
 from app.models.user import User
 from app.schemas.bi_project import BiProjectCreate, BiProjectResponse, BiProjectUpdate
 from app.services.bi_sources_utils import get_merged_csv_for_project
@@ -25,6 +27,7 @@ from app.services.schema_loader import (
     build_csv_mapping_from_schema,
     load_schema_from_db,
 )
+from app.services.scheduled_file_import_service import ALLOWED_WATCH_BASE, trigger_import, validate_watch_path
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,18 @@ class ImportCsvRequest(BaseModel):
     blocks: list[ImportCsvBlockItem]
 
 router = APIRouter()
+
+
+def _to_response(p: BiProject) -> BiProjectResponse:
+    return BiProjectResponse(
+        project_id=p.project_id,
+        project_name=p.project_name,
+        project_desc=p.project_desc,
+        created_at=p.created_at,
+        conversation_data=p.conversation_data,
+        schema_id=getattr(p, "schema_id", None),
+        project_config=getattr(p, "project_config", None),
+    )
 
 
 def _parse_agent_id(agent_id: str, fallback_tenant_id: str) -> tuple[str, str]:
@@ -93,14 +108,7 @@ def create_bi_project(
     db.add(proj)
     db.commit()
     db.refresh(proj)
-    return BiProjectResponse(
-        project_id=proj.project_id,
-        project_name=proj.project_name,
-        project_desc=proj.project_desc,
-        created_at=proj.created_at,
-        conversation_data=proj.conversation_data,
-        schema_id=getattr(proj, "schema_id", None),
-    )
+    return _to_response(proj)
 
 
 @router.get("/", response_model=list[BiProjectResponse])
@@ -122,17 +130,7 @@ def list_bi_projects(
         .order_by(BiProject.created_at.desc())
         .all()
     )
-    return [
-        BiProjectResponse(
-            project_id=p.project_id,
-            project_name=p.project_name,
-            project_desc=p.project_desc,
-            created_at=p.created_at,
-            conversation_data=p.conversation_data,
-            schema_id=getattr(p, "schema_id", None),
-        )
-        for p in projects
-    ]
+    return [_to_response(p) for p in projects]
 
 
 @router.get("/all", response_model=list[BiProjectResponse])
@@ -147,17 +145,7 @@ def list_all_bi_projects(
         .order_by(BiProject.created_at.desc())
         .all()
     )
-    return [
-        BiProjectResponse(
-            project_id=p.project_id,
-            project_name=p.project_name,
-            project_desc=p.project_desc,
-            created_at=p.created_at,
-            conversation_data=p.conversation_data,
-            schema_id=getattr(p, "schema_id", None),
-        )
-        for p in projects
-    ]
+    return [_to_response(p) for p in projects]
 
 
 @router.patch("/{project_id}", response_model=BiProjectResponse)
@@ -209,17 +197,12 @@ def update_bi_project(
             if not canon:
                 raise HTTPException(status_code=500, detail="Schema 設定異常：bi_schemas 列缺少主鍵 id")
             proj.schema_id = canon
+    if "project_config" in patch:
+        proj.project_config = body.project_config
 
     db.commit()
     db.refresh(proj)
-    return BiProjectResponse(
-        project_id=proj.project_id,
-        project_name=proj.project_name,
-        project_desc=proj.project_desc,
-        created_at=proj.created_at,
-        conversation_data=proj.conversation_data,
-        schema_id=getattr(proj, "schema_id", None),
-    )
+    return _to_response(proj)
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -246,6 +229,11 @@ def delete_bi_project(
         raise HTTPException(status_code=404, detail="Project not found")
 
     pid = str(proj.project_id)
+    # 連動刪除自動匯入設定（無 FK，由 API 層負責）
+    db.query(ScheduledFileImport).filter(
+        ScheduledFileImport.target_type == "bi_project",
+        ScheduledFileImport.target_id == pid,
+    ).delete(synchronize_session=False)
     db.delete(proj)
     db.commit()
     delete_project_duckdb(pid)
@@ -495,3 +483,231 @@ def get_duckdb_status(
 
     row_count = get_project_duckdb_row_count(project_id)
     return {"row_count": row_count if row_count is not None else 0, "has_data": row_count is not None and row_count > 0}
+
+
+@router.delete("/{project_id}/duckdb-data", status_code=status.HTTP_200_OK)
+def clear_duckdb_data(
+    project_id: str,
+    agent_id: str = Query(..., description="agent 識別"),
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+) -> dict:
+    """清除專案 DuckDB 資料（保留 project，不刪除設定）"""
+    tenant_id, aid = _check_agent_access(db, current, agent_id)
+
+    proj = (
+        db.query(BiProject)
+        .filter(
+            BiProject.project_id == project_id,
+            BiProject.user_id == str(current.id),
+            BiProject.tenant_id == tenant_id,
+            BiProject.agent_id == aid,
+        )
+        .first()
+    )
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    delete_project_duckdb(project_id)
+    return {"ok": True, "message": "資料已清除"}
+
+
+# ── 自動匯入設定 endpoints ────────────────────────────────────────────────────
+
+@router.get("/auto-import-config", status_code=status.HTTP_200_OK)
+def get_auto_import_base_config(
+    agent_id: str = Query(..., description="agent 識別"),
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+) -> dict:
+    """回傳系統層級的自動匯入設定（如允許的 watch_path 根目錄），供前端顯示提示。"""
+    _check_agent_access(db, current, agent_id)
+    return {"allowed_watch_base": ALLOWED_WATCH_BASE}
+
+_ADMIN_ROLES = {"admin", "super_admin"}
+_MANAGER_ROLES = {"manager", "admin", "super_admin"}
+
+
+def _require_project_access(
+    db: Session,
+    current: User,
+    project_id: str,
+    agent_id: str,
+) -> BiProject:
+    """驗證使用者對 project 有存取權，回傳 project 物件。"""
+    tenant_id, aid = _check_agent_access(db, current, agent_id)
+    proj = (
+        db.query(BiProject)
+        .filter(
+            BiProject.project_id == project_id,
+            BiProject.user_id == str(current.id),
+            BiProject.tenant_id == tenant_id,
+            BiProject.agent_id == aid,
+        )
+        .first()
+    )
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return proj
+
+
+def _sfi_to_dict(sfi: ScheduledFileImport) -> dict:
+    return {
+        "configured": True,
+        "id": sfi.id,
+        "watch_path": sfi.watch_path,
+        "mode": sfi.mode,
+        "interval_minutes": sfi.interval_minutes,
+        "enabled": sfi.enabled,
+        "last_import_status": sfi.last_import_status,
+        "last_import_at": sfi.last_import_at.isoformat() if sfi.last_import_at else None,
+        "last_import_rows": sfi.last_import_rows,
+        "last_error": sfi.last_error,
+        "created_at": sfi.created_at.isoformat() if sfi.created_at else None,
+        "updated_at": sfi.updated_at.isoformat() if sfi.updated_at else None,
+    }
+
+
+@router.get("/{project_id}/auto-import", status_code=status.HTTP_200_OK)
+def get_auto_import(
+    project_id: str,
+    agent_id: str = Query(..., description="agent 識別"),
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+) -> dict:
+    """取得自動匯入設定（project owner 或 manager+）。"""
+    _require_project_access(db, current, project_id, agent_id)
+    sfi = db.query(ScheduledFileImport).filter(
+        ScheduledFileImport.target_type == "bi_project",
+        ScheduledFileImport.target_id == project_id,
+    ).first()
+    if not sfi:
+        return {"configured": False}
+    return {"configured": True, **_sfi_to_dict(sfi)}
+
+
+@router.put("/{project_id}/auto-import", status_code=status.HTTP_200_OK)
+def set_auto_import(
+    project_id: str,
+    body: dict,
+    agent_id: str = Query(..., description="agent 識別"),
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+) -> dict:
+    """新增或更新自動匯入設定（僅 admin / super_admin）。"""
+    if current.role not in _ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="需要 admin 以上角色才能設定自動匯入路徑")
+
+    proj = _require_project_access(db, current, project_id, agent_id)
+
+    watch_path = (body.get("watch_path") or "").strip()
+    if not watch_path:
+        raise HTTPException(status_code=400, detail="watch_path 必填")
+    try:
+        validate_watch_path(watch_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # 目錄不存在時自動建立（省去使用者手動 mkdir 的步驟）
+    try:
+        Path(watch_path).mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise HTTPException(status_code=400, detail=f"無法建立目錄 {watch_path}：{e}") from e
+
+    mode = (body.get("mode") or "replace").strip()
+    if mode not in ("replace", "append"):
+        raise HTTPException(status_code=400, detail="mode 必須為 replace 或 append")
+
+    interval = int(body.get("interval_minutes") or 60)
+    if interval <= 0:
+        raise HTTPException(status_code=400, detail="interval_minutes 必須大於 0")
+
+    enabled = bool(body.get("enabled", True))
+
+    sfi = db.query(ScheduledFileImport).filter(
+        ScheduledFileImport.target_type == "bi_project",
+        ScheduledFileImport.target_id == project_id,
+    ).first()
+
+    if sfi:
+        sfi.watch_path = watch_path
+        sfi.mode = mode
+        sfi.interval_minutes = interval
+        sfi.enabled = enabled
+        sfi.user_id = str(current.id)
+    else:
+        sfi = ScheduledFileImport(
+            tenant_id=str(proj.tenant_id),
+            agent_id=str(proj.agent_id),
+            user_id=str(current.id),
+            target_type="bi_project",
+            target_id=project_id,
+            watch_path=watch_path,
+            mode=mode,
+            interval_minutes=interval,
+            enabled=enabled,
+        )
+        db.add(sfi)
+
+    db.commit()
+    db.refresh(sfi)
+    return {"configured": True, **_sfi_to_dict(sfi)}
+
+
+@router.patch("/{project_id}/auto-import/toggle", status_code=status.HTTP_200_OK)
+def toggle_auto_import(
+    project_id: str,
+    body: dict,
+    agent_id: str = Query(..., description="agent 識別"),
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+) -> dict:
+    """啟用或停用自動匯入（manager+）。"""
+    if current.role not in _MANAGER_ROLES:
+        raise HTTPException(status_code=403, detail="需要 manager 以上角色")
+
+    _require_project_access(db, current, project_id, agent_id)
+
+    sfi = db.query(ScheduledFileImport).filter(
+        ScheduledFileImport.target_type == "bi_project",
+        ScheduledFileImport.target_id == project_id,
+    ).first()
+    if not sfi:
+        raise HTTPException(status_code=404, detail="尚未設定自動匯入，請管理員先設定監控目錄")
+
+    enabled = body.get("enabled")
+    if enabled is None:
+        raise HTTPException(status_code=400, detail="enabled 必填（true / false）")
+
+    sfi.enabled = bool(enabled)
+    db.commit()
+    return {"enabled": sfi.enabled}
+
+
+@router.post("/{project_id}/auto-import/trigger", status_code=status.HTTP_200_OK)
+def trigger_auto_import(
+    project_id: str,
+    agent_id: str = Query(..., description="agent 識別"),
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+) -> dict:
+    """手動立即執行一次自動匯入（manager+）。"""
+    if current.role not in _MANAGER_ROLES:
+        raise HTTPException(status_code=403, detail="需要 manager 以上角色")
+
+    _require_project_access(db, current, project_id, agent_id)
+
+    sfi = db.query(ScheduledFileImport).filter(
+        ScheduledFileImport.target_type == "bi_project",
+        ScheduledFileImport.target_id == project_id,
+    ).first()
+    if not sfi:
+        raise HTTPException(status_code=404, detail="尚未設定自動匯入，請管理員先設定監控目錄")
+
+    try:
+        trigger_import(sfi, db)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+    db.refresh(sfi)
+    return {"triggered": True, **_sfi_to_dict(sfi)}

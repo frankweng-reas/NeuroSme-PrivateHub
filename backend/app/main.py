@@ -52,12 +52,14 @@ async def lifespan(app: FastAPI):
         seed_default_admin(db)
         seed_doc_parse_profiles(db)
 
-    # 啟動 KM Connector 排程器（每分鐘檢查到期的 connector）
+    # 啟動排程器（每分鐘檢查到期的任務）
     from app.services.connector_service import run_due_connectors
+    from app.services.scheduled_file_import_service import run_due_imports
     scheduler = AsyncIOScheduler()
     scheduler.add_job(run_due_connectors, "interval", minutes=1, id="km_connector_sync")
+    scheduler.add_job(run_due_imports,    "interval", minutes=1, id="scheduled_file_import")
     scheduler.start()
-    logger.info("KM Connector 排程器已啟動")
+    logger.info("排程器已啟動（km_connector_sync, scheduled_file_import）")
 
     yield
 

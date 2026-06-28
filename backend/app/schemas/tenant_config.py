@@ -39,6 +39,13 @@ class EmbeddingMigrateRequest(BaseModel):
     confirm: bool = Field(..., description="必須傳 true 以確認此操作將清空所有向量索引")
 
 
+class EmbeddingTestCandidateRequest(BaseModel):
+    """POST /llm-configs/tenant-config/embedding/test-candidate 用：
+    測試候選的 embedding provider/model（尚未儲存），不影響現有向量資料"""
+    provider: str = Field(..., description="測試的 provider：openai | gemini | local | ...")
+    model: str = Field(..., description="測試的 model 名稱，例：text-embedding-004")
+
+
 class AnalysisModelUpdate(BaseModel):
     """PATCH /llm-configs/tenant-config/analysis-model 用：更新分析模型設定"""
     model: Optional[str] = Field(None, description="分析模型字串，例：openai/gpt-4o；傳 null 代表清除設定")

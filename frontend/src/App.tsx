@@ -31,6 +31,7 @@ import TestComputeEngine from './pages/TestComputeEngine'
 import DevPipelineInspector from './pages/DevPipelineInspector'
 import AgentLabPage from './pages/AgentLabPage'
 import WidgetBotPage from './pages/WidgetBotPage'
+import MobileBIPage from './pages/MobileBIPage'
 
 function App() {
   return (
@@ -40,6 +41,8 @@ function App() {
           <Routes>
             {/* Widget：公開頁面，不需登入，在 Layout 外 */}
             <Route path="/widget/bot/:token" element={<WidgetBotPage />} />
+            {/* BI 手機版：全螢幕，需登入（自行驗證 token） */}
+            <Route path="/bi" element={<MobileBIPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/change-password-expired" element={<ChangePasswordExpiredPage />} />

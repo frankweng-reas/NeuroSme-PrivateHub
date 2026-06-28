@@ -17,11 +17,10 @@ import ConfirmModal from '@/components/ConfirmModal'
 import InputModal from '@/components/InputModal'
 import SchemaManagerOverlay from '@/components/SchemaManagerOverlayV2'
 import ExamplePromptsModal from '@/components/ExamplePromptsModal'
-import { createBiProject, deleteBiProject, getDuckdbStatus, importCsvToDuckdb, listBiProjects, updateBiProject, type BiProjectItem, type MessageStored } from '@/api/biProjects'
-import { createBiSampleQa, deleteBiSampleQa, listBiSampleQa } from '@/api/biSampleQa'
+import { createBiProject, clearDuckdbData, deleteBiProject, getDuckdbStatus, getAutoImport, getAutoImportBaseConfig, setAutoImport, toggleAutoImport, triggerAutoImport, importCsvToDuckdb, listBiProjects, updateBiProject, type AutoImportConfig, type BiProjectItem, type MessageStored, type ProjectConfig } from '@/api/biProjects'
+import { getMe } from '@/api/users'
 import { getBiSchema, listBiSchemas, type BiSchemaItem } from '@/api/biSchemas'
 import { getTenantConfig } from '@/api/llmConfigs'
-import { DETAIL_OPTIONS, LANGUAGE_OPTIONS, ROLE_OPTIONS } from '@/constants/aiOptions'
 import type { Agent } from '@/types'
 
 interface AgentBusinessUIProps {
@@ -85,64 +84,18 @@ function csvHeadersMatchSchema(csvHeaders: string[], allowedHeaders: Set<string>
   return true
 }
 
-const STORAGE_KEY_PREFIX = 'agent-business-ui'
 const PROJECT_STORAGE_KEY_PREFIX = 'agent-business-project'
 
 /** 系統預設範例問題（無論資料是否就緒皆可檢視；實際分析仍受匯入／權限限制） */
 const BI_SYSTEM_EXAMPLE_QUESTIONS = [
-  '2026年各個平台的銷售金額佔比？',
-  '「乳品」 大類中各品牌的銷售額佔比',
-  '各品牌的 ROI (銷售額-成本)/成本？',
-  '對比 2024 年 3 月，2025 年各通路的銷售成長率，且 2025 銷售額大於 1000，取前 5',
-  '各通路下，各品牌的銷售額佔「本通路」總額比例',
+  '簡介這個資料庫',
+  '提供幾個範例問題',
+  '這個資料庫的資料時間區間為何？',
+  '最需要注意的三件事，並給建議',
 ] as const
-
-interface StoredState {
-  userPrompt: string
-  role: string
-  language: string
-  detailLevel: string
-  exampleQuestionsCount: string
-  selectedTemplateId: number | null
-}
 
 function getProjectStorageKey(agentId: string) {
   return `${PROJECT_STORAGE_KEY_PREFIX}-${agentId}`
-}
-
-function getSettingsStorageKey(agentId: string, projectId?: string) {
-  return projectId ? `${STORAGE_KEY_PREFIX}-${agentId}:${projectId}` : `${STORAGE_KEY_PREFIX}-${agentId}`
-}
-
-function loadStored(agentId: string, projectId?: string): Partial<StoredState> | null {
-  try {
-    const agentKey = getSettingsStorageKey(agentId)
-    const fallback = (() => {
-      const raw = localStorage.getItem(agentKey)
-      if (!raw) return null
-      const p = JSON.parse(raw) as Partial<StoredState & { messages?: Message[] }>
-      const { messages: _m, ...rest } = p
-      return rest
-    })()
-    if (!projectId) return fallback
-    const projectKey = getSettingsStorageKey(agentId, projectId)
-    const raw = localStorage.getItem(projectKey)
-    if (!raw) return fallback
-    const parsed = JSON.parse(raw) as Partial<StoredState & { messages?: Message[] }>
-    const { messages: _m, ...rest } = parsed
-    return { ...fallback, ...rest }
-  } catch {
-    return null
-  }
-}
-
-function saveStored(agentId: string, state: StoredState, projectId?: string) {
-  try {
-    const key = getSettingsStorageKey(agentId, projectId)
-    localStorage.setItem(key, JSON.stringify(state))
-  } catch {
-    /* ignore */
-  }
 }
 
 /** 從 DB 的 conversation_data 轉成 Message[] */
@@ -303,7 +256,7 @@ function BlockCard({
       <div className="flex flex-col gap-5 p-4">
         <div className="flex flex-col gap-2">
           <label className="text-lg font-medium text-gray-700" htmlFor={`block-schema-${block.id}`}>
-            資料模型-Schema
+            資料範本
           </label>
           <select
             id={`block-schema-${block.id}`}
@@ -448,13 +401,9 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
   const [editProjectError, setEditProjectError] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [analysisModel, setAnalysisModel] = useState<string | null>(null)
-  const [userPrompt, setUserPrompt] = useState(() => loadStored(agent.id)?.userPrompt ?? '')
-  const [role, setRole] = useState(() => loadStored(agent.id)?.role ?? 'manager')
-  const [language, setLanguage] = useState(() => loadStored(agent.id)?.language ?? 'zh-TW')
-  const [detailLevel, setDetailLevel] = useState(() => loadStored(agent.id)?.detailLevel ?? 'brief')
-  const [exampleQuestionsCount, setExampleQuestionsCount] = useState(
-    () => loadStored(agent.id)?.exampleQuestionsCount ?? '0'
-  )
+  const [userPrompt, setUserPrompt] = useState('')
+
+  const [exampleQuestionsCount, setExampleQuestionsCount] = useState('0')
   const [isLoading, setIsLoading] = useState(false)
   const [loadingStage] = useState<'intent' | 'compute' | 'text' | null>(null)
   const [agentSteps, setAgentSteps] = useState<AgentStepEvent[]>([])
@@ -464,9 +413,20 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
   const [showHelpModal, setShowHelpModal] = useState(false)
   const [importCsvLoading, setImportCsvLoading] = useState(false)
   const [importDrawerOpen, setImportDrawerOpen] = useState(false)
-  const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(
-    () => loadStored(agent.id)?.selectedTemplateId ?? null
-  )
+  const [showClearDuckdbConfirm, setShowClearDuckdbConfirm] = useState(false)
+  const [importTab, setImportTab] = useState<'csv' | 'auto'>('csv')
+  const [currentUserRole, setCurrentUserRole] = useState<string>('user')
+  const [autoImportConfig, setAutoImportConfig] = useState<AutoImportConfig | null>(null)
+  const [autoImportLoading, setAutoImportLoading] = useState(false)
+  const [autoImportSaving, setAutoImportSaving] = useState(false)
+  const [autoImportTriggering, setAutoImportTriggering] = useState(false)
+  const [autoImportForm, setAutoImportForm] = useState({
+    watch_path: '',
+    mode: 'replace' as 'replace' | 'append',
+    interval_minutes: 60,
+    enabled: true,
+  })
+  const [allowedWatchBase, setAllowedWatchBase] = useState('')
   const nextBlockIdRef = useRef(0)
   const [blocks, setBlocks] = useState<BlockItem[]>(() => [
     { id: '0', selectedSchemaId: '', selectedFiles: [] },
@@ -481,7 +441,14 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
   const [chatInputSeed, setChatInputSeed] = useState<{ n: number; text: string } | null>(null)
   const chatExampleSeedCounterRef = useRef(0)
 
-  const [userExamplePrompts, setUserExamplePrompts] = useState<{ id: string; text: string }[]>([])
+  const userExamplePrompts = useMemo(
+    () =>
+      (selectedProject?.project_config?.sampleQuestions ?? []).map((text, i) => ({
+        id: String(i),
+        text,
+      })),
+    [selectedProject?.project_config?.sampleQuestions]
+  )
 
   const loadSchemas = useCallback(() => {
     listBiSchemas(agent.agent_id)
@@ -489,17 +456,50 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
       .catch(() => setSchemas([]))
   }, [agent.agent_id])
 
-  const refreshUserSampleQa = useCallback(() => {
-    listBiSampleQa(agent.id)
-      .then((rows) =>
-        setUserExamplePrompts(rows.map((r) => ({ id: r.id, text: r.question_text })))
-      )
-      .catch(() => setUserExamplePrompts([]))
+  // 取得目前登入用戶的 role，以及系統層級的 watch_path 根目錄
+  useEffect(() => {
+    getMe()
+      .then((u) => setCurrentUserRole(u.role ?? 'user'))
+      .catch(() => setCurrentUserRole('user'))
+    getAutoImportBaseConfig(agent.id)
+      .then((cfg) => {
+        setAllowedWatchBase(cfg.allowed_watch_base)
+        setAutoImportForm((prev) => ({
+          ...prev,
+          // watch_path 由 selectedProject effect 負責填入，此處不預填
+        }))
+      })
+      .catch(() => {})
   }, [agent.id])
 
+  // 當切換到「自動匯入」tab 且有選中 project 時，載入設定
   useEffect(() => {
-    refreshUserSampleQa()
-  }, [refreshUserSampleQa])
+    if (importTab !== 'auto' || !selectedProject) return
+    // 以分析主題名稱（sanitize 後）作為子目錄預設值
+    const safeName = selectedProject.project_name.replace(/[/\\:*?"<>|]/g, '_').trim() || selectedProject.project_id
+    const defaultPath = allowedWatchBase ? `${allowedWatchBase}/${safeName}` : ''
+    setAutoImportLoading(true)
+    getAutoImport(agent.id, selectedProject.project_id)
+      .then((cfg) => {
+        setAutoImportConfig(cfg)
+        if (cfg.configured) {
+          setAutoImportForm({
+            watch_path: cfg.watch_path ?? defaultPath,
+            mode: cfg.mode ?? 'replace',
+            interval_minutes: cfg.interval_minutes ?? 60,
+            enabled: cfg.enabled ?? true,
+          })
+        } else {
+          // 尚未設定時，直接用當前主題名稱的子目錄覆蓋（避免帶入前一個主題的路徑）
+          setAutoImportForm((prev) => ({
+            ...prev,
+            watch_path: defaultPath,
+          }))
+        }
+      })
+      .catch(() => { /* 保留舊 config，不清空 */ })
+      .finally(() => setAutoImportLoading(false))
+  }, [importTab, selectedProject, agent.id])
 
   const examplePrompts = useMemo(
     () => [
@@ -513,47 +513,40 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     [userExamplePrompts]
   )
 
+  const patchProjectConfig = useCallback(
+    (config: ProjectConfig) => {
+      if (!selectedProject) return
+      const merged: ProjectConfig = { ...selectedProject.project_config, ...config }
+      updateBiProject(agent.id, selectedProject.project_id, { project_config: merged })
+        .then((updated) => {
+          setProjects((prev) => prev.map((p) => (p.project_id === updated.project_id ? updated : p)))
+          setSelectedProject((prev) =>
+            prev?.project_id === updated.project_id ? updated : prev
+          )
+        })
+        .catch(() => {})
+    },
+    [agent.id, selectedProject]
+  )
+
   const handleExamplePromptAdd = useCallback(
     (text: string) => {
       const t = text.trim()
-      if (!t) return
-      void (async () => {
-        try {
-          await createBiSampleQa({ agent_id: agent.id, question_text: t })
-          refreshUserSampleQa()
-        } catch (err) {
-          const msg =
-            err instanceof ApiError
-              ? err.detail ?? err.message
-              : err instanceof Error
-                ? err.message
-                : '新增失敗'
-          setToastMessage(String(msg))
-        }
-      })()
+      if (!t || !selectedProject) return
+      const current = selectedProject.project_config?.sampleQuestions ?? []
+      patchProjectConfig({ sampleQuestions: [...current, t] })
     },
-    [agent.id, refreshUserSampleQa]
+    [selectedProject, patchProjectConfig]
   )
 
   const handleExamplePromptRemove = useCallback(
     (id: string) => {
-      if (id.startsWith('sys-')) return
-      void (async () => {
-        try {
-          await deleteBiSampleQa(id, agent.id)
-          refreshUserSampleQa()
-        } catch (err) {
-          const msg =
-            err instanceof ApiError
-              ? err.detail ?? err.message
-              : err instanceof Error
-                ? err.message
-                : '刪除失敗'
-          setToastMessage(String(msg))
-        }
-      })()
+      if (id.startsWith('sys-') || !selectedProject) return
+      const idx = parseInt(id, 10)
+      const current = selectedProject.project_config?.sampleQuestions ?? []
+      patchProjectConfig({ sampleQuestions: current.filter((_, i) => i !== idx) })
     },
-    [agent.id, refreshUserSampleQa]
+    [selectedProject, patchProjectConfig]
   )
 
   const handlePickExampleForChat = useCallback((text: string) => {
@@ -600,32 +593,14 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
 
   /** 送出時必讀最新值，避免 stale closure */
   const latestRef = useRef({
-    role,
-    language,
-    detailLevel,
     exampleQuestionsCount,
     userPrompt,
   })
   latestRef.current = {
-    role,
-    language,
-    detailLevel,
     exampleQuestionsCount,
     userPrompt,
   }
 
-  const setRoleAndRef = (v: string) => {
-    setRole(v)
-    latestRef.current.role = v
-  }
-  const setLanguageAndRef = (v: string) => {
-    setLanguage(v)
-    latestRef.current.language = v
-  }
-  const setDetailLevelAndRef = (v: string) => {
-    setDetailLevel(v)
-    latestRef.current.detailLevel = v
-  }
   const setExampleQuestionsCountAndRef = (v: string) => {
     setExampleQuestionsCount(v)
     latestRef.current.exampleQuestionsCount = v
@@ -680,6 +655,41 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
       cancelled = true
     }
   }, [agent.id, projectIdsKey])
+
+  // 批次載入所有 project 的自動匯入狀態（manager+ 才需要顯示 badge）
+  const [autoImportStatusByProject, setAutoImportStatusByProject] = useState<
+    Record<string, Pick<AutoImportConfig, 'configured' | 'enabled' | 'last_import_status'>>
+  >({})
+
+  useEffect(() => {
+    const isManager = ['manager', 'admin', 'super_admin'].includes(currentUserRole)
+    if (!agent.id || projects.length === 0 || !isManager) return
+    let cancelled = false
+    void Promise.all(
+      projects.map((p) =>
+        getAutoImport(agent.id, p.project_id)
+          .then((cfg) => ({ id: p.project_id, cfg }))
+          .catch(() => ({
+            id: p.project_id,
+            cfg: { configured: false, enabled: false, last_import_status: 'never' } as AutoImportConfig,
+          }))
+      )
+    ).then((results) => {
+      if (cancelled) return
+      const next: Record<string, Pick<AutoImportConfig, 'configured' | 'enabled' | 'last_import_status'>> = {}
+      for (const r of results) {
+        next[r.id] = {
+          configured: r.cfg.configured,
+          enabled: r.cfg.enabled,
+          last_import_status: r.cfg.last_import_status,
+        }
+      }
+      setAutoImportStatusByProject(next)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [agent.id, projectIdsKey, currentUserRole])
 
   const duckdbRowCount = selectedProject
     ? duckdbRowCountByProject[selectedProject.project_id] ?? null
@@ -783,31 +793,18 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     }
   }, [projectMenuOpen])
 
-  useEffect(() => {
-    const stored = loadStored(agent.id)
-    setUserPrompt(stored?.userPrompt ?? '')
-    setRole(stored?.role ?? 'manager')
-    setLanguage(stored?.language ?? 'zh-TW')
-    setDetailLevel(stored?.detailLevel ?? 'brief')
-    setExampleQuestionsCount(stored?.exampleQuestionsCount ?? '0')
-    setSelectedTemplateId(stored?.selectedTemplateId ?? null)
-  }, [agent.id])
-
   /** 切換專案時載入該專案的對話紀錄與 AI 設定 */
   useEffect(() => {
     if (selectedProject) {
       setMessages(parseConversationData(selectedProject.conversation_data))
-      const stored = loadStored(agent.id, selectedProject.project_id)
-      if (stored?.userPrompt != null) setUserPrompt(stored.userPrompt)
-      if (stored?.role != null) setRole(stored.role)
-      if (stored?.language != null) setLanguage(stored.language)
-      if (stored?.detailLevel != null) setDetailLevel(stored.detailLevel)
-      if (stored?.exampleQuestionsCount != null) setExampleQuestionsCount(stored.exampleQuestionsCount)
-      if (stored?.selectedTemplateId != null) setSelectedTemplateId(stored.selectedTemplateId)
+      setUserPrompt(selectedProject.project_config?.userPrompt ?? '')
+      setExampleQuestionsCount(selectedProject.project_config?.suggestedFollowUpCount ?? '0')
     } else {
       setMessages([])
+      setUserPrompt('')
+      setExampleQuestionsCount('0')
     }
-  }, [agent.id, selectedProject?.project_id])
+  }, [selectedProject?.project_id])
 
   useEffect(() => {
     setProjectsLoading(true)
@@ -836,21 +833,27 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
       .finally(() => setProjectsLoading(false))
   }, [agent.id])
 
-  const prevAgentIdRef = useRef(agent.id)
+  /** 設定變更時 debounce 儲存至 DB */
   useEffect(() => {
-    if (prevAgentIdRef.current !== agent.id) {
-      prevAgentIdRef.current = agent.id
-      return
-    }
-    saveStored(agent.id, {
-      userPrompt,
-      role,
-      language,
-      detailLevel,
-      exampleQuestionsCount,
-      selectedTemplateId,
-    }, selectedProject?.project_id)
-  }, [agent.id, userPrompt, role, language, detailLevel, exampleQuestionsCount, selectedTemplateId, selectedProject?.project_id])
+    if (!selectedProject) return
+    const timer = setTimeout(() => {
+      updateBiProject(agent.id, selectedProject.project_id, {
+        project_config: {
+          ...selectedProject.project_config,
+          userPrompt,
+          suggestedFollowUpCount: exampleQuestionsCount,
+        },
+      })
+        .then((updated) => {
+          setProjects((prev) => prev.map((p) => (p.project_id === updated.project_id ? updated : p)))
+          setSelectedProject((prev) =>
+            prev?.project_id === updated.project_id ? { ...prev, project_config: updated.project_config } : prev
+          )
+        })
+        .catch(() => {})
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [agent.id, selectedProject?.project_id, userPrompt, exampleQuestionsCount])
 
   /** 載入分析模型設定 */
   useEffect(() => {
@@ -898,19 +901,10 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
   }, [agent.id, selectedProject?.project_id, messages])
 
   function buildUserPrompt(s: {
-    role: string
-    language: string
-    detailLevel: string
     exampleQuestionsCount: string
     userPrompt: string
   }): string {
     const parts: string[] = []
-    const roleOpt = ROLE_OPTIONS.find((o) => o.value === s.role)
-    const langOpt = LANGUAGE_OPTIONS.find((o) => o.value === s.language)
-    const detailOpt = DETAIL_OPTIONS.find((o) => o.value === s.detailLevel)
-    if (roleOpt) parts.push(roleOpt.prompt)
-    if (langOpt) parts.push(langOpt.prompt)
-    if (detailOpt) parts.push(detailOpt.prompt)
     const n = parseInt(s.exampleQuestionsCount, 10)
     if (n > 0) {
       parts.push(`回覆結尾請提供 ${n} 個建議追問的問題，對營運管理有幫助的。`)
@@ -924,11 +918,6 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     try {
       await deleteBiProject(agent.id, projectId)
       const wasSelected = selectedProject?.project_id === projectId
-      try {
-        localStorage.removeItem(getSettingsStorageKey(agent.id, projectId))
-      } catch {
-        // 忽略
-      }
       if (wasSelected) {
         try {
           localStorage.removeItem(getProjectStorageKey(agent.id))
@@ -1139,7 +1128,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
         {
           role: 'assistant',
           content:
-            '此分析主題尚未設定資料模型。請在「匯入資料」區選擇範本並上傳 CSV 完成匯入後，再進行分析對話。',
+            '此分析主題尚未設定資料範本。請在「匯入資料」區選擇資料範本並上傳 CSV 完成匯入後，再進行分析對話。',
         },
       ])
       return
@@ -1256,6 +1245,26 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
           setShowClearConfirm(false)
         }}
         onCancel={() => setShowClearConfirm(false)}
+      />
+      <ConfirmModal
+        open={showClearDuckdbConfirm}
+        title="確認清除資料"
+        message={`確定要清除「${selectedProject?.project_name ?? ''}」的所有匯入資料嗎？此操作無法復原。`}
+        confirmText="確認清除"
+        cancelText="取消"
+        variant="danger"
+        onConfirm={async () => {
+          setShowClearDuckdbConfirm(false)
+          if (!selectedProject) return
+          try {
+            await clearDuckdbData(agent.id, selectedProject.project_id)
+            setDuckdbRowCountByProject((prev) => ({ ...prev, [selectedProject.project_id]: null }))
+            setToastMessage('資料已清除')
+          } catch {
+            setToastMessage('清除失敗，請稍後再試')
+          }
+        }}
+        onCancel={() => setShowClearDuckdbConfirm(false)}
       />
       <HelpModal
         open={showHelpModal}
@@ -1471,6 +1480,29 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
                         <Database className={`h-4 w-4 ${dbIconClass}`} />
                       </button>
                       <span className="min-w-0 flex-1 truncate text-white">{p.project_name}</span>
+                      {/* 自動匯入狀態 badge */}
+                      {(() => {
+                        const ai = autoImportStatusByProject[p.project_id]
+                        if (!ai?.configured) return null
+                        const isRunning = ai.last_import_status === 'running'
+                        const isFailed = ai.last_import_status === 'failed'
+                        const label = isRunning ? '同步中' : isFailed ? '失敗' : ai.enabled ? '自動' : '已停用'
+                        const cls = isRunning
+                          ? 'bg-blue-400/30 text-blue-100'
+                          : isFailed
+                          ? 'bg-red-400/30 text-red-100'
+                          : ai.enabled
+                          ? 'bg-green-400/30 text-green-100'
+                          : 'bg-white/10 text-white/60'
+                        return (
+                          <span
+                            className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${cls}`}
+                            title={`自動匯入：${label}`}
+                          >
+                            {label}
+                          </span>
+                        )
+                      })()}
                       {selectedProject?.project_id === p.project_id && (
                         <>
                           <button
@@ -1631,22 +1663,13 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
           <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden border-b border-gray-200 bg-gray-50 px-4 py-3">
             <AISettingsPanelBasic
               analysisModel={analysisModel}
-              role={role}
-              onRoleChange={setRoleAndRef}
-              language={language}
-              onLanguageChange={setLanguageAndRef}
-              detailLevel={detailLevel}
-              onDetailLevelChange={setDetailLevelAndRef}
               exampleQuestionsCount={exampleQuestionsCount}
               onExampleQuestionsCountChange={setExampleQuestionsCountAndRef}
             />
             <div className="shrink-0 border-t border-gray-200" />
             <AISettingsPanelAdvanced
-              agentId={agent.id}
               userPrompt={userPrompt}
               onUserPromptChange={setUserPromptAndRef}
-              selectedTemplateId={selectedTemplateId}
-              onSelectedTemplateIdChange={setSelectedTemplateId}
               onToast={setToastMessage}
             />
           </div>
@@ -1684,48 +1707,340 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
                 ✕
               </button>
             </div>
+
+            {/* Tab bar（manager+ 才顯示自動匯入 Tab） */}
+            {['manager', 'admin', 'super_admin'].includes(currentUserRole) && (
+              <div className="flex shrink-0 border-b border-gray-200">
+                {(['csv', 'auto'] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setImportTab(tab)}
+                    className={`flex-1 py-2 text-sm font-medium transition-colors ${
+                      importTab === tab
+                        ? 'border-b-2 border-blue-600 text-blue-600'
+                        : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    {tab === 'csv' ? 'CSV 匯入' : '自動匯入'}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* 抽屜內容 */}
             <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4 text-lg">
-              {blocks.map((block) => (
-                <BlockCard
-                  key={block.id}
-                  block={block}
-                  schemas={schemas}
-                  canDelete={blocks.length > 1}
-                  onSchemaChange={updateBlockSchema}
-                  onFilesChange={updateBlockFiles}
-                  onRemoveFile={removeFileFromBlock}
-                  onClearFiles={clearBlockFiles}
-                  onDelete={removeBlock}
-                  onValidationError={(msg) => setCsvAdapterToast(msg)}
-                  fileInputId={`file-input-drawer-${block.id}`}
-                  getSchemaValidationContext={getSchemaValidationContext}
+              {/* ── CSV 匯入 Tab ── */}
+              {importTab === 'csv' && (
+                <>
+                  {blocks.map((block) => (
+                    <BlockCard
+                      key={block.id}
+                      block={block}
+                      schemas={schemas}
+                      canDelete={blocks.length > 1}
+                      onSchemaChange={updateBlockSchema}
+                      onFilesChange={updateBlockFiles}
+                      onRemoveFile={removeFileFromBlock}
+                      onClearFiles={clearBlockFiles}
+                      onDelete={removeBlock}
+                      onValidationError={(msg) => setCsvAdapterToast(msg)}
+                      fileInputId={`file-input-drawer-${block.id}`}
+                      getSchemaValidationContext={getSchemaValidationContext}
+                    />
+                  ))}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await handleImportCsv()
+                      setImportDrawerOpen(false)
+                    }}
+                    disabled={
+                      importCsvLoading ||
+                      !selectedProject ||
+                      blocks.every((b) => !b.selectedSchemaId.trim() || b.selectedFiles.length === 0)
+                    }
+                    className="flex shrink-0 items-center justify-center rounded-lg bg-blue-600 py-4 text-lg text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {importCsvLoading ? (
+                      <>
+                        <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                        匯入中…
+                      </>
+                    ) : (
+                      '匯入資料'
+                    )}
+                  </button>
+                  {/* 清除資料按鈕 */}
+                  {selectedProject && duckdbRowCount != null && duckdbRowCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowClearDuckdbConfirm(true)}
+                      className="flex shrink-0 items-center justify-center rounded-lg border border-red-400 py-3 text-sm text-red-500 transition-colors hover:bg-red-50"
+                    >
+                      清除資料
+                    </button>
+                  )}
+                </>
+              )}
+
+              {/* ── 自動匯入 Tab ── */}
+              {importTab === 'auto' && (
+                <AutoImportPanel
+                  agentId={agent.id}
+                  projectId={selectedProject?.project_id ?? null}
+                  userRole={currentUserRole}
+                  allowedWatchBase={allowedWatchBase}
+                  config={autoImportConfig}
+                  loading={autoImportLoading}
+                  saving={autoImportSaving}
+                  triggering={autoImportTriggering}
+                  form={autoImportForm}
+                  onFormChange={(patch) => setAutoImportForm((prev) => ({ ...prev, ...patch }))}
+                  onSave={async () => {
+                    if (!selectedProject) return
+                    setAutoImportSaving(true)
+                    try {
+                      const cfg = await setAutoImport(agent.id, selectedProject.project_id, autoImportForm)
+                      setAutoImportConfig(cfg)
+                      setToastMessage('自動匯入設定已儲存')
+                    } catch (err) {
+                      const msg = err instanceof ApiError ? (err.detail ?? err.message) : '儲存失敗，請稍後再試'
+                      setToastMessage(`儲存失敗：${msg}`)
+                    } finally {
+                      setAutoImportSaving(false)
+                    }
+                  }}
+                  onToggle={async (enabled) => {
+                    if (!selectedProject) return
+                    try {
+                      await toggleAutoImport(agent.id, selectedProject.project_id, enabled)
+                      setAutoImportConfig((prev) => prev ? { ...prev, enabled } : prev)
+                      setToastMessage(enabled ? '自動匯入已啟用' : '自動匯入已停用')
+                    } catch {
+                      setToastMessage('操作失敗，請稍後再試')
+                    }
+                  }}
+                  onTrigger={async () => {
+                    if (!selectedProject) return
+                    setAutoImportTriggering(true)
+                    try {
+                      const result = await triggerAutoImport(agent.id, selectedProject.project_id)
+                      setAutoImportConfig(result)
+                      setToastMessage('已手動執行匯入')
+                      // 重新載入 duckdb 筆數
+                      const status = await getDuckdbStatus(agent.id, selectedProject.project_id)
+                      setDuckdbRowCountByProject((prev) => ({
+                        ...prev,
+                        [selectedProject.project_id]: status.has_data ? status.row_count : null,
+                      }))
+                    } catch (err) {
+                      const msg = err instanceof ApiError ? err.detail ?? err.message : '觸發失敗，請稍後再試'
+                      setToastMessage(msg)
+                    } finally {
+                      setAutoImportTriggering(false)
+                    }
+                  }}
                 />
-              ))}
-              <button
-                type="button"
-                onClick={async () => {
-                  await handleImportCsv()
-                  setImportDrawerOpen(false)
-                }}
-                disabled={
-                  importCsvLoading ||
-                  !selectedProject ||
-                  blocks.every((b) => !b.selectedSchemaId.trim() || b.selectedFiles.length === 0)
-                }
-                className="flex shrink-0 items-center justify-center rounded-lg bg-blue-600 py-4 text-lg text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {importCsvLoading ? (
-                  <>
-                    <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                    匯入中…
-                  </>
-                ) : (
-                  '匯入資料'
-                )}
-              </button>
+              )}
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── 自動匯入面板 ─────────────────────────────────────────────────────────────
+
+interface AutoImportPanelProps {
+  agentId: string
+  projectId: string | null
+  userRole: string
+  allowedWatchBase: string
+  config: AutoImportConfig | null
+  loading: boolean
+  saving: boolean
+  triggering: boolean
+  form: { watch_path: string; mode: 'replace' | 'append'; interval_minutes: number; enabled: boolean }
+  onFormChange: (patch: Partial<AutoImportPanelProps['form']>) => void
+  onSave: () => void
+  onToggle: (enabled: boolean) => void
+  onTrigger: () => void
+}
+
+function AutoImportPanel({
+  projectId,
+  userRole,
+  allowedWatchBase,
+  config,
+  loading,
+  saving,
+  triggering,
+  form,
+  onFormChange,
+  onSave,
+  onToggle,
+  onTrigger,
+}: AutoImportPanelProps) {
+  const isAdmin = ['admin', 'super_admin'].includes(userRole)
+
+  if (!projectId) {
+    return (
+      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-500">
+        請先選擇一個分析主題
+      </div>
+    )
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-gray-500">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        載入中…
+      </div>
+    )
+  }
+
+  const statusColor: Record<string, string> = {
+    never: 'text-gray-400',
+    running: 'text-blue-500',
+    success: 'text-green-600',
+    failed: 'text-red-600',
+  }
+  const statusLabel: Record<string, string> = {
+    never: '從未執行',
+    running: '執行中…',
+    success: '成功',
+    failed: '失敗',
+  }
+
+  return (
+    <div className="flex flex-col gap-4 text-sm">
+      {/* 說明 */}
+      <p className="text-gray-500 text-xs leading-relaxed">
+        系統會依排程自動掃描指定目錄中的 CSV 檔案，並同步更新 DuckDB 資料，無需手動匯入。
+      </p>
+
+      {/* 監控目錄（admin 可編輯，manager 唯讀） */}
+      <div className="flex flex-col gap-1">
+        <label className="font-medium text-gray-700">監控目錄</label>
+        {isAdmin ? (
+          <input
+            type="text"
+            className="rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+            placeholder="/app/data/csv_import/your-folder"
+            value={form.watch_path}
+            onChange={(e) => onFormChange({ watch_path: e.target.value })}
+          />
+        ) : (
+          <div className="rounded border border-gray-200 bg-gray-50 px-3 py-2 text-gray-600 font-mono text-xs break-all">
+            {config?.watch_path ?? '（尚未設定，請聯絡管理員）'}
+          </div>
+        )}
+        <p className="text-xs text-gray-400">
+          路徑必須在 <span className="font-mono">{allowedWatchBase || '/app/data/csv_import'}/</span> 目錄下
+        </p>
+      </div>
+
+      {/* 模式與間隔（admin 可編輯） */}
+      {isAdmin && (
+        <>
+          <div className="flex flex-col gap-1">
+            <label className="font-medium text-gray-700">匯入模式</label>
+            <select
+              className="rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+              value={form.mode}
+              onChange={(e) => onFormChange({ mode: e.target.value as 'replace' | 'append' })}
+            >
+              <option value="replace">覆蓋（清空後重新匯入）</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="font-medium text-gray-700">排程間隔（分鐘）</label>
+            <input
+              type="number"
+              min={1}
+              className="rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+              value={form.interval_minutes}
+              onChange={(e) => onFormChange({ interval_minutes: Number(e.target.value) })}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={saving}
+            className="flex items-center justify-center rounded-lg bg-blue-600 py-2 text-sm text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+          >
+            {saving ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />儲存中…</> : '儲存設定'}
+          </button>
+        </>
+      )}
+
+      {/* ── 控制區（永遠顯示，未設定時 disabled） ── */}
+      <div className="flex flex-col gap-3">
+        {/* 啟用 / 停用 toggle */}
+        <div className="flex items-center justify-between rounded-lg border border-gray-200 p-3">
+          <div>
+            <p className="font-medium text-gray-700">自動排程</p>
+            <p className="text-xs text-gray-400">
+              {config?.configured
+                ? `每 ${config.interval_minutes} 分鐘執行一次`
+                : '請先儲存設定'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => onToggle(!config?.enabled)}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
+              config?.enabled ? 'bg-blue-600' : 'bg-gray-300'
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                config?.enabled ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
+          </button>
+        </div>
+
+        {/* 上次執行狀態 */}
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs">
+          <p className="font-medium text-gray-700 mb-1">上次執行狀態</p>
+          <p className={statusColor[config?.last_import_status ?? 'never'] ?? 'text-gray-400'}>
+            {statusLabel[config?.last_import_status ?? 'never'] ?? config?.last_import_status}
+          </p>
+          {config?.last_import_at && (
+            <p className="text-gray-400 mt-0.5">
+              {new Date(config.last_import_at).toLocaleString('zh-TW')}
+            </p>
+          )}
+          {config?.last_import_rows != null && (
+            <p className="text-gray-500 mt-0.5">匯入 {config.last_import_rows.toLocaleString()} 筆</p>
+          )}
+          {config?.last_error && (
+            <p className="text-red-500 mt-1 break-all">{config.last_error}</p>
+          )}
+        </div>
+
+        {/* 手動觸發 */}
+        <button
+          type="button"
+          onClick={onTrigger}
+          disabled={triggering}
+          className="flex items-center justify-center rounded-lg border border-blue-500 py-2 text-sm text-blue-600 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {triggering ? (
+            <><Loader2 className="mr-2 h-4 w-4 animate-spin" />執行中…</>
+          ) : (
+            '立即執行一次'
+          )}
+        </button>
+      </div>
+
+      {!config?.configured && !isAdmin && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
+          尚未設定自動匯入目錄。請聯絡管理員（admin）進行設定。
         </div>
       )}
     </div>

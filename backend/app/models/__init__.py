@@ -35,6 +35,7 @@ from app.models.km_connector import KmConnector
 from app.models.doc_parse_profile import DocParseProfile
 from app.models.doc_parse_result import DocParseResult
 from app.models.writing_document import WritingDocument
+from app.models.scheduled_file_import import ScheduledFileImport
 
 __all__ = [
     "Base", "Tenant", "User", "AgentCatalog", "TenantAgent", "UserAgent",
@@ -55,4 +56,5 @@ __all__ = [
     "DocParseProfile",
     "DocParseResult",
     "WritingDocument",
+    "ScheduledFileImport",
 ]

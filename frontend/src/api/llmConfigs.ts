@@ -70,6 +70,27 @@ export async function testEmbedding(): Promise<EmbeddingTestResult> {
   })
 }
 
+export interface EmbeddingTestCandidateRequest {
+  provider: string
+  model: string
+}
+
+export interface EmbeddingTestCandidateResult extends EmbeddingTestResult {
+  provider?: string
+  dim_warning?: string | null
+}
+
+/** 測試候選的 embedding provider/model（尚未儲存），不影響現有向量資料 */
+export async function testEmbeddingCandidate(
+  body: EmbeddingTestCandidateRequest
+): Promise<EmbeddingTestCandidateResult> {
+  return apiFetch<EmbeddingTestCandidateResult>('/llm-configs/tenant-config/embedding/test-candidate', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    timeout: 25_000,
+  })
+}
+
 // ── Provider Configs ──────────────────────────────────────────────────────────
 
 export interface LLMProviderConfigCreate {
@@ -168,6 +189,18 @@ export async function updateSpeechConfig(body: SpeechConfigUpdate): Promise<Tena
 export async function testSpeechConfig(): Promise<SpeechTestResult> {
   return apiFetch<SpeechTestResult>('/llm-configs/tenant-config/speech/test', {
     method: 'POST',
+  })
+}
+
+/** 測試候選的語音服務連線（尚未儲存），不影響現有設定
+ *  - local：ping base_url/health
+ *  - openai / custom:{id}：從 LLMProviderConfig 取 api_base_url，打 /v1/models
+ */
+export async function testSpeechCandidate(params: { base_url?: string; provider: string }): Promise<SpeechTestResult> {
+  return apiFetch<SpeechTestResult>('/llm-configs/tenant-config/speech/test-candidate', {
+    method: 'POST',
+    body: JSON.stringify({ base_url: params.base_url ?? '', provider: params.provider }),
+    timeout: 12_000,
   })
 }
 
