@@ -5,14 +5,12 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import React from 'react'
-import { useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   BarChart2, BarChart3, ChevronDown, Lightbulb,
   Loader2, Send, X, CheckCircle2, XCircle,
 } from 'lucide-react'
-import { TOKEN_KEY } from '@/contexts/AuthContext'
 import { chatAgentBiStream, type AgentStepEvent } from '@/api/chat'
 import { agentBiMultiStream } from '@/api/agentBi'
 import { transcribeAudio, getSpeechStatus } from '@/api/speech'
@@ -420,17 +418,6 @@ function MessageBubble({ msg }: { msg: Message }) {
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function MobileBIPage() {
-  const navigate = useNavigate()
-
-  // Auth check
-  useEffect(() => {
-    const token = localStorage.getItem(TOKEN_KEY)
-    if (!token) {
-      sessionStorage.setItem('login_return_url', '/bi')
-      navigate('/login', { replace: true })
-    }
-  }, [navigate])
-
   // Projects
   const [projects, setProjects] = useState<BiProjectItem[]>([])
   const [projectsLoading, setProjectsLoading] = useState(true)

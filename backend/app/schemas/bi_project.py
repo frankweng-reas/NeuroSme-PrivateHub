@@ -32,6 +32,7 @@ class BiProjectResponse(BaseModel):
     project_name: str
     project_desc: str | None
     created_at: datetime
+    user_id: str | None = Field(None, description="建立者 user_id")
     conversation_data: list[dict[str, Any]] | None = None
     schema_id: str | None = Field(
         None,
@@ -39,7 +40,7 @@ class BiProjectResponse(BaseModel):
     )
     project_config: dict[str, Any] | None = Field(
         None,
-        description="per-project AI 設定（userPrompt、suggestedFollowUpCount、sampleQuestions）",
+        description="per-project AI 設定（userPrompt、suggestedFollowUpCount、sampleQuestions、sharedWith）",
     )
 
     class Config:

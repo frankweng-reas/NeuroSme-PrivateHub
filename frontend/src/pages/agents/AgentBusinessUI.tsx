@@ -17,7 +17,7 @@ import ConfirmModal from '@/components/ConfirmModal'
 import InputModal from '@/components/InputModal'
 import SchemaManagerOverlay from '@/components/SchemaManagerOverlayV2'
 import ExamplePromptsModal from '@/components/ExamplePromptsModal'
-import { createBiProject, clearDuckdbData, deleteBiProject, getDuckdbStatus, getAutoImport, getAutoImportBaseConfig, setAutoImport, toggleAutoImport, triggerAutoImport, importCsvToDuckdb, listBiProjects, updateBiProject, type AutoImportConfig, type BiProjectItem, type MessageStored, type ProjectConfig } from '@/api/biProjects'
+import { createBiProject, clearDuckdbData, deleteBiProject, getDuckdbStatus, getAutoImport, getAutoImportBaseConfig, setAutoImport, toggleAutoImport, triggerAutoImport, importCsvToDuckdb, listBiProjects, listTenantUsersForSharing, updateBiProject, type AutoImportConfig, type BiProjectItem, type MessageStored, type ProjectConfig, type TenantUserItem } from '@/api/biProjects'
 import { getMe } from '@/api/users'
 import { getBiSchema, listBiSchemas, type BiSchemaItem } from '@/api/biSchemas'
 import { getTenantConfig } from '@/api/llmConfigs'
@@ -416,6 +416,11 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
   const [showClearDuckdbConfirm, setShowClearDuckdbConfirm] = useState(false)
   const [importTab, setImportTab] = useState<'csv' | 'auto'>('csv')
   const [currentUserRole, setCurrentUserRole] = useState<string>('user')
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+  // 共用主題
+  const [tenantUsers, setTenantUsers] = useState<TenantUserItem[]>([])
+  const [editSharedWith, setEditSharedWith] = useState<string[]>([])
+  const [shareUserFilter, setShareUserFilter] = useState('')
   const [autoImportConfig, setAutoImportConfig] = useState<AutoImportConfig | null>(null)
   const [autoImportLoading, setAutoImportLoading] = useState(false)
   const [autoImportSaving, setAutoImportSaving] = useState(false)
@@ -459,8 +464,14 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
   // 取得目前登入用戶的 role，以及系統層級的 watch_path 根目錄
   useEffect(() => {
     getMe()
-      .then((u) => setCurrentUserRole(u.role ?? 'user'))
+      .then((u) => {
+        setCurrentUserRole(u.role ?? 'user')
+        setCurrentUserId(String(u.id))
+      })
       .catch(() => setCurrentUserRole('user'))
+    listTenantUsersForSharing()
+      .then(setTenantUsers)
+      .catch(() => setTenantUsers([]))
     getAutoImportBaseConfig(agent.id)
       .then((cfg) => {
         setAllowedWatchBase(cfg.allowed_watch_base)
@@ -1038,6 +1049,8 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     setEditProject(p)
     setEditProjectName(p.project_name)
     setEditProjectDesc(p.project_desc ?? '')
+    setEditSharedWith(p.project_config?.sharedWith ?? [])
+    setShareUserFilter('')
     setEditProjectError(null)
     setProjectMenuOpen(null)
   }
@@ -1057,9 +1070,11 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
     setEditProjectSubmitting(true)
     setEditProjectError(null)
     try {
+      const existingConfig = editProject.project_config ?? {}
       const updated = await updateBiProject(agent.id, editProject.project_id, {
         project_name: name,
         project_desc: editProjectDesc.trim() || null,
+        project_config: { ...existingConfig, sharedWith: editSharedWith },
       })
       setProjects((prev) =>
         prev.map((p) =>
@@ -1323,6 +1338,53 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
                 className="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
               />
             </div>
+            {/* 共用給：只有建立者可以設定 */}
+            {editProject.user_id === currentUserId && tenantUsers.length > 0 && (
+              <div>
+                <label className="mb-2 block text-base font-medium text-gray-700">共用給</label>
+                <p className="mb-2 text-sm text-gray-500">勾選的使用者可以查詢此主題（但無法修改或刪除）</p>
+                <input
+                  type="text"
+                  value={shareUserFilter}
+                  onChange={(e) => setShareUserFilter(e.target.value)}
+                  placeholder="搜尋姓名或 Email…"
+                  className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+                />
+                <div className="max-h-40 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50">
+                  {tenantUsers
+                    .filter((u) => {
+                      const q = shareUserFilter.toLowerCase()
+                      return !q || u.display_name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)
+                    })
+                    .map((u) => (
+                      <label key={u.user_id} className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-gray-100">
+                        <input
+                          type="checkbox"
+                          checked={editSharedWith.includes(u.user_id)}
+                          onChange={(e) => {
+                            setEditSharedWith(prev =>
+                              e.target.checked
+                                ? [...prev, u.user_id]
+                                : prev.filter(id => id !== u.user_id)
+                            )
+                          }}
+                          className="h-4 w-4 rounded border-gray-300 accent-gray-700"
+                        />
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-gray-800">{u.display_name}</p>
+                          <p className="truncate text-xs text-gray-500">{u.email}</p>
+                        </div>
+                      </label>
+                    ))}
+                  {tenantUsers.filter((u) => {
+                    const q = shareUserFilter.toLowerCase()
+                    return !q || u.display_name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)
+                  }).length === 0 && (
+                    <p className="px-3 py-3 text-sm text-gray-400 text-center">找不到符合的使用者</p>
+                  )}
+                </div>
+              </div>
+            )}
             {editProjectError && (
               <div className="rounded-lg bg-red-50 px-3 py-2 text-base text-red-700">{editProjectError}</div>
             )}
@@ -1367,6 +1429,7 @@ export default function AgentBusinessUI({ agent }: AgentBusinessUIProps) {
         agent={agent}
         headerBackgroundColor="#1C3939"
         showSchemaManager
+        showMobileEntry
         onSchemaManagerOpen={() => setSchemaManagerOpen(true)}
         onOnlineHelpClick={() => setShowHelpModal(true)}
       />

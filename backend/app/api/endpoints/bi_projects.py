@@ -57,6 +57,7 @@ def _to_response(p: BiProject) -> BiProjectResponse:
         project_name=p.project_name,
         project_desc=p.project_desc,
         created_at=p.created_at,
+        user_id=p.user_id,
         conversation_data=p.conversation_data,
         schema_id=getattr(p, "schema_id", None),
         project_config=getattr(p, "project_config", None),
@@ -117,20 +118,59 @@ def list_bi_projects(
     db: Session = Depends(get_db),
     current: Annotated[User, Depends(get_current_user)] = ...,
 ):
-    """取得該 agent 的商務分析專案列表"""
+    """取得該 agent 的商務分析專案列表（自己建立的 + 被共用的）"""
     tenant_id, aid = _check_agent_access(db, current, agent_id)
 
     projects = (
         db.query(BiProject)
         .filter(
-            BiProject.user_id == str(current.id),
             BiProject.tenant_id == tenant_id,
             BiProject.agent_id == aid,
         )
         .order_by(BiProject.created_at.desc())
         .all()
     )
-    return [_to_response(p) for p in projects]
+
+    my_id = str(current.id)
+
+    def _can_access(p: BiProject) -> bool:
+        if p.user_id == my_id:
+            return True
+        shared = (p.project_config or {}).get("sharedWith", [])
+        return my_id in shared
+
+    return [_to_response(p) for p in projects if _can_access(p)]
+
+
+class TenantUserItem(BaseModel):
+    user_id: str
+    display_name: str
+    email: str
+
+
+@router.get("/tenant-users", response_model=list[TenantUserItem])
+def list_tenant_users_for_sharing(
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """取得同 tenant 使用者清單（供共用主題選人用），排除自己"""
+    users = (
+        db.query(User)
+        .filter(
+            User.tenant_id == current.tenant_id,
+            User.id != current.id,
+        )
+        .order_by(User.display_name)
+        .all()
+    )
+    return [
+        TenantUserItem(
+            user_id=str(u.id),
+            display_name=u.display_name or u.username or u.email,
+            email=u.email,
+        )
+        for u in users
+    ]
 
 
 @router.get("/all", response_model=list[BiProjectResponse])

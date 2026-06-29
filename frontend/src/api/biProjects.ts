@@ -4,6 +4,8 @@ export interface ProjectConfig {
   userPrompt?: string
   suggestedFollowUpCount?: string
   sampleQuestions?: string[]
+  /** 共用給指定使用者（user_id 字串陣列） */
+  sharedWith?: string[]
 }
 
 export interface BiProjectItem {
@@ -11,10 +13,12 @@ export interface BiProjectItem {
   project_name: string
   project_desc: string | null
   created_at: string
+  /** 建立者 user_id（用於判斷是否為 owner，決定是否顯示管理選項）*/
+  user_id?: string
   conversation_data?: MessageStored[] | null
   /** 與匯入模板／分析意圖對齊的 bi_schemas id */
   schema_id?: string | null
-  /** per-project AI 設定（userPrompt、suggestedFollowUpCount、sampleQuestions） */
+  /** per-project AI 設定（userPrompt、suggestedFollowUpCount、sampleQuestions、sharedWith）*/
   project_config?: ProjectConfig | null
 }
 
@@ -74,6 +78,17 @@ export async function deleteBiProject(agentId: string, projectId: string): Promi
     `/bi-projects/${encodeURIComponent(projectId)}?agent_id=${encodeURIComponent(agentId)}`,
     { method: 'DELETE' }
   )
+}
+
+/** 取得同 tenant 使用者清單（供共用主題選人） */
+export interface TenantUserItem {
+  user_id: string
+  display_name: string
+  email: string
+}
+
+export async function listTenantUsersForSharing(): Promise<TenantUserItem[]> {
+  return apiFetch<TenantUserItem[]>('/bi-projects/tenant-users')
 }
 
 /** 手動同步專案 CSV 至 DuckDB */

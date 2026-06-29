@@ -1,7 +1,7 @@
 /** Agent 頁面共用 header：icon + 標題 + 返回連結 */
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Trash2, Upload, X } from 'lucide-react'
+import { ArrowLeft, Check, Copy, ExternalLink, Smartphone, Trash2, Upload, X } from 'lucide-react'
 import AgentIcon from '@/components/AgentIcon'
 import { getMe } from '@/api/users'
 import { createQtnCatalog, deleteQtnCatalog, listQtnCatalogs, type QtnCatalogItem } from '@/api/qtnCatalogs'
@@ -30,9 +30,11 @@ interface AgentHeaderProps {
   headerBackgroundColor?: string
   /** 標題右側「使用說明」按鈕（例如開啟 HelpModal） */
   onOnlineHelpClick?: () => void
+  /** 是否顯示「手機版入口」按鈕（BI Agent 專用） */
+  showMobileEntry?: boolean
 }
 
-export default function AgentHeader({ agent, className = '', showManagerTools: showManagerToolsProp = false, showSchemaManager = false, onSchemaManagerOpen, headerBackgroundColor = '#4b5563', onOnlineHelpClick }: AgentHeaderProps) {
+export default function AgentHeader({ agent, className = '', showManagerTools: showManagerToolsProp = false, showSchemaManager = false, onSchemaManagerOpen, headerBackgroundColor = '#4b5563', onOnlineHelpClick, showMobileEntry = false }: AgentHeaderProps) {
   const { user: authUser, logout } = useAuth()
   const navigate = useNavigate()
   const [user, setUser] = useState<User | null>(null)
@@ -48,6 +50,9 @@ export default function AgentHeader({ agent, className = '', showManagerTools: s
   const [catalogs, setCatalogs] = useState<QtnCatalogItem[]>([])
   const [catalogsLoading, setCatalogsLoading] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [mobileQrOpen, setMobileQrOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const mobileUrl = `${window.location.origin}/bi`
 
   const loadCatalogs = () => {
     setCatalogsLoading(true)
@@ -73,6 +78,19 @@ export default function AgentHeader({ agent, className = '', showManagerTools: s
     if (userMenuOpen) document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [userMenuOpen])
+
+  useEffect(() => {
+    if (!mobileQrOpen) return
+    function handleClose(e: MouseEvent) {
+      const target = e.target as Node
+      // 點擊 Smartphone 按鈕本身由 toggle 處理，這裡只關閉外部點擊
+      if (!(target as Element).closest?.('[data-qr-popover]')) {
+        setMobileQrOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClose)
+    return () => document.removeEventListener('mousedown', handleClose)
+  }, [mobileQrOpen])
 
   const showManagerTools = showManagerToolsProp && (user?.role === 'admin' || user?.role === 'manager')
   const canManageSchema = showSchemaManager && (user?.role === 'manager' || user?.role === 'admin' || user?.role === 'super_admin')
@@ -137,6 +155,13 @@ export default function AgentHeader({ agent, className = '', showManagerTools: s
     setCatalogError(null)
   }
 
+  const handleCopyMobileUrl = () => {
+    navigator.clipboard.writeText(mobileUrl).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }).catch(() => {})
+  }
+
   const handleOpenManagerTools = () => {
     setManagerToolsOpen(true)
     loadCatalogs()
@@ -186,6 +211,61 @@ export default function AgentHeader({ agent, className = '', showManagerTools: s
               >
                 主管工具
               </button>
+            )}
+            {showMobileEntry && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setMobileQrOpen((o) => !o)}
+                  title="手機版入口"
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/30 bg-white/10 text-white transition-opacity hover:bg-white/20"
+                  aria-label="手機版入口"
+                >
+                  <Smartphone className="h-5 w-5" />
+                </button>
+                {mobileQrOpen && (
+                  <div
+                    className="absolute right-0 top-full z-50 mt-2 w-64 rounded-2xl border border-gray-200 bg-white p-4 shadow-xl"
+                    data-qr-popover
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="mb-3 flex items-center justify-between">
+                      <span className="text-sm font-semibold text-gray-800">手機版入口</span>
+                      <button
+                        type="button"
+                        onClick={() => setMobileQrOpen(false)}
+                        className="rounded p-0.5 text-gray-400 hover:text-gray-600"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                    <p className="mb-3 text-xs text-gray-500">掃描 QR Code 或複製連結，在手機開啟多主題分析介面</p>
+                    <div className="mb-3 flex justify-center rounded-xl bg-gray-50 p-3">
+                      <img
+                        src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(mobileUrl)}`}
+                        alt="手機版 QR Code"
+                        className="h-40 w-40"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleCopyMobileUrl}
+                      className="flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-50"
+                    >
+                      {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                      {copied ? '已複製！' : '複製連結'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => window.open(mobileUrl, '_blank', 'noopener,noreferrer')}
+                      className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-50"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                      另開視窗
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
             {/* 頭像 dropdown */}
             <div className="relative" ref={userMenuRef}>
