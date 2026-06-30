@@ -23,6 +23,7 @@ from app.core.limiter import limiter
 from app.services.startup_seed import (
     seed_agent_catalog,
     seed_default_admin,
+    seed_default_skills,
     seed_default_tenant,
     seed_doc_parse_profiles,
 )
@@ -50,6 +51,7 @@ async def lifespan(app: FastAPI):
         seed_agent_catalog(db)
         seed_default_tenant(db)
         seed_default_admin(db)
+        seed_default_skills(db)
         seed_doc_parse_profiles(db)
 
     # 啟動排程器（每分鐘檢查到期的任務）
