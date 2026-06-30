@@ -1,6 +1,7 @@
 # Ollama Server 快速設定指南
 
-> 完整架構說明與進階設定請見 [`ollama-server-setup-guide.md`](./ollama-server-setup-guide.md)
+> 完整架構說明與進階設定請見 [`ollama-server-setup-guide.md`](./ollama-server-setup-guide.md)  
+> **NVIDIA DGX Spark（GB10）專用 LLM 機**請見 [`dgx-spark-llm-server.md`](./dgx-spark-llm-server.md)（`100.116.108.68`，單實例，不裝 NeuroSme）
 
 ---
 
@@ -8,7 +9,7 @@
 
 - Ubuntu 24.04
 - AMD GPU（Vulkan）或 NVIDIA GPU（CUDA），VRAM ≥ 24 GB
-- 已安裝 Docker
+- 已安裝 Docker（NeuroSme + STT 同機部署時；純 LLM 機可不需要）
 
 ---
 

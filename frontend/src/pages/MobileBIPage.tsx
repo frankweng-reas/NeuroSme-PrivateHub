@@ -698,7 +698,7 @@ export default function MobileBIPage() {
               }
               checkStatus={getSpeechStatus}
               onTranscript={(text, autoSend) => {
-                if (autoSend && selectedProject && !isLoading) {
+                if (autoSend && selectedProjects.length > 0 && !isLoading) {
                   void handleSend(text)
                 } else {
                   setInput(text)

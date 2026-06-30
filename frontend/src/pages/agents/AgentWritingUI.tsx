@@ -8,7 +8,7 @@ import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table
 import { marked } from 'marked'
 import {
   Bold, ClipboardCopy, Expand, FileDown, FileText, Heading2, Italic, List, ListOrdered,
-  Loader2, Maximize2, Minimize2, Pencil, Plus, RotateCcw, Save, Search, Sparkles, Trash2, Undo2, X, Zap,
+  Loader2, Maximize2, Minimize2, Pencil, Plus, RotateCcw, Save, Sparkles, Trash2, Undo2, X, Zap,
 } from 'lucide-react'
 import AgentHeader from '@/components/AgentHeader'
 import LLMModelSelect from '@/components/LLMModelSelect'

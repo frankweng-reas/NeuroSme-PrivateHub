@@ -318,10 +318,10 @@ export default function SchemaManagerOverlayV2({ agentId, onClose, onSchemaChang
   const _doUpdate = async () => {
     setSaving(true)
     try {
-      await updateBiSchema(selectedIdRef.current, {
+      await updateBiSchema(selectedIdRef.current!, {
         name: nameRef.current.trim(),
         desc: descRef.current.trim() || undefined,
-        schema_json: buildJson(selectedIdRef.current),
+        schema_json: buildJson(selectedIdRef.current!),
       })
       toast('已儲存')
       loadSchemas(); onSchemaChanged()

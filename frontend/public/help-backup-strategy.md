@@ -1,9 +1,4 @@
-# NeuroSme 資料備份與還原指南
-
-> 適用版本：NeuroSme on-premises  
-> 更新日期：2026-06-16
-
----
+# NeuroSme Private Hub 資料備份與還原指南
 
 ## 備份什麼？
 

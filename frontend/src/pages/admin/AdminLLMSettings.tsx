@@ -4,6 +4,7 @@ import { Mic } from 'lucide-react'
 import {
   HelpCircle,
   KeyRound,
+  Archive,
   Pencil,
   Plus,
   Trash2,
@@ -192,6 +193,7 @@ export default function AdminLLMSettings() {
 
   // help modal
   const [showHelpModal, setShowHelpModal] = useState(false)
+  const [showBackupHelpModal, setShowBackupHelpModal] = useState(false)
 
   // ── Load ──────────────────────────────────────────────────────────────────
 
@@ -645,14 +647,24 @@ export default function AdminLLMSettings() {
             <h2 className="text-lg font-bold text-gray-800">LLM 設定</h2>
           </div>
         </div>
-        <button
-          onClick={() => setShowHelpModal(true)}
-          className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-base text-gray-500 hover:border-gray-300 hover:text-gray-700 hover:bg-gray-50 transition-colors"
-          title="模型選型指南"
-        >
-          <HelpCircle className="h-4 w-4" />
-          模型選型指南
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowHelpModal(true)}
+            className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-base text-gray-500 hover:border-gray-300 hover:text-gray-700 hover:bg-gray-50 transition-colors"
+            title="模型選型指南"
+          >
+            <HelpCircle className="h-4 w-4" />
+            模型選型指南
+          </button>
+          <button
+            onClick={() => setShowBackupHelpModal(true)}
+            className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-base text-gray-500 hover:border-gray-300 hover:text-gray-700 hover:bg-gray-50 transition-colors"
+            title="備份策略"
+          >
+            <Archive className="h-4 w-4" />
+            備份策略
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -1854,6 +1866,12 @@ export default function AdminLLMSettings() {
         onClose={() => setShowHelpModal(false)}
         url="/help-llm-settings.md"
         title="AI 模型選型指南"
+      />
+      <HelpModal
+        open={showBackupHelpModal}
+        onClose={() => setShowBackupHelpModal(false)}
+        url="/help-backup-strategy.md"
+        title="備份策略"
       />
     </div>
   )
