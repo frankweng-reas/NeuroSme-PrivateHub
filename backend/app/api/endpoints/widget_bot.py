@@ -263,9 +263,10 @@ async def bot_widget_chat(
         raise HTTPException(status_code=400, detail="此 Bot 尚未設定模型，請聯繫管理員")
 
     try:
-        resolve_llm_params(bot_model_name, db=db, tenant_id=bot_tenant_id)
+        _bot_resolved = resolve_llm_params(bot_model_name, db=db, tenant_id=bot_tenant_id)
     except LLMProviderNotConfigured as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    bot_canonical_model = _bot_resolved.canonical_model_id or bot_model_name
 
     # 共用 RAG 邏輯：多 KB 檢索 + system prompt + messages 組裝
     history = [{"role": m["role"], "content": m["content"]} for m in body.messages]
@@ -412,7 +413,7 @@ async def bot_widget_chat(
                     db=s,
                     agent_type="kb-bot-builder",
                     tenant_id=tenant_id_for_log,
-                    model=bot_model_name,
+                    model=bot_canonical_model,
                     prompt_tokens=usage_out[0] if usage_out else None,
                     completion_tokens=usage_out[1] if usage_out else None,
                     total_tokens=usage_out[2] if usage_out else None,

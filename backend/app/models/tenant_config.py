@@ -1,6 +1,7 @@
 """TenantConfig ORM：對應 tenant_configs 表，儲存每個租戶的預設 LLM、Embedding 與語音設定"""
 from typing import Optional
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.core.database import Base
 
@@ -39,6 +40,11 @@ class TenantConfig(Base):
     speech_base_url = Column(String(500), nullable=True)
     speech_api_key_encrypted = Column(Text(), nullable=True)
     speech_model = Column(String(255), nullable=True)
+
+    # 彈性 flag 儲存（避免頻繁改 schema）
+    # 目前使用的 key：
+    #   embedding_reindexing (bool)  - True 表示正在重建向量索引，KB 查詢暫停
+    extra = Column(JSONB, nullable=False, server_default="{}")
 
     @property
     def speech_api_key_masked(self) -> Optional[str]:

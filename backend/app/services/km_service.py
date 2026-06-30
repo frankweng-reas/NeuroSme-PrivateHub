@@ -445,6 +445,7 @@ def _get_embed_params(db: Session, tenant_id: str) -> tuple[str, str, str | None
     embedding_provider 格式：
       "local" | "openai" | "gemini" | ...  → 依 provider 字串查第一個 active config
       "custom:{config_id}"                  → 依 config_id 查特定 config（多個自訂時使用）
+      "local:{config_id}"                   → 依 config_id 查特定本機 config（多個 local 時使用）
     """
     tc = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
     if not tc:
@@ -457,7 +458,7 @@ def _get_embed_params(db: Session, tenant_id: str) -> tuple[str, str, str | None
     if not stored_provider or not model_name:
         return None
 
-    # 解析 custom:{config_id} 格式
+    # 解析 custom:{config_id} / local:{config_id} 格式
     provider_cfg = None
     if stored_provider.startswith("custom:"):
         try:
@@ -473,6 +474,20 @@ def _get_embed_params(db: Session, tenant_id: str) -> tuple[str, str, str | None
         except (ValueError, IndexError):
             pass
         provider = "custom"
+    elif stored_provider.startswith("local:"):
+        try:
+            config_id = int(stored_provider.split(":", 1)[1])
+            provider_cfg = (
+                db.query(LLMProviderConfig)
+                .filter(
+                    LLMProviderConfig.id == config_id,
+                    LLMProviderConfig.is_active.is_(True),
+                )
+                .first()
+            )
+        except (ValueError, IndexError):
+            pass
+        provider = "local"
     else:
         provider = stored_provider
         provider_cfg = (
@@ -747,6 +762,104 @@ def process_document(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Embedding 重建索引（背景任務）
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def reindex_tenant_documents(tenant_id: str) -> None:
+    """背景任務：對 tenant 所有 pending 文件重新 embed（遷移 embedding model 後使用）。
+
+    流程：
+      1. 讀取最新 embedding 設定
+      2. 逐份文件取出既有 chunks（文字已保留）→ 批次重新 embed → 更新 KmChunk.embedding
+      3. 全部完成後清除 TenantConfig.extra['embedding_reindexing'] flag
+    """
+    from app.core.database import SessionLocal
+    db = SessionLocal()
+    try:
+        embed_params = _get_embed_params(db, tenant_id)
+        if not embed_params:
+            logger.error("Reindex 中止：tenant=%s 未設定 embedding provider", tenant_id)
+            return
+        embed_provider, embed_model, embed_key, embed_base = embed_params
+
+        pending_docs = (
+            db.query(KmDocument)
+            .filter(KmDocument.tenant_id == tenant_id, KmDocument.status == "pending")
+            .all()
+        )
+        logger.info("開始重建索引：tenant=%s 共 %d 份文件", tenant_id, len(pending_docs))
+
+        success = 0
+        for doc in pending_docs:
+            try:
+                chunks = (
+                    db.query(KmChunk)
+                    .filter(KmChunk.document_id == doc.id)
+                    .order_by(KmChunk.chunk_index)
+                    .all()
+                )
+                if not chunks:
+                    doc.status = "ready"
+                    doc.error_message = None
+                    db.commit()
+                    continue
+
+                chunk_texts = [c.content for c in chunks]
+                all_embeddings: list[list[float]] = []
+                batch_size = 50
+                for i in range(0, len(chunk_texts), batch_size):
+                    batch = chunk_texts[i: i + batch_size]
+                    batch_vectors, _ = embed_texts_sync(
+                        batch,
+                        model=embed_model,
+                        api_key=embed_key,
+                        provider=embed_provider,
+                        api_base=embed_base,
+                    )
+                    all_embeddings.extend(batch_vectors)
+
+                for chunk, embedding in zip(chunks, all_embeddings):
+                    chunk.embedding = embedding
+
+                doc.status = "ready"
+                doc.error_message = None
+                db.commit()
+                success += 1
+                logger.info("文件 id=%d 重建完成（%d chunks）", doc.id, len(chunks))
+
+            except Exception as e:
+                logger.error("文件 id=%d 重建失敗：%s", doc.id, e)
+                try:
+                    doc.status = "error"
+                    doc.error_message = f"重建索引失敗：{str(e)[:200]}"
+                    db.commit()
+                except Exception:
+                    pass
+
+        # 若所有文件都不再是 pending → 解除 KB 暫停
+        remaining = (
+            db.query(KmDocument)
+            .filter(KmDocument.tenant_id == tenant_id, KmDocument.status == "pending")
+            .count()
+        )
+        tc = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
+        if tc:
+            tc.extra = {**(tc.extra or {}), "embedding_reindexing": remaining > 0}
+            db.commit()
+            logger.info(
+                "Reindex 完成：tenant=%s embedding_reindexing=%s（剩餘 pending=%d）",
+                tenant_id, remaining > 0, remaining,
+            )
+        if success > 0:
+            _lock_embedding_config(db, tenant_id)
+    except Exception as e:
+        logger.exception("Reindex 背景任務失敗：tenant=%s error=%s", tenant_id, e)
+    finally:
+        db.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 向量檢索
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -778,6 +891,14 @@ def km_retrieve_sync(
     # knowledge_base_ids 多 KB 模式：knowledge_base_id 退為 None
     if knowledge_base_ids:
         knowledge_base_id = None
+
+    # 若正在重建向量索引，暫停所有 KB 查詢（新舊向量混用會導致錯誤結果）
+    tc = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
+    if tc and (tc.extra or {}).get("embedding_reindexing", False):
+        raise EmbeddingError(
+            "知識庫向量索引重建中，暫時無法查詢。請稍後再試。"
+        )
+
     embed_params = _get_embed_params(db, tenant_id)
     if not embed_params:
         raise EmbeddingError(

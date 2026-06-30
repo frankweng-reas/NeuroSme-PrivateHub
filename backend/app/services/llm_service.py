@@ -49,6 +49,7 @@ class LLMResolveResult:
     vertex_location: str | None = None
     vertex_credentials: str | None = None
     is_custom_provider: bool = False
+    canonical_model_id: str | None = None  # 標準化 model ID，供 log 使用（如 local:3/gemma4:26b）
 
     def is_configured(self) -> bool:
         if self.litellm_model.startswith("vertex_ai/"):
@@ -129,12 +130,63 @@ def _get_llm_params(model: str, db=None, tenant_id: str | None = None) -> LLMRes
     if model.startswith("twcc/"):
         db_key, db_base = _db_key("twcc")
         return LLMResolveResult(litellm_model=f"openai/{model[5:]}", api_key=db_key, api_base=db_base)
-    if model.startswith("local/"):
+    if model.startswith("local:"):
+        # 格式：local:{config_id}/{model_name}
+        rest = model[6:]
+        slash_idx = rest.find("/")
+        if slash_idx >= 0:
+            try:
+                config_id = int(rest[:slash_idx])
+            except ValueError:
+                config_id = -1
+            model_name = rest[slash_idx + 1:]
+        else:
+            config_id = -1
+            model_name = rest
+        if db and config_id > 0:
+            cfg = (
+                db.query(LLMProviderConfig)
+                .filter(
+                    LLMProviderConfig.id == config_id,
+                    LLMProviderConfig.is_active.is_(True),
+                )
+                .first()
+            )
+            if cfg:
+                api_key: str | None = None
+                if cfg.api_key_encrypted:
+                    try:
+                        api_key = decrypt_api_key(cfg.api_key_encrypted)
+                    except ValueError:
+                        logger.warning("LLMProviderConfig id=%s provider=local 解密失敗", cfg.id)
+                from app.services.llm_utils import resolve_litellm_model, ensure_local_prefix
+                litellm_model = resolve_litellm_model(ensure_local_prefix(model_name))
+                return LLMResolveResult(
+                    litellm_model=litellm_model,
+                    api_key=api_key or "local",
+                    api_base=cfg.api_base_url,
+                    canonical_model_id=f"local:{cfg.id}/{model_name}",
+                )
+        # fallback：config_id 無效時取第一筆 active local config
         db_key, db_base = _db_key("local")
+        fallback_cfg = _db_cfg("local")
+        from app.services.llm_utils import resolve_litellm_model, ensure_local_prefix
         return LLMResolveResult(
-            litellm_model=f"ollama_chat/{model[6:]}",
+            litellm_model=resolve_litellm_model(ensure_local_prefix(model_name)),
             api_key=db_key or "local",
             api_base=db_base,
+            canonical_model_id=f"local:{fallback_cfg.id}/{model_name}" if fallback_cfg else None,
+        )
+    if model.startswith("local/"):
+        # 舊格式：local/{model_name}，fallback 取第一筆 active local config
+        model_name = model[6:]
+        db_key, db_base = _db_key("local")
+        fallback_cfg = _db_cfg("local")
+        return LLMResolveResult(
+            litellm_model=f"ollama_chat/{model_name}",
+            api_key=db_key or "local",
+            api_base=db_base,
+            canonical_model_id=f"local:{fallback_cfg.id}/{model_name}" if fallback_cfg else None,
         )
     if model.startswith("anthropic/") or model.startswith("claude-"):
         db_key, _ = _db_key("anthropic")

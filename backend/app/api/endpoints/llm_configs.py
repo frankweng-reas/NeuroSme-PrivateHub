@@ -2,7 +2,7 @@
 import time
 import aiohttp
 import litellm
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -84,6 +84,10 @@ def _model_display_label(model: str) -> str:
         # custom:{id}/{model_name} → model_name
         slash_idx = m.find("/")
         return m[slash_idx + 1:] if slash_idx >= 0 else m[7:]
+    if m.startswith("local:"):
+        # local:{id}/{model_name} → model_name
+        slash_idx = m.find("/")
+        return m[slash_idx + 1:] if slash_idx >= 0 else m[6:]
     if m.startswith("local/"):
         return m[len("local/"):]
     if m.startswith("gemini/gemini-"):
@@ -110,15 +114,20 @@ def _collect_tenant_model_options(db: Session, tenant_id: str) -> list[LLMModelO
     seen: set[str] = set()
     ordered: list[LLMModelOption] = []
 
-    def add_model(mid: str, note: str | None = None) -> None:
+    def add_model(mid: str, note: str | None = None, display_label: str | None = None) -> None:
         mid = (mid or "").strip()
         if not mid or mid in seen:
             return
         seen.add(mid)
-        ordered.append(LLMModelOption(value=mid, label=_model_display_label(mid), note=note or None))
+        label = display_label if display_label else _model_display_label(mid)
+        ordered.append(LLMModelOption(value=mid, label=label, note=note or None))
 
     if not rows:
         return []
+
+    # 計算各 provider 的 config 數量，用來決定是否在 label 中加 provider 名稱
+    from collections import Counter
+    provider_counts = Counter(cfg.provider for cfg in rows)
 
     for cfg in rows:
         entries: list[tuple[str, str | None]] = []  # (model_id, note)
@@ -142,9 +151,25 @@ def _collect_tenant_model_options(db: Session, tenant_id: str) -> list[LLMModelO
             dm_note = next((n for m, n in entries if m == dm), None)
             entries = [(dm, dm_note)] + [(m, n) for m, n in entries if m != dm]
         for mid, note in entries:
-            # custom provider 的 model ID 帶上 config id，讓下游能找回正確的 api_base/api_key
             if cfg.provider == "custom":
-                add_model(f"custom:{cfg.id}/{mid}", note)
+                bare = mid
+                full_id = f"custom:{cfg.id}/{bare}"
+                # 多個 custom config 時，label 加上 provider 名稱以便區分
+                if provider_counts["custom"] > 1 and cfg.label:
+                    display = f"{cfg.label} · {_model_display_label(bare)}"
+                else:
+                    display = _model_display_label(bare)
+                add_model(full_id, note, display)
+            elif cfg.provider == "local":
+                # 確保 model 不重複帶 local/ 前綴
+                bare = mid[len("local/"):] if mid.startswith("local/") else mid
+                full_id = f"local:{cfg.id}/{bare}"
+                # 多個 local config 時，label 加上 provider 名稱以便區分
+                if provider_counts["local"] > 1 and cfg.label:
+                    display = f"{cfg.label} · {bare}"
+                else:
+                    display = bare
+                add_model(full_id, note, display)
             else:
                 add_model(mid, note)
 
@@ -334,21 +359,23 @@ def create_llm_config(
 
     # 同一租戶同一 provider 不允許重複新增
     # custom provider 以 label 區分，允許多筆（但需有不同 label）
-    if body.provider == "custom":
+    if body.provider in ("custom", "local"):
         label_val = (body.label or "").strip()
         if not label_val:
-            raise HTTPException(status_code=400, detail="自訂 Provider 必須填入顯示名稱（Label）以便區分")
+            hint = "自訂 Provider" if body.provider == "custom" else "本機模型 Provider"
+            raise HTTPException(status_code=400, detail=f"{hint}必須填入顯示名稱（Label）以便區分")
         existing = (
             db.query(LLMProviderConfig)
             .filter(
                 LLMProviderConfig.tenant_id == tenant_id,
-                LLMProviderConfig.provider == "custom",
+                LLMProviderConfig.provider == body.provider,
                 LLMProviderConfig.label == label_val,
             )
             .first()
         )
         if existing:
-            raise HTTPException(status_code=400, detail=f"已有同名的自訂 Provider「{label_val}」，請改用不同名稱或直接編輯現有設定。")
+            kind = "自訂 Provider" if body.provider == "custom" else "本機模型 Provider"
+            raise HTTPException(status_code=400, detail=f"已有同名的{kind}「{label_val}」，請改用不同名稱或直接編輯現有設定。")
     else:
         existing = (
             db.query(LLMProviderConfig)
@@ -722,8 +749,8 @@ def migrate_embedding_config(
     current: User = Depends(get_current_user),
 ):
     """
-    遷移 Embedding model：僅清空 embedding 向量（保留 chunk 文字內容），更新鎖定設定、version +1。
-    chunk 文字保留，無需重新上傳文件；切換後透過「重新整合」重新 embed 即可。
+    遷移 Embedding model：清空 embedding 向量（保留 chunk 文字）、更新設定。
+    清空後請呼叫 /reindex-stream 以串流方式重建索引。
     需傳 confirm=true。
     """
     tenant_id = _require_tenant_admin(db, current)
@@ -731,15 +758,15 @@ def migrate_embedding_config(
     if not body.confirm:
         raise HTTPException(status_code=400, detail="必須傳 confirm=true 以確認此操作。")
 
-    # 支援 "custom:{config_id}" 格式（多個自訂 provider 時用來識別特定 config）
-    is_custom_by_id = body.provider.startswith("custom:")
-    base_provider = "custom" if is_custom_by_id else body.provider
+    # 支援 "custom:{config_id}" / "local:{config_id}" 格式（多實例時用 id 識別特定 config）
+    is_by_id = body.provider.startswith("custom:") or body.provider.startswith("local:")
+    base_provider = body.provider.split(":")[0] if is_by_id else body.provider
 
     if base_provider not in VALID_PROVIDERS:
         raise HTTPException(status_code=400, detail=f"不支援的 provider，有效值：{sorted(VALID_PROVIDERS)}")
 
     # 確認新 provider 已有有效設定
-    if is_custom_by_id:
+    if is_by_id:
         try:
             config_id = int(body.provider.split(":", 1)[1])
         except (ValueError, IndexError):
@@ -777,17 +804,21 @@ def migrate_embedding_config(
         .update({KmChunk.embedding: None}, synchronize_session=False)
     )
 
-    # 將文件狀態重設為 pending，提示使用者重新整合以 re-embed
+    # 將文件狀態重設為 pending（ready / error 皆需重建；已是 pending 的保留）
     db.query(KmDocument).filter(
         KmDocument.tenant_id == tenant_id,
-        KmDocument.status == "ready",
+        KmDocument.status.in_(["ready", "error"]),
     ).update(
         {
             "status": "pending",
-            "error_message": f"Embedding model 已遷移至 {body.provider}/{body.model}，請點擊「重新整合」重新建立向量索引。",
+            "error_message": f"Embedding model 已遷移至 {body.provider}/{body.model}，等待重新建立向量索引。",
         },
         synchronize_session=False,
     )
+    total_pending = db.query(KmDocument).filter(
+        KmDocument.tenant_id == tenant_id,
+        KmDocument.status == "pending",
+    ).count()
 
     # 更新 tenant_configs（直接存 body.provider，可能是 "custom:8" 格式）
     tc = _get_or_create_tenant_config(db, tenant_id)
@@ -795,15 +826,118 @@ def migrate_embedding_config(
     tc.embedding_model = body.model
     tc.embedding_locked_at = None   # 解鎖，待下次寫入時重新鎖定
     tc.embedding_version = (tc.embedding_version or 1) + 1
+    # 設定 reindexing flag：KB 查詢將暫停服務直到重建完成
+    tc.extra = {**(tc.extra or {}), "embedding_reindexing": nulled > 0 and total_pending > 0}
     db.commit()
     db.refresh(tc)
 
     import logging
     logging.getLogger(__name__).info(
-        "Embedding 遷移完成：tenant=%s provider=%s model=%s 清空 embedding 筆數=%d（chunk 文字保留）",
-        tenant_id, body.provider, body.model, nulled,
+        "Embedding 遷移完成：tenant=%s provider=%s model=%s 清空 embedding 筆數=%d pending 文件=%d",
+        tenant_id, body.provider, body.model, nulled, total_pending,
     )
+
     return _tc_response(tc)
+
+
+@router.get("/tenant-config/embedding/reindex-stream")
+async def reindex_embedding_stream(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """SSE 串流：對 tenant 所有 pending 文件重新 embed，即時回傳進度。
+
+    每個事件為 JSON 物件：
+      {"type": "start",    "total": N}
+      {"type": "progress", "index": i, "total": N, "doc_id": id, "filename": "...", "chunks": N}
+      {"type": "error",    "index": i, "total": N, "doc_id": id, "filename": "...", "message": "..."}
+      {"type": "done",     "success": N, "failed": N, "reindexing": false}
+    """
+    from fastapi.responses import StreamingResponse
+    import json as _json
+    from app.core.database import SessionLocal
+    from app.services.km_service import embed_texts_sync, _get_embed_params
+    from app.models.km_chunk import KmChunk
+    from app.models.km_document import KmDocument
+
+    tenant_id = _require_tenant_admin(db, current)
+
+    def generate():
+        inner_db = SessionLocal()
+        try:
+            embed_params = _get_embed_params(inner_db, tenant_id)
+            if not embed_params:
+                yield f"data: {_json.dumps({'type': 'error', 'message': '未設定 Embedding Provider，無法重建索引'}, ensure_ascii=False)}\n\n"
+                return
+            embed_provider, embed_model, embed_key, embed_base = embed_params
+
+            pending_docs = (
+                inner_db.query(KmDocument)
+                .filter(KmDocument.tenant_id == tenant_id, KmDocument.status == "pending")
+                .order_by(KmDocument.id)
+                .all()
+            )
+            total = len(pending_docs)
+            yield f"data: {_json.dumps({'type': 'start', 'total': total}, ensure_ascii=False)}\n\n"
+
+            success = 0
+            failed = 0
+            for idx, doc in enumerate(pending_docs, start=1):
+                try:
+                    chunks = (
+                        inner_db.query(KmChunk)
+                        .filter(KmChunk.document_id == doc.id)
+                        .order_by(KmChunk.chunk_index)
+                        .all()
+                    )
+                    chunk_texts = [c.content for c in chunks]
+                    all_embeddings: list[list[float]] = []
+                    batch_size = 50
+                    for i in range(0, len(chunk_texts), batch_size):
+                        batch = chunk_texts[i: i + batch_size]
+                        batch_vectors, _ = embed_texts_sync(
+                            batch, model=embed_model, api_key=embed_key,
+                            provider=embed_provider, api_base=embed_base,
+                        )
+                        all_embeddings.extend(batch_vectors)
+
+                    for chunk, embedding in zip(chunks, all_embeddings):
+                        chunk.embedding = embedding
+
+                    doc.status = "ready"
+                    doc.error_message = None
+                    inner_db.commit()
+                    success += 1
+                    yield f"data: {_json.dumps({'type': 'progress', 'index': idx, 'total': total, 'doc_id': doc.id, 'filename': doc.filename or str(doc.id), 'chunks': len(chunks)}, ensure_ascii=False)}\n\n"
+
+                except Exception as e:
+                    failed += 1
+                    try:
+                        doc.status = "error"
+                        doc.error_message = f"重建失敗：{str(e)[:200]}"
+                        inner_db.commit()
+                    except Exception:
+                        pass
+                    yield f"data: {_json.dumps({'type': 'error', 'index': idx, 'total': total, 'doc_id': doc.id, 'filename': doc.filename or str(doc.id), 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"
+
+            # 清除 reindexing flag；若有成功寫入向量則鎖定 embedding 設定
+            from app.services.km_service import _lock_embedding_config
+            tc = inner_db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
+            still_reindexing = failed > 0
+            if tc:
+                tc.extra = {**(tc.extra or {}), "embedding_reindexing": still_reindexing}
+                inner_db.commit()
+            if success > 0:
+                _lock_embedding_config(inner_db, tenant_id)
+
+            yield f"data: {_json.dumps({'type': 'done', 'success': success, 'failed': failed, 'reindexing': still_reindexing}, ensure_ascii=False)}\n\n"
+
+        except Exception as e:
+            yield f"data: {_json.dumps({'type': 'error', 'message': f'重建任務異常：{str(e)[:200]}'}, ensure_ascii=False)}\n\n"
+        finally:
+            inner_db.close()
+
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.post("/tenant-config/embedding/test")
@@ -863,12 +997,12 @@ async def test_embedding_candidate(
 
     tenant_id = _require_tenant_admin(db, current)
 
-    # 支援 "custom:{config_id}" 格式
-    is_custom_by_id = body.provider.startswith("custom:")
-    actual_provider = "custom" if is_custom_by_id else body.provider
+    # 支援 "custom:{config_id}" / "local:{config_id}" 格式（多實例時用 id 識別特定 config）
+    is_by_id = body.provider.startswith("custom:") or body.provider.startswith("local:")
+    actual_provider = body.provider.split(":")[0] if is_by_id else body.provider
 
     # 依格式查找對應的 provider config
-    if is_custom_by_id:
+    if is_by_id:
         try:
             config_id = int(body.provider.split(":", 1)[1])
         except (ValueError, IndexError):
@@ -1042,7 +1176,8 @@ async def test_speech_candidate(
 
     t0 = time.monotonic()
 
-    if body.provider == "local":
+    if body.provider == "local" or body.provider.startswith("local:"):
+        # local 或 local:{id}：皆使用前端傳入的 base_url（faster-whisper 獨立服務）
         base_url = body.base_url.rstrip("/")
         if not base_url:
             return {"ok": False, "error": "請填寫 Base URL"}

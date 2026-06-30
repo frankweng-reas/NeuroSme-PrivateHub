@@ -137,10 +137,18 @@ class UserTokenRow(BaseModel):
     total_tokens: int
 
 
+class ModelTokenRow(BaseModel):
+    model: str
+    total_tokens: int
+    prompt_tokens: int
+    completion_tokens: int
+
+
 class AgentTokenResponse(BaseModel):
     start: str
     end: str
     by_agent: list[AgentTokenRow]
+    by_model: list[ModelTokenRow]
     top_users: list[UserTokenRow]
 
 
@@ -435,12 +443,19 @@ def agent_insights_tokens(
     agent_buckets: dict[tuple[str, bool], dict] = defaultdict(
         lambda: {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     )
+    model_buckets: dict[str, dict] = defaultdict(
+        lambda: {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    )
     for r in token_rows:
         is_embed = bool(r.model and _EMBED_KEYWORD in r.model.lower())
         key = (r.agent_type, is_embed)
         agent_buckets[key]["prompt_tokens"] += r.prompt_tokens or 0
         agent_buckets[key]["completion_tokens"] += r.completion_tokens or 0
         agent_buckets[key]["total_tokens"] += r.total_tokens or 0
+        model_key = r.model or "(unknown)"
+        model_buckets[model_key]["prompt_tokens"] += r.prompt_tokens or 0
+        model_buckets[model_key]["completion_tokens"] += r.completion_tokens or 0
+        model_buckets[model_key]["total_tokens"] += r.total_tokens or 0
 
     by_agent = [
         AgentTokenRow(
@@ -450,6 +465,15 @@ def agent_insights_tokens(
         )
         for (agent_type, is_embed), vals in sorted(agent_buckets.items())
     ]
+
+    by_model = sorted(
+        [
+            ModelTokenRow(model=m, **vals)
+            for m, vals in model_buckets.items()
+        ],
+        key=lambda r: r.total_tokens,
+        reverse=True,
+    )
 
     # top-10 使用者（以 total_tokens 排序）
     user_rows = (
@@ -472,6 +496,7 @@ def agent_insights_tokens(
         start=dr.start_date.isoformat(),
         end=dr.end_date.isoformat(),
         by_agent=by_agent,
+        by_model=by_model,
         top_users=top_users,
     )
 

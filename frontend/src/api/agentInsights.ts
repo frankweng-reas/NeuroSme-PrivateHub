@@ -73,10 +73,18 @@ export interface UserTokenRow {
   total_tokens: number
 }
 
+export interface ModelTokenRow {
+  model: string
+  total_tokens: number
+  prompt_tokens: number
+  completion_tokens: number
+}
+
 export interface AgentTokenResponse {
   start: string
   end: string
   by_agent: AgentTokenRow[]
+  by_model: ModelTokenRow[]
   top_users: UserTokenRow[]
 }
 

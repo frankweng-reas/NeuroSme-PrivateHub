@@ -17,6 +17,7 @@ import {
   AlertTriangle,
 } from 'lucide-react'
 import HelpModal from '@/components/HelpModal'
+import { TOKEN_KEY } from '@/contexts/AuthContext'
 import {
   createLLMConfig,
   deleteLLMConfig,
@@ -165,10 +166,22 @@ export default function AdminLLMSettings() {
 
   // embedding config
   const [showEmbeddingForm, setShowEmbeddingForm] = useState(false)
+  // 遷移流程 modal（全程不自動關閉，僅用戶按「關閉」才關）
+  const [showEmbeddingMigrateModal, setShowEmbeddingMigrateModal] = useState(false)
+  const [embeddingMigrateStep, setEmbeddingMigrateStep] = useState<'confirm' | 'saving' | 'reindexing' | 'done' | 'error'>('confirm')
+  const [migrateLogs, setMigrateLogs] = useState<string[]>([])
   // embeddingMode: 'local' = 本機模型；'custom' = 自訂（openai / gemini / ...）
   const [embeddingMode, setEmbeddingMode] = useState<'local' | 'custom'>('local')
-  const [embeddingForm, setEmbeddingForm] = useState({ provider: 'local', model: '', confirm: false })
+  const [embeddingForm, setEmbeddingForm] = useState({ provider: 'local', model: '' })
   const [savingEmbedding, setSavingEmbedding] = useState(false)
+
+  // reindex progress (SSE)
+  type ReindexLine =
+    | { type: 'start'; total: number }
+    | { type: 'progress'; index: number; total: number; filename: string; chunks: number }
+    | { type: 'error'; index: number; total: number; filename: string; message: string }
+    | { type: 'done'; success: number; failed: number; reindexing: boolean }
+  const [reindexLines, setReindexLines] = useState<ReindexLine[]>([])
 
   // embedding candidate test (in modal - before saving)
   const [testingEmbeddingCandidate, setTestingEmbeddingCandidate] = useState(false)
@@ -341,10 +354,42 @@ export default function AdminLLMSettings() {
 
   // ── Default LLM update ────────────────────────────────────────────────────
 
+  /**
+   * 從 model ID（如 local:3/gemma4:26b、custom:8/gpt-4o）推導出 form 的 provider 值。
+   * local / custom 多實例時帶 :{id}，其他 provider 直接回傳 default_llm_provider。
+   */
+  function inferProviderFromModel(model: string, fallbackProvider: string): string {
+    if (model.startsWith('local:')) {
+      const slash = model.indexOf('/')
+      return slash >= 0 ? model.slice(0, slash) : model  // → "local:3"
+    }
+    if (model.startsWith('custom:')) {
+      const slash = model.indexOf('/')
+      return slash >= 0 ? model.slice(0, slash) : model  // → "custom:8"
+    }
+    return fallbackProvider
+  }
+
+  /** Provider 下拉選單：動態從 configs 建立，local/custom 各實例獨立一項 */
+  const defaultLLMProviderOptions = configs
+    .filter((c) => c.is_active)
+    .reduce<{ value: string; label: string }[]>((acc, cfg) => {
+      if (cfg.provider === 'local') {
+        acc.push({ value: `local:${cfg.id}`, label: `本機・${cfg.label || `#${cfg.id}`}` })
+      } else if (cfg.provider === 'custom') {
+        acc.push({ value: `custom:${cfg.id}`, label: `自訂・${cfg.label || `#${cfg.id}`}` })
+      } else if (!acc.some((o) => o.value === cfg.provider)) {
+        acc.push({ value: cfg.provider, label: PROVIDER_LABELS[cfg.provider] ?? cfg.provider })
+      }
+      return acc
+    }, [])
+
   function openDefaultLLMForm() {
+    const model = tenantConfig?.default_llm_model ?? ''
+    const fallback = tenantConfig?.default_llm_provider ?? 'gemini'
     setDefaultLLMForm({
-      provider: tenantConfig?.default_llm_provider ?? 'gemini',
-      model: tenantConfig?.default_llm_model ?? '',
+      provider: inferProviderFromModel(model, fallback),
+      model,
     })
     setShowDefaultLLMForm(true)
   }
@@ -354,8 +399,12 @@ export default function AdminLLMSettings() {
       showToast('請填寫 Provider 與 Model', 'error'); return
     }
     setSavingDefaultLLM(true)
+    // 傳給後端的 provider 去掉 :{id} 後綴（後端只需要 "local" / "custom"）
+    const apiProvider = defaultLLMForm.provider.includes(':')
+      ? defaultLLMForm.provider.split(':')[0]
+      : defaultLLMForm.provider
     try {
-      const tc = await updateDefaultLLM({ provider: defaultLLMForm.provider, model: defaultLLMForm.model.trim() })
+      const tc = await updateDefaultLLM({ provider: apiProvider, model: defaultLLMForm.model.trim() })
       setTenantConfig(tc)
       setShowDefaultLLMForm(false)
       showToast('預設 LLM 已更新', 'success')
@@ -397,15 +446,22 @@ export default function AdminLLMSettings() {
 
   /** 將 embeddingForm.provider 轉成 embed_texts_sync 用的基礎 provider 字串 */
   function baseProvider(provider: string): string {
-    return provider.startsWith('custom:') ? 'custom' : provider
+    if (provider.startsWith('custom:')) return 'custom'
+    if (provider.startsWith('local:')) return 'local'
+    return provider
   }
 
-  /** 從 provider 字串（含 custom:{id} 格式）解析顯示用 label */
+  /** 從 provider 字串（含 custom:{id} / local:{id} 格式）解析顯示用 label */
   function resolveEmbeddingLabel(provider: string): string {
     if (provider.startsWith('custom:')) {
       const id = parseInt(provider.split(':')[1])
       const cfg = configs.find((c) => c.id === id)
       return cfg?.label || `自訂 #${id}`
+    }
+    if (provider.startsWith('local:')) {
+      const id = parseInt(provider.split(':')[1])
+      const cfg = configs.find((c) => c.id === id)
+      return cfg?.label ? `本機・${cfg.label}` : `本機 #${id}`
     }
     return PROVIDER_LABELS[provider] ?? provider
   }
@@ -417,7 +473,7 @@ export default function AdminLLMSettings() {
 
   // ── Speech config helpers ─────────────────────────────────────────────────
 
-  /** 從 provider 字串（含 custom:{id} 格式）解析 STT 顯示用 label */
+  /** 從 provider 字串（含 custom:{id} / local:{id} 格式）解析 STT 顯示用 label */
   function resolveSpeechLabel(provider: string): string {
     if (!provider) return '未設定'
     if (provider === 'local') return '本機模型 (Local)'
@@ -425,6 +481,11 @@ export default function AdminLLMSettings() {
       const id = parseInt(provider.split(':')[1])
       const cfg = configs.find((c) => c.id === id)
       return cfg?.label ? `自訂・${cfg.label}` : `自訂 #${id}`
+    }
+    if (provider.startsWith('local:')) {
+      const id = parseInt(provider.split(':')[1])
+      const cfg = configs.find((c) => c.id === id)
+      return cfg?.label ? `本機・${cfg.label}` : `本機 #${id}`
     }
     return PROVIDER_LABELS[provider] ?? provider
   }
@@ -438,15 +499,21 @@ export default function AdminLLMSettings() {
   function openEmbeddingForm() {
     const currentProvider = tenantConfig?.embedding_provider ?? 'local'
     const currentModel = tenantConfig?.embedding_model ?? ''
-    const isLocal = currentProvider === 'local'
+    const isLocal = currentProvider === 'local' || currentProvider.startsWith('local:')
     const mode: 'local' | 'custom' = isLocal ? 'local' : 'custom'
 
+    const localConfigs = configs.filter((c) => c.is_active && c.provider === 'local')
     const nonLocalConfigs = configs.filter((c) => c.is_active && c.provider !== 'local')
 
-    // 解析目前設定的 provider key（可能是 "custom:8" 或 "openai" 等）
     let resolvedProvider: string
     if (isLocal) {
-      resolvedProvider = 'local'
+      // 若已存 local:{id}，沿用；否則選第一個 local config
+      if (currentProvider.startsWith('local:')) {
+        resolvedProvider = currentProvider
+      } else {
+        const first = localConfigs[0]
+        resolvedProvider = first ? `local:${first.id}` : 'local'
+      }
     } else if (nonLocalConfigs.some((c) => {
       const key = c.provider === 'custom' ? `custom:${c.id}` : c.provider
       return key === currentProvider
@@ -497,13 +564,30 @@ export default function AdminLLMSettings() {
     if (!embeddingForm.provider || !embeddingForm.model.trim()) {
       showToast('請選擇 Provider 與 Model', 'error'); return
     }
-    // 建議先測試再儲存
     if (!embeddingCandidateResult?.ok) {
       showToast('請先點擊「測試連線」確認設定正確', 'error'); return
     }
-    const isLocked = !!tenantConfig?.embedding_locked_at
-    if (isLocked && !embeddingForm.confirm) {
-      showToast('請勾選確認選項', 'error'); return
+    // embedding_provider 已設定過（含 migration 後 locked_at 被清空的狀態）→ 需走確認流程
+    const hasExisting = !!tenantConfig?.embedding_provider
+    if (hasExisting) {
+      setMigrateLogs([])
+      setReindexLines([])
+      setEmbeddingMigrateStep('confirm')
+      setShowEmbeddingMigrateModal(true)
+      return
+    }
+    // 第一次設定，直接儲存
+    await _doMigrateEmbedding(false)
+  }
+
+  function _appendMigrateLog(msg: string) {
+    setMigrateLogs((prev) => [...prev, msg])
+  }
+
+  async function _doMigrateEmbedding(needsReindex: boolean) {
+    if (needsReindex) {
+      setEmbeddingMigrateStep('saving')
+      _appendMigrateLog('步驟 1/3：正在儲存新的 embedding 設定...')
     }
     setSavingEmbedding(true)
     try {
@@ -513,37 +597,122 @@ export default function AdminLLMSettings() {
         confirm: true,
       })
       setTenantConfig(tc)
-      setShowEmbeddingForm(false)
-      setEmbeddingForm({ provider: 'openai', model: '', confirm: false })
       setEmbeddingCandidateResult(null)
-      showToast(
-        isLocked ? 'Embedding 已更新，請重新上傳文件以重建索引' : 'Embedding Model 已設定',
-        'success',
-      )
-      load()
+
+      if (needsReindex) {
+        _appendMigrateLog('步驟 2/3：設定已儲存，開始重建向量索引...')
+        setReindexLines([])
+        setEmbeddingMigrateStep('reindexing')
+        _startReindexStream()
+      } else {
+        setShowEmbeddingForm(false)
+        setShowEmbeddingMigrateModal(false)
+        setEmbeddingForm({ provider: 'openai', model: '' })
+        showToast('Embedding Model 已設定', 'success')
+      }
     } catch (err) {
-      showToast(err instanceof ApiError ? (err.detail ?? err.message) : '儲存失敗', 'error')
+      const msg = err instanceof ApiError ? (err.detail ?? err.message) : '儲存失敗'
+      _appendMigrateLog(`❌ 儲存失敗：${msg}`)
+      setEmbeddingMigrateStep('error')
+      showToast(msg, 'error')
     } finally {
       setSavingEmbedding(false)
     }
   }
 
+  function _startReindexStream() {
+    const url = '/api/v1/llm-configs/tenant-config/embedding/reindex-stream'
+    const token = localStorage.getItem(TOKEN_KEY) ?? ''
+    _appendMigrateLog('步驟 3/3：連線重建服務中...')
+
+    fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(async (res) => {
+        if (!res.ok || !res.body) {
+          _appendMigrateLog(`❌ 重建服務連線失敗（HTTP ${res.status}）`)
+          setReindexLines((l) => [...l, { type: 'error', index: 0, total: 0, filename: '', message: `HTTP ${res.status}` }])
+          setEmbeddingMigrateStep('error')
+          return
+        }
+        _appendMigrateLog('已連線，開始處理文件...')
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buf = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buf += decoder.decode(value, { stream: true })
+          const lines = buf.split('\n')
+          buf = lines.pop() ?? ''
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            try {
+              const evt = JSON.parse(line.slice(6))
+              setReindexLines((l) => [...l, evt])
+              if (evt.type === 'start') {
+                _appendMigrateLog(`找到 ${evt.total} 份文件待重建`)
+              } else if (evt.type === 'progress') {
+                _appendMigrateLog(`✓ [${evt.index}/${evt.total}] ${evt.filename}`)
+              } else if (evt.type === 'error' && evt.filename) {
+                _appendMigrateLog(`✗ [${evt.index}/${evt.total}] ${evt.filename}：${evt.message}`)
+              } else if (evt.type === 'error' && evt.message) {
+                _appendMigrateLog(`❌ ${evt.message}`)
+                setEmbeddingMigrateStep('error')
+              } else if (evt.type === 'done') {
+                _appendMigrateLog(`完成：${evt.success} 份成功${evt.failed > 0 ? `，${evt.failed} 份失敗` : ''}`)
+                setEmbeddingMigrateStep('done')
+                getTenantConfig().then((tc) => setTenantConfig(tc)).catch(() => {})
+              }
+            } catch { /* ignore parse errors */ }
+          }
+        }
+        setEmbeddingMigrateStep((s) => (s === 'reindexing' ? 'done' : s))
+      })
+      .catch((e) => {
+        _appendMigrateLog(`❌ 重建連線錯誤：${String(e)}`)
+        setReindexLines((l) => [...l, { type: 'error', index: 0, total: 0, filename: '', message: String(e) }])
+        setEmbeddingMigrateStep('error')
+      })
+  }
+
+  function _closeEmbeddingMigrateModal() {
+    setShowEmbeddingMigrateModal(false)
+    setShowEmbeddingForm(false)
+    setEmbeddingForm({ provider: 'openai', model: '' })
+    setMigrateLogs([])
+    setReindexLines([])
+    setEmbeddingMigrateStep('confirm')
+  }
+
   function openSpeechForm() {
     const currentProvider = tenantConfig?.speech_provider ?? 'local'
-    const isLocal = currentProvider === 'local'
+    const isLocal = currentProvider === 'local' || currentProvider.startsWith('local:')
     const mode: 'local' | 'custom' = isLocal ? 'local' : 'custom'
 
+    const localConfigs = configs.filter((c) => c.is_active && c.provider === 'local')
     const nonLocalSpeechConfigs = configs.filter((c) => c.is_active && c.provider !== 'local')
 
-    // 解析目前設定的 provider key（可能是 "custom:8" 或 "openai" 等）
     let resolvedProvider = currentProvider
-    if (!isLocal) {
+    if (isLocal) {
+      // 若已是 local:{id} 格式且 config 仍存在，保留；否則 fallback 到第一個 local config
+      if (currentProvider.startsWith('local:')) {
+        const id = parseInt(currentProvider.split(':')[1])
+        const stillExists = localConfigs.some((c) => c.id === id)
+        if (!stillExists) {
+          const first = localConfigs[0]
+          resolvedProvider = first ? `local:${first.id}` : 'local'
+        }
+      } else {
+        // 舊格式 'local' → 升級成 local:{id}
+        const first = localConfigs[0]
+        resolvedProvider = first ? `local:${first.id}` : 'local'
+      }
+    } else {
+      // 解析目前設定的 provider key（可能是 "custom:8" 或 "openai" 等）
       const matchFound = nonLocalSpeechConfigs.some((c) => {
         const key = c.provider === 'custom' ? `custom:${c.id}` : c.provider
         return key === currentProvider
       })
       if (!matchFound) {
-        // fallback 到第一個非 local active config
         const first = nonLocalSpeechConfigs[0]
         resolvedProvider = first
           ? (first.provider === 'custom' ? `custom:${first.id}` : first.provider)
@@ -564,7 +733,6 @@ export default function AdminLLMSettings() {
     })
     setShowSpeechApiKey(false)
     // 若目前已設定為 local 並已存有 base_url，視為已驗證（儲存過的設定）
-    // 使用者若修改 base_url，onChange 會重置此結果，需重新測試
     const preVerified = isLocal && !!tenantConfig?.speech_base_url
     setSpeechCandidateResult(preVerified ? { ok: true, elapsed_ms: 0 } : null)
     setShowSpeechForm(true)
@@ -700,9 +868,22 @@ export default function AdminLLMSettings() {
                 {tenantConfig?.default_llm_model ? (
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
-                      <span className={`rounded-full px-2.5 py-0.5 text-base font-semibold ${PROVIDER_COLORS[tenantConfig.default_llm_provider ?? ''] ?? 'bg-gray-100 text-gray-700'}`}>
-                        {PROVIDER_LABELS[tenantConfig.default_llm_provider ?? ''] ?? tenantConfig.default_llm_provider}
-                      </span>
+                      {(() => {
+                        const model = tenantConfig.default_llm_model ?? ''
+                        const baseP = tenantConfig.default_llm_provider ?? ''
+                        // local 多實例：從 model ID 解析出 config id，顯示 label
+                        if (model.startsWith('local:')) {
+                          const cfgId = parseInt(model.split(':')[1])
+                          const cfg = configs.find((c) => c.id === cfgId)
+                          const lbl = cfg?.label ? `本機・${cfg.label}` : `本機模型`
+                          return <span className={`rounded-full px-2.5 py-0.5 text-base font-semibold ${PROVIDER_COLORS['local'] ?? 'bg-gray-100 text-gray-700'}`}>{lbl}</span>
+                        }
+                        return (
+                          <span className={`rounded-full px-2.5 py-0.5 text-base font-semibold ${PROVIDER_COLORS[baseP] ?? 'bg-gray-100 text-gray-700'}`}>
+                            {PROVIDER_LABELS[baseP] ?? baseP}
+                          </span>
+                        )
+                      })()}
                     </div>
                     <p className="font-mono text-gray-800 text-base break-all">{tenantConfig.default_llm_model}</p>
                   </div>
@@ -998,10 +1179,26 @@ export default function AdminLLMSettings() {
                 </select>
               </Field>
 
-              <Field label="顯示名稱" required={form.provider === 'custom'} hint={form.provider === 'custom' ? '自訂 Provider 需填入名稱以便區分（例：Ardge AI、客戶 LLM Server）' : undefined}>
+              <Field
+                label="顯示名稱"
+                required={form.provider === 'custom' || form.provider === 'local'}
+                hint={
+                  form.provider === 'custom'
+                    ? '自訂 Provider 需填入名稱以便區分（例：Ardge AI、客戶 LLM Server）'
+                    : form.provider === 'local'
+                      ? '本機模型 Provider 需填入名稱以便區分（例：辦公室 Ollama、GPU 伺服器）'
+                      : undefined
+                }
+              >
                 <input
                   type="text"
-                  placeholder={form.provider === 'custom' ? '例：Ardge AI Server' : '例：OpenAI（公司帳號）'}
+                  placeholder={
+                    form.provider === 'custom'
+                      ? '例：Ardge AI Server'
+                      : form.provider === 'local'
+                        ? '例：辦公室 Ollama'
+                        : '例：OpenAI（公司帳號）'
+                  }
                   value={form.label}
                   onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))}
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-gray-400"
@@ -1126,7 +1323,7 @@ export default function AdminLLMSettings() {
                         <input
                           type="text"
                           placeholder={
-                            form.provider === 'local'      ? 'Model ID，例：local/gemma4:26b' :
+                            form.provider === 'local'      ? 'Model ID，例：gemma4:26b' :
                             form.provider === 'gemini'     ? 'Model ID，例：gemini/gemini-2.5-flash' :
                             form.provider === 'anthropic'  ? 'Model ID，例：anthropic/claude-3-5-haiku-20241022' :
                             form.provider === 'twcc'       ? 'Model ID，例：twcc/Llama3.3-FFM-70B-32K' :
@@ -1215,8 +1412,8 @@ export default function AdminLLMSettings() {
                   onChange={(e) => setDefaultLLMForm((f) => ({ ...f, provider: e.target.value, model: '' }))}
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-gray-400"
                 >
-                  {Object.entries(PROVIDER_LABELS).map(([v, l]) => (
-                    <option key={v} value={v}>{l}</option>
+                  {defaultLLMProviderOptions.map(({ value, label }) => (
+                    <option key={value} value={value}>{label}</option>
                   ))}
                 </select>
               </Field>
@@ -1230,21 +1427,40 @@ export default function AdminLLMSettings() {
                 />
                 {/* quick-fill from provider's available models */}
                 {(() => {
-                  const cfg = configs.find((c) => c.provider === defaultLLMForm.provider && c.is_active)
-                  const ms = cfg?.available_models?.length ? cfg.available_models : (providerOptions[defaultLLMForm.provider] ?? [])
+                  // local:{id} / custom:{id} → 依 id 找 config；其他 provider → 用 provider 字串找
+                  const p = defaultLLMForm.provider
+                  let cfg: typeof configs[0] | undefined
+                  if (p.startsWith('local:') || p.startsWith('custom:')) {
+                    const cfgId = parseInt(p.split(':')[1])
+                    cfg = configs.find((c) => c.id === cfgId && c.is_active)
+                  } else {
+                    cfg = configs.find((c) => c.provider === p && c.is_active)
+                  }
+                  const baseP = p.includes(':') ? p.split(':')[0] : p
+                  const ms = cfg?.available_models?.length ? cfg.available_models : (providerOptions[baseP] ?? [])
+                  // local 實例的 quick-fill：model 值需加 local:{id}/ 前綴
+                  const toModelId = (raw: string) => {
+                    if (p.startsWith('local:')) {
+                      const bare = raw.startsWith('local/') ? raw.slice(6) : raw
+                      return `${p}/${bare}`
+                    }
+                    return raw
+                  }
                   return ms.length > 0 ? (
                     <div className="flex flex-wrap gap-1 mt-2">
                       {ms.map((m) => {
-                        const mid = typeof m === 'string' ? m : m.model
+                        const raw = typeof m === 'string' ? m : m.model
+                        const mid = toModelId(raw)
+                        const display = raw.startsWith('local/') ? raw.slice(6) : raw
                         return (
-                        <button
-                          key={mid}
-                          type="button"
-                          onClick={() => setDefaultLLMForm((f) => ({ ...f, model: mid }))}
-                          className="rounded bg-gray-100 px-2 py-0.5 text-base text-gray-600 hover:bg-gray-200 transition-colors font-mono"
-                        >
-                          {mid}
-                        </button>
+                          <button
+                            key={mid}
+                            type="button"
+                            onClick={() => setDefaultLLMForm((f) => ({ ...f, model: mid }))}
+                            className="rounded bg-gray-100 px-2 py-0.5 text-base text-gray-600 hover:bg-gray-200 transition-colors font-mono"
+                          >
+                            {display}
+                          </button>
                         )
                       })}
                     </div>
@@ -1332,8 +1548,9 @@ export default function AdminLLMSettings() {
         const isLocked = !!tenantConfig?.embedding_locked_at
         const isAlreadySet = !!tenantConfig?.embedding_model
         // 非 local 的 active configs（每個 config 獨立列出，支援多個自訂 provider）
+        const localConfigs = configs.filter((c) => c.is_active && c.provider === 'local')
         const nonLocalConfigs = configs.filter((c) => c.is_active && c.provider !== 'local')
-        const hasLocal = configs.some((c) => c.is_active && c.provider === 'local')
+        const hasLocal = localConfigs.length > 0
         const defaultModelForProvider = EMBEDDING_MODEL_DEFAULTS[baseProvider(embeddingForm.provider)] ?? ''
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -1345,9 +1562,8 @@ export default function AdminLLMSettings() {
                 {isLocked && (
                   <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-base text-red-700 space-y-1">
                     <p className="font-semibold flex items-center gap-1.5">
-                      <AlertTriangle className="h-4 w-4" /> 已有向量索引，變更將清空所有資料
+                      <AlertTriangle className="h-4 w-4" /> 已有向量索引，變更需重新編碼索引
                     </p>
-                    <p>原始文件保留，但需重新上傳以重建索引，此操作不可逆。</p>
                   </div>
                 )}
 
@@ -1372,10 +1588,12 @@ export default function AdminLLMSettings() {
                         checked={embeddingMode === 'local'}
                         disabled={!hasLocal}
                         onChange={() => {
+                          const first = localConfigs[0]
+                          const firstKey = first ? `local:${first.id}` : 'local'
                           setEmbeddingMode('local')
                           setEmbeddingForm((f) => ({
                             ...f,
-                            provider: 'local',
+                            provider: firstKey,
                             model: EMBEDDING_MODEL_DEFAULTS['local'] ?? 'bge-m3-4096',
                           }))
                           setEmbeddingCandidateResult(null)
@@ -1418,6 +1636,31 @@ export default function AdminLLMSettings() {
                     </label>
                   </div>
                 </Field>
+
+                {/* 本機模式：選擇哪個 local config（多實例時顯示下拉） */}
+                {embeddingMode === 'local' && localConfigs.length > 1 && (
+                  <Field label="本機 Provider" required>
+                    <select
+                      value={embeddingForm.provider}
+                      onChange={(e) => {
+                        const key = e.target.value
+                        setEmbeddingForm((f) => ({
+                          ...f,
+                          provider: key,
+                          model: EMBEDDING_MODEL_DEFAULTS['local'] ?? 'bge-m3-4096',
+                        }))
+                        setEmbeddingCandidateResult(null)
+                      }}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-gray-400 focus:outline-none"
+                    >
+                      {localConfigs.map((cfg) => (
+                        <option key={`local:${cfg.id}`} value={`local:${cfg.id}`}>
+                          {cfg.label || `本機 #${cfg.id}`}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                )}
 
                 {/* 自訂模式：選擇 Provider（每個 config 獨立列出，支援多個自訂） */}
                 {embeddingMode === 'custom' && (
@@ -1524,37 +1767,108 @@ export default function AdminLLMSettings() {
                   <p className="font-semibold flex items-center gap-1.5 mb-1">
                     <AlertTriangle className="h-4 w-4" /> 重要限制
                   </p>
-                  <p>系統使用 <strong>1024 維</strong>向量，請確保選用的 embedding model 支援輸出 1024 維，否則會報錯。</p>
+                  <p>系統使用 <strong>1024 維</strong>向量，請確保選用的 model 支援</p>
                   <p className="mt-1.5 text-sm text-amber-700">
                     例如：OpenAI text-embedding-3-small、Gemini text-embedding-004（可指定 dimensions）、本地 bge-m3-4096
                   </p>
                 </div>
 
-                {/* 情境 C：勾選確認才能儲存 */}
-                {isLocked && (
-                  <label className="flex items-start gap-3 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={embeddingForm.confirm}
-                      onChange={(e) => setEmbeddingForm((f) => ({ ...f, confirm: e.target.checked }))}
-                      className="mt-0.5 h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
-                    />
-                    <span className="text-base text-gray-700">我了解此操作將清空所有向量索引，且需要重新上傳文件</span>
-                  </label>
-                )}
               </div>
               <ModalFooter
                 onCancel={() => setShowEmbeddingForm(false)}
                 onConfirm={handleSaveEmbedding}
                 saving={savingEmbedding}
                 confirmLabel="儲存"
-                confirmDanger={isLocked}
                 confirmDisabled={!embeddingCandidateResult?.ok || !!embeddingCandidateResult?.dim_warning}
               />
             </div>
           </div>
         )
       })()}
+
+      {/* ── Modal：Embedding 遷移（全程不自動關閉） ── */}
+      {showEmbeddingMigrateModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-2xl h-[80vh] max-h-[90vh] rounded-xl bg-white shadow-2xl flex flex-col">
+
+            <div className="shrink-0 px-6 pt-6 pb-3 border-b border-gray-100">
+              <h3 className="text-lg font-semibold text-gray-900">Embedding Model 變更</h3>
+              <p className="mt-1 text-sm text-gray-500">
+                目前步驟：
+                {embeddingMigrateStep === 'confirm' && '確認操作'}
+                {embeddingMigrateStep === 'saving' && '儲存設定中...'}
+                {embeddingMigrateStep === 'reindexing' && '重建索引中...'}
+                {embeddingMigrateStep === 'done' && '已完成'}
+                {embeddingMigrateStep === 'error' && '發生錯誤'}
+              </p>
+            </div>
+
+            {embeddingMigrateStep === 'confirm' && (
+              <div className="shrink-0 px-6 py-4 space-y-2 text-base text-gray-700">
+                <p>此操作將：</p>
+                <ul className="space-y-1 pl-4 list-disc text-sm">
+                  <li>暫停所有 KB 查詢，直到重建完成</li>
+                  <li>清空向量索引，使用新模型 <code className="rounded bg-gray-100 px-1 font-mono text-xs">{embeddingForm.model}</code> 重建</li>
+                </ul>
+              </div>
+            )}
+
+            <div className="flex-1 min-h-0 mx-6 my-3 overflow-y-auto rounded-lg bg-gray-950 p-4 font-mono text-sm space-y-1">
+              {migrateLogs.length === 0 && embeddingMigrateStep === 'confirm' && (
+                <p className="text-gray-500">按下「確認，開始重建」後，進度會顯示在這裡</p>
+              )}
+              {migrateLogs.map((log, i) => (
+                <p key={i} className="text-gray-200">{log}</p>
+              ))}
+              {(embeddingMigrateStep === 'saving' || embeddingMigrateStep === 'reindexing') && (
+                <p className="text-yellow-400 animate-pulse mt-2">● 處理中，請勿關閉此視窗...</p>
+              )}
+            </div>
+
+            <div className="shrink-0 flex justify-end gap-3 px-6 py-4 border-t border-gray-100">
+              {embeddingMigrateStep === 'confirm' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setShowEmbeddingMigrateModal(false)}
+                    className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => _doMigrateEmbedding(true)}
+                    disabled={savingEmbedding}
+                    className="flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-base font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                  >
+                    {savingEmbedding ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    確認，開始重建
+                  </button>
+                </>
+              )}
+              {(embeddingMigrateStep === 'saving' || embeddingMigrateStep === 'reindexing') && (
+                <button
+                  type="button"
+                  disabled
+                  className="rounded-lg bg-gray-400 px-5 py-2 text-base font-medium text-white cursor-not-allowed opacity-60"
+                >
+                  處理中，請稍候...
+                </button>
+              )}
+              {(embeddingMigrateStep === 'done' || embeddingMigrateStep === 'error') && (
+                <button
+                  type="button"
+                  onClick={_closeEmbeddingMigrateModal}
+                  className="rounded-lg bg-gray-800 px-5 py-2 text-base font-medium text-white hover:bg-gray-700"
+                >
+                  關閉
+                </button>
+              )}
+            </div>
+
+          </div>
+        </div>
+      )}
 
       {/* ── Modal：語音模型設定 ── */}
       {showSpeechForm && (
@@ -1563,7 +1877,9 @@ export default function AdminLLMSettings() {
             <ModalHeader title="語音模型設定 (STT)" onClose={() => setShowSpeechForm(false)} />
             <div className="px-6 py-5 space-y-4">
               {(() => {
+                const localConfigs = configs.filter((c) => c.is_active && c.provider === 'local')
                 const nonLocalSpeechConfigs = configs.filter((c) => c.is_active && c.provider !== 'local')
+                const hasLocal = localConfigs.length > 0
                 return (
                   <>
                     {/* 語音服務選擇：本機 / 自訂 */}
@@ -1578,14 +1894,16 @@ export default function AdminLLMSettings() {
                             onChange={() => {
                               setSpeechMode('local')
                               const savedBaseUrl = tenantConfig?.speech_base_url ?? ''
+                              const first = localConfigs[0]
+                              const firstKey = first ? `local:${first.id}` : 'local'
                               setSpeechForm((f) => ({
                                 ...f,
-                                provider: 'local',
+                                provider: firstKey,
                                 model: SPEECH_MODEL_DEFAULTS['local'],
                                 base_url: savedBaseUrl,
                               }))
-                              // 若原本就儲存了 local base_url，視為已驗證
-                              const preVerified = tenantConfig?.speech_provider === 'local' && !!savedBaseUrl
+                              const prevProvider = tenantConfig?.speech_provider ?? ''
+                              const preVerified = (prevProvider === 'local' || prevProvider.startsWith('local:')) && !!savedBaseUrl
                               setSpeechCandidateResult(preVerified ? { ok: true, elapsed_ms: 0 } : null)
                             }}
                             className="mt-1 h-4 w-4 text-gray-600"
@@ -1627,6 +1945,25 @@ export default function AdminLLMSettings() {
                     {/* 本機模型：Base URL + 測試連線 */}
                     {speechMode === 'local' && (
                       <>
+                        {/* 本機 Provider 下拉（多個 local config 時顯示） */}
+                        {hasLocal && localConfigs.length > 1 && (
+                          <Field label="本機 Provider" required>
+                            <select
+                              value={speechForm.provider}
+                              onChange={(e) => {
+                                setSpeechForm((f) => ({ ...f, provider: e.target.value }))
+                                setSpeechCandidateResult(null)
+                              }}
+                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-gray-400 focus:outline-none"
+                            >
+                              {localConfigs.map((cfg) => (
+                                <option key={cfg.id} value={`local:${cfg.id}`}>
+                                  {cfg.label || `本機 #${cfg.id}`}
+                                </option>
+                              ))}
+                            </select>
+                          </Field>
+                        )}
                         <Field label="模型名稱" hint="">
                           <input
                             type="text"

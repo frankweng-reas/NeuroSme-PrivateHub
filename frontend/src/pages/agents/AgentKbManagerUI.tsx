@@ -73,6 +73,17 @@ interface Props { agent: Agent }
 
 const HEADER_COLOR = '#1A3A52'
 
+/** 將 local:{id}/model 或 custom:{id}/model 剝除前綴，僅顯示 model 名稱 */
+function stripModelPrefix(modelId: string): string {
+  if (!modelId) return modelId
+  const slashIdx = modelId.indexOf('/')
+  if ((modelId.startsWith('local:') || modelId.startsWith('custom:')) && slashIdx >= 0) {
+    return modelId.slice(slashIdx + 1)
+  }
+  if (modelId.startsWith('local/')) return modelId.slice(6)
+  return modelId
+}
+
 
 export default function AgentKbManagerUI({ agent }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -1082,7 +1093,7 @@ export default function AgentKbManagerUI({ agent }: Props) {
               </div>
               <div>
                 <label className="mb-1.5 block text-base font-medium text-gray-700">LLM 模型</label>
-                <LLMModelSelect value={settingsModel} onChange={setSettingsModel} label="" labelPosition="stacked" allowEmpty emptyLabel="無"
+                <LLMModelSelect value={settingsModel} onChange={setSettingsModel} label="" labelPosition="stacked"
                   selectClassName="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500" />
               </div>
               <div>
@@ -1915,7 +1926,7 @@ export default function AgentKbManagerUI({ agent }: Props) {
             {selectedKb && (
               <>
                 {selectedKb.model_name ? (
-                  <><span className="flex shrink-0 items-center gap-1"><span className="text-base text-gray-500">使用模型：</span><span className="rounded-full bg-sky-100 px-2 py-0.5 text-base text-sky-700">{selectedKb.model_name}</span></span></>
+                  <><span className="flex shrink-0 items-center gap-1"><span className="text-base text-gray-500">使用模型：</span><span className="rounded-full bg-sky-100 px-2 py-0.5 text-base text-sky-700">{stripModelPrefix(selectedKb.model_name)}</span></span></>
                 ) : (
                   <><span className="shrink-0 text-base text-gray-400">系統預設模型</span></>
                 )}

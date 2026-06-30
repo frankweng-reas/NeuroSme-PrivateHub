@@ -19,6 +19,7 @@ import {
   type AgentDailyTrendResponse,
   type AgentRankingResponse,
   type AgentTokenResponse,
+  type ModelTokenRow,
   type UsersOverviewResponse,
   type UserLeaderboardRow,
   type UsersLeaderboardResponse,
@@ -436,16 +437,71 @@ function TabUsage({ start, end }: { start: string; end: string }) {
 // Tab C — Token 用量
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** 將 model ID（如 custom:8/gemma-4-26b、local:3/gemma4:26b）轉為可讀標籤 */
+function modelDisplayLabel(model: string, configs: { id: number; provider: string; label: string | null }[]): string {
+  if (!model || model === '(unknown)') return model || '—'
+
+  // custom:{id}/{model_name}
+  if (model.startsWith('custom:')) {
+    const rest = model.slice(7)
+    const slash = rest.indexOf('/')
+    if (slash >= 0) {
+      const cfgId = parseInt(rest.slice(0, slash))
+      const modelName = rest.slice(slash + 1)
+      const cfg = configs.find((c) => c.id === cfgId)
+      return cfg?.label ? `${cfg.label} · ${modelName}` : `自訂 · ${modelName}`
+    }
+    return model
+  }
+
+  // local:{id}/{model_name}
+  if (model.startsWith('local:')) {
+    const rest = model.slice(6)
+    const slash = rest.indexOf('/')
+    if (slash >= 0) {
+      const cfgId = parseInt(rest.slice(0, slash))
+      const modelName = rest.slice(slash + 1)
+      const cfg = configs.find((c) => c.id === cfgId)
+      return cfg?.label ? `${cfg.label} · ${modelName}` : `本機 · ${modelName}`
+    }
+    return model
+  }
+
+  // local/{model_name} (舊格式)
+  if (model.startsWith('local/')) return `本機 · ${model.slice(6)}`
+
+  // gemini/ vertex_ai/ anthropic/ twcc/ openai/
+  const prefixMap: Record<string, string> = {
+    'gemini/': 'Gemini · ',
+    'vertex_ai/': 'Vertex AI · ',
+    'anthropic/': 'Anthropic · ',
+    'twcc/': '台智雲 · ',
+    'openai/': '',
+  }
+  for (const [prefix, display] of Object.entries(prefixMap)) {
+    if (model.startsWith(prefix)) return `${display}${model.slice(prefix.length)}`
+  }
+
+  return model
+}
+
 function TabTokens({ start, end }: { start: string; end: string }) {
   const { showToast } = useToast()
   const [data, setData] = useState<AgentTokenResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [anonymize, setAnonymize] = useState(false)
+  const [llmConfigs, setLlmConfigs] = useState<{ id: number; provider: string; label: string | null }[]>([])
 
   useEffect(() => {
     setLoading(true)
-    getAgentInsightsTokens({ start, end })
-      .then(setData)
+    Promise.all([
+      getAgentInsightsTokens({ start, end }),
+      import('@/api/llmConfigs').then((m) => m.listLLMConfigs()),
+    ])
+      .then(([tokenData, configs]) => {
+        setData(tokenData)
+        setLlmConfigs(configs.map((c) => ({ id: c.id, provider: c.provider, label: c.label ?? null })))
+      })
       .catch(() => showToast('載入 Token 用量失敗', 'error'))
       .finally(() => setLoading(false))
   }, [start, end]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -542,6 +598,50 @@ function TabTokens({ start, end }: { start: string; end: string }) {
               </div>
             </div>
           )}
+      </section>
+
+      {/* by model */}
+      <section>
+        <h3 className="mb-3 text-sm font-semibold text-gray-700">各 Model Token 用量
+          <span className="ml-2 font-normal text-gray-400 text-xs">依 model 分拆，可看出哪個 LLM 最耗費資源</span>
+        </h3>
+        {data.by_model.filter(r => !r.model.includes('embed') && r.model !== 'nomic-embed-text' && !r.model.startsWith('bge') && !r.model.startsWith('Systran')).length === 0
+          ? <EmptyState text="本期無 Model token 紀錄" />
+          : (() => {
+              const llmModels = data.by_model.filter(r => {
+                const m = r.model.toLowerCase()
+                return !m.includes('embed') && !m.startsWith('bge') && !m.startsWith('systran') && !m.startsWith('whisper') && !m.startsWith('faster-whisper')
+              })
+              const maxModelTokens = Math.max(...llmModels.map(r => r.total_tokens), 1)
+              return (
+                <div className="space-y-3">
+                  {llmModels.map((r) => {
+                    const label = modelDisplayLabel(r.model, llmConfigs)
+                    const pct = (r.total_tokens / maxModelTokens) * 100
+                    return (
+                      <div key={r.model}>
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                          <span className="text-sm font-medium text-gray-700 truncate max-w-xs" title={r.model}>{label}</span>
+                          <span className="shrink-0 text-xs tabular-nums text-gray-500">{fmtInt(r.total_tokens)} tokens</span>
+                        </div>
+                        <div className="flex h-3 overflow-hidden rounded-full bg-gray-100">
+                          <div className="h-full rounded-l-full bg-indigo-400 transition-all" title={`prompt: ${fmtInt(r.prompt_tokens)}`}
+                            style={{ width: `${(r.prompt_tokens / maxModelTokens) * 100}%`, opacity: 0.9 }} />
+                          <div className="h-full bg-indigo-200 transition-all" title={`completion: ${fmtInt(r.completion_tokens)}`}
+                            style={{ width: `${(r.completion_tokens / maxModelTokens) * 100}%`, opacity: 0.7 }} />
+                        </div>
+                        <div className="mt-0.5 flex gap-3 text-xs text-gray-400">
+                          <span>Prompt {fmtInt(r.prompt_tokens)}</span>
+                          <span>Completion {fmtInt(r.completion_tokens)}</span>
+                          <span className="ml-auto">{pct.toFixed(0)}%</span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })()
+        }
       </section>
 
       {/* top users */}
