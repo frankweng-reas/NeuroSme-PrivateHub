@@ -15,6 +15,7 @@ import {
   ChevronDown,
   ChevronUp,
   AlertTriangle,
+  Loader2,
 } from 'lucide-react'
 import HelpModal from '@/components/HelpModal'
 import { TOKEN_KEY } from '@/contexts/AuthContext'
@@ -174,14 +175,6 @@ export default function AdminLLMSettings() {
   const [embeddingMode, setEmbeddingMode] = useState<'local' | 'custom'>('local')
   const [embeddingForm, setEmbeddingForm] = useState({ provider: 'local', model: '' })
   const [savingEmbedding, setSavingEmbedding] = useState(false)
-
-  // reindex progress (SSE)
-  type ReindexLine =
-    | { type: 'start'; total: number }
-    | { type: 'progress'; index: number; total: number; filename: string; chunks: number }
-    | { type: 'error'; index: number; total: number; filename: string; message: string }
-    | { type: 'done'; success: number; failed: number; reindexing: boolean }
-  const [reindexLines, setReindexLines] = useState<ReindexLine[]>([])
 
   // embedding candidate test (in modal - before saving)
   const [testingEmbeddingCandidate, setTestingEmbeddingCandidate] = useState(false)
@@ -528,7 +521,7 @@ export default function AdminLLMSettings() {
     const resolvedModel = currentModel || EMBEDDING_MODEL_DEFAULTS[baseProvider(resolvedProvider)] || ''
 
     setEmbeddingMode(mode)
-    setEmbeddingForm({ provider: resolvedProvider, model: resolvedModel, confirm: false })
+    setEmbeddingForm({ provider: resolvedProvider, model: resolvedModel })
     setEmbeddingCandidateResult(null)
     setShowEmbeddingForm(true)
   }
@@ -571,7 +564,6 @@ export default function AdminLLMSettings() {
     const hasExisting = !!tenantConfig?.embedding_provider
     if (hasExisting) {
       setMigrateLogs([])
-      setReindexLines([])
       setEmbeddingMigrateStep('confirm')
       setShowEmbeddingMigrateModal(true)
       return
@@ -601,7 +593,6 @@ export default function AdminLLMSettings() {
 
       if (needsReindex) {
         _appendMigrateLog('步驟 2/3：設定已儲存，開始重建向量索引...')
-        setReindexLines([])
         setEmbeddingMigrateStep('reindexing')
         _startReindexStream()
       } else {
@@ -629,7 +620,6 @@ export default function AdminLLMSettings() {
       .then(async (res) => {
         if (!res.ok || !res.body) {
           _appendMigrateLog(`❌ 重建服務連線失敗（HTTP ${res.status}）`)
-          setReindexLines((l) => [...l, { type: 'error', index: 0, total: 0, filename: '', message: `HTTP ${res.status}` }])
           setEmbeddingMigrateStep('error')
           return
         }
@@ -647,7 +637,6 @@ export default function AdminLLMSettings() {
             if (!line.startsWith('data: ')) continue
             try {
               const evt = JSON.parse(line.slice(6))
-              setReindexLines((l) => [...l, evt])
               if (evt.type === 'start') {
                 _appendMigrateLog(`找到 ${evt.total} 份文件待重建`)
               } else if (evt.type === 'progress') {
@@ -669,7 +658,6 @@ export default function AdminLLMSettings() {
       })
       .catch((e) => {
         _appendMigrateLog(`❌ 重建連線錯誤：${String(e)}`)
-        setReindexLines((l) => [...l, { type: 'error', index: 0, total: 0, filename: '', message: String(e) }])
         setEmbeddingMigrateStep('error')
       })
   }
@@ -679,7 +667,6 @@ export default function AdminLLMSettings() {
     setShowEmbeddingForm(false)
     setEmbeddingForm({ provider: 'openai', model: '' })
     setMigrateLogs([])
-    setReindexLines([])
     setEmbeddingMigrateStep('confirm')
   }
 

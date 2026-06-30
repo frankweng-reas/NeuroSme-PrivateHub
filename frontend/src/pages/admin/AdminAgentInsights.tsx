@@ -19,7 +19,6 @@ import {
   type AgentDailyTrendResponse,
   type AgentRankingResponse,
   type AgentTokenResponse,
-  type ModelTokenRow,
   type UsersOverviewResponse,
   type UserLeaderboardRow,
   type UsersLeaderboardResponse,
