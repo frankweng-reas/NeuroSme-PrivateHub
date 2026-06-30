@@ -4,7 +4,8 @@
   1. seed_agent_catalog      — upsert 產品內建 agents（所有環境）
   2. seed_default_tenant     — 若 tenants 為空，建立預設 tenant（所有環境）
   3. seed_default_admin      — 若 users 為空，建立預設 admin 帳號（所有環境）
-  4. seed_doc_parse_profiles — upsert 系統內建解析 profiles（所有環境）
+  4. seed_default_skills     — 若 default tenant 無任何 skill，插入內建範例 skills（所有環境）
+  5. seed_doc_parse_profiles — upsert 系統內建解析 profiles（所有環境）
 """
 import logging
 import secrets
