@@ -12,14 +12,12 @@ import {
 import { useToast } from '@/contexts/ToastContext'
 
 const SCOPE_BADGE: Record<KbScope, string> = {
-  company:  'bg-teal-100 text-teal-700',
+  publish:  'bg-violet-100 text-violet-700',
   personal: 'bg-gray-100 text-gray-600',
-  bot_only: 'bg-violet-100 text-violet-700',
 }
 const SCOPE_LABEL: Record<KbScope, string> = {
-  company:  '公司共用',
+  publish:  '發布',
   personal: '個人',
-  bot_only: 'Bot 專用',
 }
 
 export default function AdminKbManagement() {
@@ -161,9 +159,8 @@ export default function AdminKbManagement() {
           className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-1 focus:ring-gray-400"
         >
           <option value="">全部範圍</option>
-          <option value="company">公司共用</option>
+          <option value="publish">發布</option>
           <option value="personal">個人</option>
-          <option value="bot_only">Bot 專用</option>
         </select>
 
         {/* 建立者篩選 */}
@@ -353,7 +350,7 @@ export default function AdminKbManagement() {
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-400"
                 >
                   <option value="personal">個人 (personal)</option>
-                  <option value="company">公司共用 (company)</option>
+                  <option value="publish">發布 (publish)</option>
                 </select>
               </div>
               <div>

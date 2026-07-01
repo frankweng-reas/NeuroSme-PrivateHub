@@ -14,17 +14,29 @@ alwaysApply: false
 ```
 KmKnowledgeBase
   ├── created_by  → 建立 KB 的 user id
-  ├── scope       → "personal" | "company"
+  ├── scope       → "personal" | "publish"
   └── KmDocument（多個）
         └── KmChunk（多個）
 ```
 
+## Scope 語意
+
+| KB scope | 說明 | 可部署 Bot |
+|----------|------|-----------|
+| `personal` | 僅建立者可見，草稿與個人測試用 | ❌ |
+| `publish`  | 建立者準備對外服務的知識庫，透過 Bot Builder 部署 Bot | ✅ |
+
+KB Manager 後台一律只有 KB 建立者（+ admin）可見，無論 scope 為何。
+員工查詢統一透過 Bot Widget，不在後台直接搜尋。
+
 ## 權限規則
 
-| KB scope | 可管理的使用者 |
-|----------|--------------|
-| `personal` | `kb.created_by == current.id` |
-| `company`  | `current.role in ("admin", "super_admin", "manager")` |
+| KB scope | 可管理（編輯/上傳/刪除）的使用者 |
+|----------|---------------------------------|
+| `personal` | `kb.created_by == current.id` 或 `current.role in ("admin", "super_admin")` |
+| `publish`  | `kb.created_by == current.id` 或 `current.role in ("admin", "super_admin")` |
+
+建立/變更 scope 為 `publish` 需要 `current.role in ("admin", "super_admin", "manager")`。
 
 ## KmDocument.owner_user_id 是 LEGACY 欄位
 
@@ -35,11 +47,12 @@ KmKnowledgeBase
 
 ## KB Scope vs Document Scope 對應
 
-上傳時文件 scope 自動繼承 KB scope：
+所有 KB 的文件 scope 一律為 `private`：
 
 | KB scope | Document scope |
 |----------|---------------|
-| `company` | `public` |
+| `publish`  | `private` |
 | `personal` | `private` |
 
-`KmDocument.scope` 欄位本身也是 legacy 概念的殘留，現行邏輯以 KB scope 為主。
+`KmDocument.scope` 欄位本身是 legacy 概念的殘留，現行邏輯以 KB scope 為主。
+Bot Widget 的 RAG 查詢使用 `skip_scope_check=True`，不受 KB scope 限制。

@@ -17,7 +17,7 @@ export interface KmDocument {
   char_count?: number | null
 }
 
-export type KbScope = 'personal' | 'company' | 'bot_only'
+export type KbScope = 'personal' | 'publish'
 
 export interface ReferencedBot {
   id: number
@@ -357,4 +357,62 @@ export async function getKbQueryStats(
     offset: String(offset),
   })
   return apiFetch<QueryStatsResponse>(`/km/knowledge-bases/${kbId}/query-stats?${params}`)
+}
+
+
+// ── KB 健診 ──────────────────────────────────────────────────────────────────
+
+export interface HealthChunkInfo {
+  id: number
+  content: string
+  filename: string
+}
+
+export interface HealthPair {
+  sim: number
+  chunk1: HealthChunkInfo
+  chunk2: HealthChunkInfo
+}
+
+export type HealthCheckEvent =
+  | { type: 'start'; total: number }
+  | { type: 'progress'; current: number; total: number }
+  | { type: 'pair'; sim: number; chunk1: HealthChunkInfo; chunk2: HealthChunkInfo }
+  | { type: 'done'; total_pairs: number }
+  | { type: 'error'; detail: string }
+
+export async function* streamKbHealthCheck(
+  kbId: number,
+  threshold: number,
+): AsyncGenerator<HealthCheckEvent> {
+  const token = localStorage.getItem(TOKEN_KEY) ?? ''
+  const res = await fetch(
+    `/api/v1/km/knowledge-bases/${kbId}/health-check?threshold=${threshold}`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    },
+  )
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`健診請求失敗 (${res.status}): ${text}`)
+  }
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      try {
+        yield JSON.parse(line.slice(6)) as HealthCheckEvent
+      } catch {
+        // ignore malformed
+      }
+    }
+  }
 }

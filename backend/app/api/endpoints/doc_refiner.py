@@ -393,6 +393,63 @@ def _generate_pdf(mode: str, title: str, items: list[dict]) -> bytes:
     return bytes(pdf.output())
 
 
+def _upsert_doc(
+    *,
+    db: Session,
+    kb_id: int,
+    tenant_id: str,
+    owner_id: int,
+    filename: str,
+    content_type: str,
+    size_bytes: int,
+    doc_type: str,
+) -> "KmDocument":
+    """在同一 KB 內以 filename 做 append-or-create：
+    - 同名文件已存在 → 沿用舊文件記錄，新 chunks 疊加在舊 chunks 之後
+    - 不存在 → 新建 KmDocument
+    回傳 KmDocument 物件（已 commit，可直接使用）。
+    """
+    from app.models.km_document import KmDocument
+
+    existing = (
+        db.query(KmDocument)
+        .filter(
+            KmDocument.knowledge_base_id == kb_id,
+            KmDocument.tenant_id == tenant_id,
+            KmDocument.filename == filename,
+        )
+        .first()
+    )
+
+    if existing:
+        # 保留舊 chunks，只更新 metadata，重設 status 讓 process_document 能正常執行
+        existing.size_bytes = existing.size_bytes + size_bytes
+        existing.content_type = content_type
+        existing.doc_type = doc_type
+        existing.status = "pending"
+        existing.error_message = None
+        db.commit()
+        db.refresh(existing)
+        logger.info("_upsert_doc: 疊加至舊文件 id=%d filename=%s (kb_id=%d)", existing.id, filename, kb_id)
+        return existing
+
+    doc = KmDocument(
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        filename=filename,
+        content_type=content_type,
+        size_bytes=size_bytes,
+        scope="private",
+        status="pending",
+        knowledge_base_id=kb_id,
+        doc_type=doc_type,
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+    return doc
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Routes
 # ──────────────────────────────────────────────────────────────────────────────
@@ -871,7 +928,6 @@ async def import_md_to_kb(
 ):
     """將 Doc Refiner 生成的結構化 Markdown 匯入知識庫，使用 structured_md chunk 策略。"""
     from app.models.km_knowledge_base import KmKnowledgeBase
-    from app.models.km_document import KmDocument
     from app.services.km_service import process_document
     import uuid as _uuid
 
@@ -890,8 +946,8 @@ async def import_md_to_kb(
             raise HTTPException(status_code=404, detail="知識庫不存在")
         can_manage = current.role in ("admin", "super_admin", "manager")
         is_admin = current.role in ("admin", "super_admin")
-        if kb.scope == "company" and not can_manage:
-            raise HTTPException(status_code=403, detail="只有管理員可匯入到公司共用知識庫")
+        if kb.scope == "publish" and kb.created_by != current.id and not is_admin:
+            raise HTTPException(status_code=403, detail="只能匯入到自己的知識庫")
         if kb.scope == "personal" and kb.created_by != current.id and not is_admin:
             raise HTTPException(status_code=403, detail="只能匯入到自己的知識庫")
     else:
@@ -906,27 +962,21 @@ async def import_md_to_kb(
         db.commit()
         db.refresh(kb)
 
-    # ── 2. 建立 KmDocument 並處理 ─────────────────────
+    # ── 2. 建立或取代 KmDocument 並處理 ──────────────────
     md_bytes = body.markdown.encode("utf-8")
     doc_filename = f"{(body.title or 'document').strip()}.md"
-    scope = "public" if kb.scope == "company" else "private"
-    owner_id = current.id if scope == "private" else None
-
     effective_doc_type = body.doc_type if body.doc_type in ("structured_md", "doc_image", "faq", "spec", "article") else "structured_md"
-    doc = KmDocument(
+
+    doc = _upsert_doc(
+        db=db,
+        kb_id=kb.id,
         tenant_id=current.tenant_id,
-        owner_user_id=owner_id,
+        owner_id=current.id,
         filename=doc_filename,
         content_type="text/markdown",
         size_bytes=len(md_bytes),
-        scope=scope,
-        status="pending",
-        knowledge_base_id=kb.id,
         doc_type=effective_doc_type,
     )
-    db.add(doc)
-    db.commit()
-    db.refresh(doc)
 
     process_document(
         doc_id=doc.id,
@@ -983,7 +1033,6 @@ async def import_to_kb(
 ):
     """將整理後的 Q&A 條目以 FAQ 格式寫入指定知識庫（或建立新 KB 後寫入）。"""
     from app.models.km_knowledge_base import KmKnowledgeBase
-    from app.models.km_document import KmDocument
     from app.services.km_service import process_document
     import uuid as _uuid
 
@@ -1002,8 +1051,8 @@ async def import_to_kb(
             raise HTTPException(status_code=404, detail="知識庫不存在")
         is_admin = current.role in ("admin", "super_admin")
         can_manage = current.role in ("admin", "super_admin", "manager")
-        if kb.scope == "company" and not can_manage:
-            raise HTTPException(status_code=403, detail="只有管理員可匯入到公司共用知識庫")
+        if kb.scope == "publish" and kb.created_by != current.id and not is_admin:
+            raise HTTPException(status_code=403, detail="只能匯入到自己的知識庫")
         if kb.scope == "personal" and kb.created_by != current.id and not is_admin:
             raise HTTPException(status_code=403, detail="只能匯入到自己的知識庫")
     else:
@@ -1031,24 +1080,18 @@ async def import_to_kb(
 
     faq_bytes = faq_text.encode("utf-8")
     doc_filename = f"{body.title or 'qa'}.txt"
-    scope = "public" if kb.scope == "company" else "private"
-    owner_id = current.id if scope == "private" else None
 
-    # ── 3. 建立 KmDocument 並處理 ─────────────────────
-    doc = KmDocument(
+    # ── 3. 建立或取代 KmDocument 並處理 ─────────────────
+    doc = _upsert_doc(
+        db=db,
+        kb_id=kb.id,
         tenant_id=current.tenant_id,
-        owner_user_id=owner_id,
+        owner_id=current.id,
         filename=doc_filename,
         content_type="text/plain",
         size_bytes=len(faq_bytes),
-        scope=scope,
-        status="pending",
-        knowledge_base_id=kb.id,
         doc_type="faq",
     )
-    db.add(doc)
-    db.commit()
-    db.refresh(doc)
 
     process_document(
         doc_id=doc.id,

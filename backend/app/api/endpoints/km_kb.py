@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-KB_SCOPES = {"personal", "company", "bot_only"}
+KB_SCOPES = {"personal", "publish"}
 
 
 class KbCreate(BaseModel):
@@ -116,9 +116,9 @@ def create_knowledge_base(
     scope = (body.scope or "personal").strip()
     if scope not in KB_SCOPES:
         raise HTTPException(status_code=400, detail=f"scope 必須是 {KB_SCOPES} 之一")
-    # member 只能建立 personal KB；company / bot_only scope 需要 manager+
-    if scope in ("company", "bot_only") and not _can_manage(current.role):
-        raise HTTPException(status_code=403, detail="只有管理員可以建立公司共用或 Bot Only 知識庫")
+    # member 只能建立 personal KB；publish scope 需要 manager+
+    if scope == "publish" and not _can_manage(current.role):
+        raise HTTPException(status_code=403, detail="只有管理員可以建立發布知識庫")
     # 強制 member 的 scope 永遠是 personal
     if not _can_manage(current.role):
         scope = "personal"
@@ -140,6 +140,22 @@ def create_knowledge_base(
         created_by=current.id,
     )
     db.add(kb)
+    db.flush()  # 取得 kb.id
+
+    # 自動建立「手動新增」虛擬文件，供手動新增條目使用
+    from app.models.km_document import KmDocument
+    manual_doc = KmDocument(
+        tenant_id=current.tenant_id,
+        owner_user_id=current.id,
+        knowledge_base_id=kb.id,
+        filename="手動新增",
+        content_type="text/plain",
+        scope="private",
+        status="ready",
+        chunk_count=0,
+        doc_type="faq",
+    )
+    db.add(manual_doc)
     db.commit()
     db.refresh(kb)
     return _to_response(kb, db)
@@ -151,7 +167,6 @@ def list_knowledge_bases(
     current: Annotated[User, Depends(get_current_user)] = ...,
     writable: bool = Query(False, description="為 true 時只回傳當前用戶可寫入（owner 或 admin）的 KB"),
 ):
-    from sqlalchemy import or_
     is_admin = current.role in ("admin", "super_admin")
     if writable and not is_admin:
         # 只回傳自己建立的 KB（owner），admin 不受限
@@ -165,15 +180,12 @@ def list_knowledge_bases(
             .all()
         )
     else:
-        # personal：只有建立者自己的；company：同 tenant 全員可見
+        # personal / publish：只有建立者自己的 KB 可見
         kbs = (
             db.query(KmKnowledgeBase)
             .filter(
                 KmKnowledgeBase.tenant_id == current.tenant_id,
-                or_(
-                    KmKnowledgeBase.scope == "company",
-                    KmKnowledgeBase.created_by == current.id,
-                ),
+                KmKnowledgeBase.created_by == current.id,
             )
             .order_by(KmKnowledgeBase.created_at.asc())
             .all()
@@ -209,7 +221,7 @@ def update_knowledge_base(
         if new_scope not in KB_SCOPES:
             raise HTTPException(status_code=400, detail=f"scope 必須是 {KB_SCOPES} 之一")
         if not _can_manage(current.role):
-            raise HTTPException(status_code=403, detail="只有管理員可以變更知識庫範圍（company / bot_only）")
+            raise HTTPException(status_code=403, detail="只有管理員可以變更知識庫範圍")
         kb.scope = new_scope
     db.commit()
     db.refresh(kb)
@@ -445,3 +457,123 @@ def get_knowledge_base_query_stats(
         total=total_distinct,
         has_more=(offset + limit) < total_distinct,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# KB 健診：掃描同 KB 內的高相似度 chunk 配對
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.post("/knowledge-bases/{kb_id}/health-check", summary="KB 健診（SSE 串流）")
+async def kb_health_check(
+    kb_id: int,
+    threshold: float = Query(0.90, ge=0.5, le=0.99, description="相似度門檻"),
+    db: Session = Depends(get_db),
+    current: Annotated[User, Depends(get_current_user)] = ...,
+):
+    """掃描同一 KB 內語意高度相似的 chunk 配對（可能是重複內容）。
+    SSE 事件：
+      { type: "start",    total: N }
+      { type: "progress", current: N, total: N }
+      { type: "pair",     sim: 0.97, chunk1: {...}, chunk2: {...} }
+      { type: "done",     total_pairs: N }
+      { type: "error",    detail: "..." }
+    """
+    import json
+    import sqlalchemy as sa
+    from fastapi.responses import StreamingResponse
+
+    kb = db.query(KmKnowledgeBase).filter(
+        KmKnowledgeBase.id == kb_id,
+        KmKnowledgeBase.tenant_id == current.tenant_id,
+    ).first()
+    if not kb:
+        raise HTTPException(status_code=404, detail="知識庫不存在")
+
+    is_admin = current.role in ("admin", "super_admin")
+    if kb.created_by != current.id and not is_admin:
+        raise HTTPException(status_code=403, detail="無管理此知識庫的權限")
+
+    def _sse(data: dict) -> str:
+        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def generate():
+        try:
+            # 取得該 KB 所有 chunk（含 embedding）
+            doc_ids_sub = (
+                db.query(KmDocument.id)
+                .filter(KmDocument.knowledge_base_id == kb_id)
+                .scalar_subquery()
+            )
+            chunks = (
+                db.query(
+                    KmChunk.id,
+                    KmChunk.content,
+                    KmChunk.embedding,
+                    KmDocument.filename,
+                )
+                .join(KmDocument, KmChunk.document_id == KmDocument.id)
+                .filter(KmChunk.document_id.in_(doc_ids_sub))
+                .filter(KmChunk.embedding.isnot(None))
+                .all()
+            )
+
+            total = len(chunks)
+            yield _sse({"type": "start", "total": total})
+
+            if total < 2:
+                yield _sse({"type": "done", "total_pairs": 0})
+                return
+
+            seen_pairs: set[frozenset] = set()
+            total_pairs = 0
+            PROGRESS_STEP = max(1, total // 20)  # 每 5% 發一次進度
+
+            for i, (c_id, c_content, c_embedding, c_filename) in enumerate(chunks):
+                if i % PROGRESS_STEP == 0:
+                    yield _sse({"type": "progress", "current": i, "total": total})
+
+                # pgvector 近鄰查詢：同 KB 內 top-6（含自己，排掉後剩 5）
+                rows = db.execute(
+                    sa.text("""
+                        SELECT kc.id,
+                               kc.content,
+                               d.filename,
+                               1 - (kc.embedding <=> :emb) AS sim
+                        FROM km_chunks kc
+                        JOIN km_documents d ON kc.document_id = d.id
+                        WHERE d.knowledge_base_id = :kb_id
+                          AND kc.id != :self_id
+                          AND kc.embedding IS NOT NULL
+                          AND 1 - (kc.embedding <=> :emb) >= :thr
+                        ORDER BY kc.embedding <=> :emb
+                        LIMIT 5
+                    """),
+                    {
+                        "emb": f"[{','.join(str(x) for x in c_embedding)}]",
+                        "kb_id": kb_id,
+                        "self_id": c_id,
+                        "thr": threshold,
+                    },
+                ).fetchall()
+
+                for row in rows:
+                    pair_key = frozenset({c_id, row.id})
+                    if pair_key in seen_pairs:
+                        continue
+                    seen_pairs.add(pair_key)
+                    total_pairs += 1
+                    yield _sse({
+                        "type": "pair",
+                        "sim": round(float(row.sim), 4),
+                        "chunk1": {"id": c_id, "content": c_content, "filename": c_filename},
+                        "chunk2": {"id": row.id, "content": row.content, "filename": row.filename},
+                    })
+
+            yield _sse({"type": "progress", "current": total, "total": total})
+            yield _sse({"type": "done", "total_pairs": total_pairs})
+
+        except Exception as exc:
+            logger.exception("kb_health_check kb_id=%d 失敗", kb_id)
+            yield _sse({"type": "error", "detail": str(exc)})
+
+    return StreamingResponse(generate(), media_type="text/event-stream")

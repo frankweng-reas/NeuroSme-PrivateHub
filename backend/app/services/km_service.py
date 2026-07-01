@@ -741,7 +741,7 @@ def process_document(
         _lock_embedding_config(db, tenant_id)
 
         doc.status = "ready"
-        doc.chunk_count = len(chunks)
+        doc.chunk_count = (doc.chunk_count or 0) + len(chunks)
         db.commit()
 
         logger.info(
@@ -879,9 +879,8 @@ def km_retrieve_sync(
     """同步向量檢索：query → embedding → cosine similarity 找 top-K chunks。
 
     top_k：若未指定，依 KB 內文件的 doc_type 自動決定（取最大 top_k 以保守覆蓋）。
-    存取範圍（新邏輯，依 KB scope 決定）：
-      - KB scope='company' → 同 tenant 全員可搜尋
-      - KB scope='personal' → 只有 KB 建立者（created_by）可搜尋
+    存取範圍（依 KB scope 決定）：
+      - KB scope='personal' / 'publish' → 只有 KB 建立者（created_by）可搜尋
       - 無 KB（knowledge_base_id = NULL）→ 沿用舊文件 owner 邏輯
     若提供 knowledge_base_id，只在該知識庫的文件中搜尋。
     若提供 knowledge_base_ids（非空 list），在多個知識庫中聯合搜尋（Bot 多 KB 模式）。
@@ -971,9 +970,8 @@ def km_retrieve_sync(
                 KmDocument.status == "ready",
             ]
             if not skip_scope_check:
-                # 新邏輯：依 KB scope 判斷可見性
-                #   company KB → 全 tenant 員工可見
-                #   personal KB → 只有 KB 建立者（created_by）可搜尋
+                # 依 KB scope 判斷可見性：
+                #   personal / publish KB → 只有 KB 建立者（created_by）可搜尋
                 #   無 KB（knowledge_base_id = NULL）→ 沿用舊文件 owner 邏輯
                 from sqlalchemy import or_, and_
                 filters.append(
@@ -983,13 +981,10 @@ def km_retrieve_sync(
                             KmDocument.knowledge_base_id.is_(None),
                             KmDocument.owner_user_id == user_id,
                         ),
-                        # 有 KB 的文件：依 KB scope 判斷
+                        # 有 KB 的文件：只有 KB 建立者可搜尋
                         and_(
                             KmDocument.knowledge_base_id.isnot(None),
-                            or_(
-                                KmKnowledgeBase.scope == "company",
-                                KmKnowledgeBase.created_by == user_id,
-                            ),
+                            KmKnowledgeBase.created_by == user_id,
                         ),
                     )
                 )

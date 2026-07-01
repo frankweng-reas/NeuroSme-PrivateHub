@@ -145,7 +145,7 @@ def _upsert_document(
     # 繼承 KB 的 scope 設定（與 km.py 的上傳邏輯一致）
     from app.models.km_knowledge_base import KmKnowledgeBase
     kb_obj = db.get(KmKnowledgeBase, kb)
-    scope = "public" if kb_obj and kb_obj.scope == "company" else "private"
+    scope = "private"
 
     km_doc = KmDocument(
         tenant_id=connector.tenant_id,

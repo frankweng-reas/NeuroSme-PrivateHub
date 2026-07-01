@@ -2021,7 +2021,7 @@ function MdImportModal({ kbs, importing, onImport, onClose }: MdImportModalProps
         >
           {kbs.map((kb) => (
             <option key={kb.id} value={kb.id}>
-              {kb.name}（{kb.scope === 'company' ? '共用' : '個人'}）
+              {kb.name}（{kb.scope === 'publish' ? '發布' : '個人'}）
             </option>
           ))}
         </select>

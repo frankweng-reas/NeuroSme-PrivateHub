@@ -154,8 +154,8 @@ async def upload_km_document(
         # 只有 KB 建立者（owner）或 admin / super_admin 可以上傳文件
         if not _is_kb_owner_or_admin(kb, current):
             raise HTTPException(status_code=403, detail="只能上傳文件到自己建立的知識庫")
-        # 文件 scope 自動繼承 KB scope（company → public，personal → private）
-        scope = "public" if kb.scope == "company" else "private"
+        # 文件 scope 自動繼承 KB scope（一律 private）
+        scope = "private"
     else:
         # 無 KB 的文件沿用傳入 scope，但非 manager+ 只能 private
         if scope not in ("private", "public"):

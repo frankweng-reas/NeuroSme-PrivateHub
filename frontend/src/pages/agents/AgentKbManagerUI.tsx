@@ -11,6 +11,7 @@ import {
   ChevronRight,
   FileText,
   Headphones,
+  ListChecks,
   Loader2,
   Maximize2,
   Minimize2,
@@ -20,6 +21,7 @@ import {
   Plus,
   RefreshCw,
   Settings,
+  Stethoscope,
   Trash2,
   Upload,
   Wifi,
@@ -37,6 +39,8 @@ import {
   deleteChunk,
   deleteConnector,
   deleteKnowledgeBase,
+  streamKbHealthCheck,
+  type HealthPair,
   deleteKmDocument,
   getKbQueryStats,
   listConnectors,
@@ -116,9 +120,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
   const [myKbOpen, setMyKbOpen] = useState(() => {
     try { return localStorage.getItem('kb-section-my') !== 'closed' } catch { return true }
   })
-  const [companyKbOpen, setCompanyKbOpen] = useState(() => {
-    try { return localStorage.getItem('kb-section-company') === 'open' } catch { return false }
-  })
   const [othersKbOpen, setOthersKbOpen] = useState(() => {
     try { return localStorage.getItem('kb-section-others') !== 'closed' } catch { return true }
   })
@@ -131,7 +132,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
   const [settingsKb, setSettingsKb] = useState<KmKnowledgeBase | null>(null)
   const [settingsName, setSettingsName] = useState('')
   const [settingsModel, setSettingsModel] = useState('')
-  const [settingsPrompt, setSettingsPrompt] = useState('')
   const [settingsScope, setSettingsScope] = useState<KbScope>('personal')
   const [settingsSaving, setSettingsSaving] = useState(false)
 
@@ -181,7 +181,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
     setSettingsKb(null)
     setSettingsName('')
     setSettingsModel('')
-    setSettingsPrompt('')
     setSettingsScope('personal')
     setCreatingKbModal(true)
   }
@@ -217,7 +216,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
           name: settingsName.trim(),
           model_name: settingsModel,
           scope: settingsScope,
-          system_prompt: settingsPrompt,
         })
         setKbs((prev) => [...prev, kb])
         setSelectedKbId(kb.id)
@@ -228,7 +226,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
         const updated = await updateKnowledgeBase(settingsKb.id, {
           name: settingsName.trim(),
           model_name: settingsModel,
-          system_prompt: settingsPrompt,
           scope: settingsScope,
         })
         setKbs((prev) => prev.map((kb) => kb.id === updated.id ? updated : kb))
@@ -330,8 +327,59 @@ export default function AgentKbManagerUI({ agent }: Props) {
   const [deleteDocTarget, setDeleteDocTarget] = useState<KmDocument | null>(null)
   const [deleteDocLoading, setDeleteDocLoading] = useState(false)
 
-  // ── 中欄：Tab 切換（文件管理 / 查詢統計 / 資料來源） ────────────────────────
-  const [centerTab, setCenterTab] = useState<'docs' | 'stats' | 'sources'>('docs')
+  // ── 中欄：Tab 切換（文件管理 / 查詢統計 / 資料來源 / 健診） ─────────────────
+  const [centerTab, setCenterTab] = useState<'docs' | 'stats' | 'sources' | 'health'>('docs')
+
+  // ── 中欄：KB 健診 ──────────────────────────────────────────────────────────
+  const [healthThreshold, setHealthThreshold] = useState(0.90)
+  const [healthScanning, setHealthScanning] = useState(false)
+  const [healthProgress, setHealthProgress] = useState<{ current: number; total: number } | null>(null)
+  const [healthPairs, setHealthPairs] = useState<HealthPair[]>([])
+  const [healthDone, setHealthDone] = useState(false)
+  const [deletingHealthChunkId, setDeletingHealthChunkId] = useState<number | null>(null)
+  const [healthDeleteConfirm, setHealthDeleteConfirm] = useState<{ chunkId: number; pairIdx: number; which: 'chunk1' | 'chunk2' } | null>(null)
+
+  const handleHealthScan = useCallback(async () => {
+    if (!selectedKbId) return
+    setHealthScanning(true)
+    setHealthDone(false)
+    setHealthPairs([])
+    setHealthProgress(null)
+    try {
+      for await (const event of streamKbHealthCheck(selectedKbId, healthThreshold)) {
+        if (event.type === 'start') {
+          setHealthProgress({ current: 0, total: event.total })
+        } else if (event.type === 'progress') {
+          setHealthProgress({ current: event.current, total: event.total })
+        } else if (event.type === 'pair') {
+          setHealthPairs((prev) => [...prev, { sim: event.sim, chunk1: event.chunk1, chunk2: event.chunk2 }])
+        } else if (event.type === 'done') {
+          setHealthDone(true)
+        } else if (event.type === 'error') {
+          showToast(`健診失敗：${event.detail}`)
+          break
+        }
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '健診失敗')
+    } finally {
+      setHealthScanning(false)
+    }
+  }, [selectedKbId, healthThreshold]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleHealthDeleteChunk = useCallback(async (chunkId: number) => {
+    setDeletingHealthChunkId(chunkId)
+    setHealthDeleteConfirm(null)
+    try {
+      await deleteChunk(chunkId)
+      setHealthPairs((prev) => prev.filter((p) => p.chunk1.id !== chunkId && p.chunk2.id !== chunkId))
+      showToast('已刪除條目')
+    } catch {
+      showToast('刪除失敗')
+    } finally {
+      setDeletingHealthChunkId(null)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 中欄：資料來源（Connectors） ────────────────────────────────────────────
   const [connectors, setConnectors] = useState<KmConnector[]>([])
@@ -849,7 +897,7 @@ export default function AgentKbManagerUI({ agent }: Props) {
 
   // 若切換到沒有管理權限的 KB，且目前在管理專用 tab，自動跳到「查詢統計」
   useEffect(() => {
-    if (!canUploadToSelectedKb && (centerTab === 'docs' || centerTab === 'sources')) {
+    if (!canUploadToSelectedKb && (centerTab === 'docs' || centerTab === 'sources' || centerTab === 'health')) {
       setCenterTab('stats')
     }
   }, [canUploadToSelectedKb]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -932,19 +980,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
               </button>
             </div>
             <div className="px-6 py-4 space-y-3">
-              <div>
-                <label className="mb-1 block text-base font-medium text-gray-700">來源文件</label>
-                <select
-                  value={addEntryDocId ?? ''}
-                  onChange={(e) => setAddEntryDocId(Number(e.target.value) || null)}
-                  className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-base text-gray-700 focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
-                >
-                  <option value="">— 選擇來源文件 —</option>
-                  {docs.filter((d) => d.status === 'ready').map((d) => (
-                    <option key={d.id} value={d.id}>{d.filename}</option>
-                  ))}
-                </select>
-              </div>
               <div>
                 <label className="mb-1 block text-base font-medium text-gray-700">內容</label>
                 <textarea
@@ -1098,12 +1133,11 @@ export default function AgentKbManagerUI({ agent }: Props) {
               </div>
               <div>
                 <label className="mb-1.5 block text-base font-medium text-gray-700">知識庫範圍</label>
-                <p className="mb-2 text-base text-gray-400">公司共用需 manager 以上權限才能設定</p>
+                <p className="mb-2 text-base text-gray-400">發布需 manager 以上權限才能設定</p>
                 <div className="flex gap-3">
                   {([
-                    { value: 'personal', label: '🔒 個人私有',  sub: '只有建立者可見' },
-                    { value: 'company',  label: '🏢 公司共用',  sub: '同公司全員可引用' },
-                    { value: 'bot_only', label: '🤖 Bot 專用',  sub: '僅 Bot 可引用，員工不可見' },
+                    { value: 'personal', label: '🔒 個人私有',  sub: '只有建立者可見，不可部署 Bot' },
+                    { value: 'publish',  label: '🚀 發布',      sub: '可部署 Bot 服務他人' },
                   ] as const).map(({ value, label, sub }) => (
                     <button key={value} type="button"
                       disabled={!canManage}
@@ -1118,17 +1152,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
                     </button>
                   ))}
                 </div>
-              </div>
-              <div>
-                <label className="mb-1 block text-base font-medium text-gray-700">
-                  自訂系統提示詞<span className="ml-1 font-normal text-gray-400">（選填）</span>
-                </label>
-                <p className="mb-1.5 text-sm text-gray-400">
-                  直接查詢此知識庫時套用（例如作為獨立 HR / IT 支援使用）。透過 Bot 引用此知識庫時，Bot 本身的提示詞優先，此設定不生效。
-                </p>
-                <textarea value={settingsPrompt} onChange={(e) => setSettingsPrompt(e.target.value)} rows={8}
-                  placeholder="你是 XX 公司的客服助手…"
-                  className="w-full rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 font-mono text-base text-gray-800 placeholder-amber-300 focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-400" />
               </div>
             </div>
             <div className="flex justify-end gap-2 border-t border-gray-100 px-5 py-4">
@@ -1227,9 +1250,8 @@ export default function AgentKbManagerUI({ agent }: Props) {
                 {kbsLoading ? (
                   <div className="flex justify-center py-6"><Loader2 className="h-4 w-4 animate-spin text-white/50" /></div>
                 ) : (() => {
-                  const myKbs = kbs.filter((kb) => kb.scope !== 'company' && kb.created_by === currentUser?.id)
-                  const companyKbs = kbs.filter((kb) => kb.scope === 'company')
-                  const othersKbs = isAdmin ? kbs.filter((kb) => kb.scope !== 'company' && kb.created_by !== currentUser?.id) : []
+                  const myKbs = kbs.filter((kb) => kb.created_by === currentUser?.id)
+                  const othersKbs = isAdmin ? kbs.filter((kb) => kb.created_by !== currentUser?.id) : []
 
                   const renderKbItem = (kb: KmKnowledgeBase) => (
                     <li key={kb.id} className="relative" ref={kbMenuId === kb.id ? kbMenuRef : undefined}>
@@ -1242,12 +1264,12 @@ export default function AgentKbManagerUI({ agent }: Props) {
                           )}
                         </span>
                         <span className={`shrink-0 text-lg ${selectedKbId === kb.id ? 'text-sky-200/80' : 'text-white/40'}`}>{kb.ready_count}/{kb.doc_count}</span>
-                        {kb.scope === 'bot_only' && (
-                          <span className="shrink-0 rounded-full bg-violet-500/30 px-1.5 py-0.5 text-xs font-medium text-violet-200" title="Bot 專用">
-                            🤖
+                        {kb.scope === 'publish' && (
+                          <span className="shrink-0 rounded-full bg-violet-500/30 px-1.5 py-0.5 text-xs font-medium text-violet-200" title="已發布">
+                            🚀
                           </span>
                         )}
-                        {(kb.scope === 'company' || kb.scope === 'bot_only') && (
+                        {kb.scope === 'publish' && (
                           <span
                             className={`shrink-0 rounded-full px-1.5 py-0.5 text-xs font-medium ${kb.bot_count > 0 ? 'bg-emerald-500/30 text-emerald-200' : 'bg-white/10 text-white/30'}`}
                             title={kb.bot_count > 0 ? `${kb.bot_count} 個 Bot 使用中` : '尚無 Bot 使用'}
@@ -1264,11 +1286,10 @@ export default function AgentKbManagerUI({ agent }: Props) {
                       </button>
                       {kbMenuId === kb.id && (
                         <div className="absolute right-0 top-full z-20 mt-0.5 w-28 overflow-hidden rounded-lg border border-white/20 bg-[#1a3a52] shadow-xl">
-                          <button type="button" onClick={() => { setSettingsKb(kb); setSettingsName(kb.name); setSettingsModel(kb.model_name ?? ''); setSettingsPrompt(kb.system_prompt ?? ''); setSettingsScope(kb.scope ?? 'personal'); setKbMenuId(null) }}
+                          <button type="button" onClick={() => { setSettingsKb(kb); setSettingsName(kb.name); setSettingsModel(kb.model_name ?? ''); setSettingsScope(kb.scope ?? 'personal'); setKbMenuId(null) }}
                             className="flex w-full items-center gap-2 px-3 py-2 text-left text-lg text-white/80 hover:bg-white/10 hover:text-white">
                             <Settings className="h-3 w-3" />設定
-                          </button>
-                          {isAdmin && (
+                          </button>                          {isAdmin && (
                             <button type="button" onClick={() => { setTransferKbTarget(kb); setKbMenuId(null) }}
                               className="flex w-full items-center gap-2 px-3 py-2 text-left text-lg text-sky-300 hover:bg-sky-500/20">
                               <ArrowRight className="h-3 w-3" />轉移所有權
@@ -1300,30 +1321,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
                           ) : (
                             <ul className="space-y-0.5 px-2">
                               {myKbs.map(renderKbItem)}
-                            </ul>
-                          )
-                        )}
-                      </div>
-
-                      {/* ── 公司共用 ── */}
-                      <div>
-                        <div className="border-t border-white/20" />
-                        <div className="mb-1 mt-0.5 border-t border-white/20" />
-                      </div>
-                      <div>
-                        <button type="button"
-                          onClick={() => { const next = !companyKbOpen; setCompanyKbOpen(next); try { localStorage.setItem('kb-section-company', next ? 'open' : 'closed') } catch {} }}
-                          className="flex w-full items-center gap-1.5 rounded-lg px-3 py-1.5 text-left text-lg font-semibold text-emerald-200 hover:text-white" style={{ backgroundColor: 'rgba(16,120,80,0.30)' }}>
-                          <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-transform ${companyKbOpen ? 'rotate-90' : ''}`} />
-                          <span className="flex-1">公司共用</span>
-                          <span className="rounded-full bg-white/10 px-1.5 text-lg text-emerald-200/70">{companyKbs.length}</span>
-                        </button>
-                        {companyKbOpen && (
-                          companyKbs.length === 0 ? (
-                            <p className="px-7 pb-2 text-lg text-white/30">尚無公司共用知識庫</p>
-                          ) : (
-                            <ul className="space-y-0.5 px-2">
-                              {companyKbs.map(renderKbItem)}
                             </ul>
                           )
                         )}
@@ -1365,7 +1362,7 @@ export default function AgentKbManagerUI({ agent }: Props) {
                 <>
                   <h2 className="truncate text-base font-semibold text-gray-800">{selectedKb.name}</h2>
                   <p className="text-base text-gray-400">
-                    {selectedKb.scope === 'company' && (
+                    {selectedKb.scope === 'publish' && (
                       selectedKb.bot_count > 0
                         ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-base font-medium text-emerald-700">{selectedKb.bot_count} 個 Bot 使用中</span>
                         : <span className="rounded-full bg-gray-100 px-2 py-0.5 text-base font-medium text-gray-400">未被 Bot 使用</span>
@@ -1378,7 +1375,10 @@ export default function AgentKbManagerUI({ agent }: Props) {
             </div>
             {selectedKbId && centerTab === 'docs' && canUploadToSelectedKb && (
               <button type="button"
-                onClick={() => loadKbChunks(selectedKbId, chunkSearchQuery, chunkSourceFilter ?? undefined)}
+                onClick={() => {
+                  loadKbChunks(selectedKbId, chunkSearchQuery, chunkSourceFilter ?? undefined)
+                  loadDocs(selectedKbId)
+                }}
                 className="shrink-0 rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600">
                 <RefreshCw className={`h-3.5 w-3.5 ${kbChunksLoading ? 'animate-spin' : ''}`} />
               </button>
@@ -1450,57 +1450,42 @@ export default function AgentKbManagerUI({ agent }: Props) {
                   )}
                 </button>
               )}
+              {canUploadToSelectedKb && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCenterTab('health')
+                    setHealthDone(false)
+                    setHealthPairs([])
+                    setHealthProgress(null)
+                  }}
+                  className={`flex flex-1 items-center justify-center gap-1.5 py-2 text-base font-medium transition-colors ${
+                    centerTab === 'health'
+                      ? 'border-b-2 border-sky-500 text-sky-600'
+                      : 'text-gray-400 hover:text-gray-600'
+                  }`}
+                >
+                  <Stethoscope className="h-3.5 w-3.5" />健診
+                </button>
+              )}
             </div>
           )}
 
           {/* ── 知識條目內容 ── */}
           {centerTab === 'docs' && (
             <>
-              {/* Bot 引用警示 */}
-              {selectedKb && selectedKb.referenced_bots.length > 0 && (
-                <div className="shrink-0 flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2.5">
-                  <span className="mt-0.5 shrink-0 text-amber-500">⚠️</span>
-                  <p className="text-base text-amber-700">
-                    此知識庫已被以下 Bot 引用：
-                    <span className="font-medium">
-                      {selectedKb.referenced_bots.map((b) => b.name).join('、')}
-                    </span>
-                    ，修改將立即影響線上服務。
-                  </p>
-                </div>
-              )}
 
               {/* 搜尋列 + 工具列 */}
               {selectedKbId && (
                 <div className="shrink-0 border-b border-gray-100 px-3 py-2 space-y-2">
-                  <div className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5">
-                    <ArrowRight className="h-3.5 w-3.5 rotate-90 text-gray-300" />
-                    <input
-                      type="text"
-                      value={chunkSearchQuery}
-                      onChange={(e) => {
-                        setChunkSearchQuery(e.target.value)
-                        if (selectedKbId) loadKbChunks(selectedKbId, e.target.value, chunkSourceFilter ?? undefined)
-                      }}
-                      placeholder="搜尋知識條目內容…"
-                      className="flex-1 bg-transparent text-base text-gray-700 placeholder-gray-300 focus:outline-none"
-                    />
-                    {chunkSearchQuery && (
-                      <button type="button" onClick={() => {
-                        setChunkSearchQuery('')
-                        if (selectedKbId) loadKbChunks(selectedKbId, '', chunkSourceFilter ?? undefined)
-                      }} className="text-gray-300 hover:text-gray-500">
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </div>
                   {/* 按鈕列：新增條目 / 匯入文件 */}
                   {canUploadToSelectedKb && (
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 rounded-lg border border-sky-200 bg-sky-100 px-2.5 py-2">
                       <button type="button"
                         onClick={() => {
+                          const manualDoc = docs.find((d) => d.filename === '手動新增' && d.status === 'ready')
                           const readyDocs = docs.filter((d) => d.status === 'ready')
-                          setAddEntryDocId(readyDocs.length > 0 ? readyDocs[0].id : null)
+                          setAddEntryDocId(manualDoc?.id ?? (readyDocs.length > 0 ? readyDocs[0].id : null))
                           setAddEntryContent('')
                           setAddEntryOpen(true)
                         }}
@@ -1513,20 +1498,46 @@ export default function AgentKbManagerUI({ agent }: Props) {
                       </button>
                     </div>
                   )}
-                  {/* 篩選列：來源過濾 */}
-                  <select
-                    value={chunkSourceFilter ?? ''}
-                    onChange={(e) => {
-                      const val = e.target.value ? Number(e.target.value) : null
-                      setChunkSourceFilter(val)
-                      if (selectedKbId) loadKbChunks(selectedKbId, chunkSearchQuery, val ?? undefined)
-                    }}
-                    className="w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-base text-gray-600 focus:outline-none">
-                    <option value="">所有來源</option>
-                    {docs.filter((d) => (d.chunk_count ?? 0) > 0).map((d) => (
-                      <option key={d.id} value={d.id}>{d.filename}</option>
-                    ))}
-                  </select>
+                  {/* 搜尋區塊：關鍵字 + 來源篩選 */}
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 space-y-1.5">
+                    <div className="flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-1.5">
+                      <ArrowRight className="h-3.5 w-3.5 rotate-90 text-gray-300" />
+                      <input
+                        type="text"
+                        value={chunkSearchQuery}
+                        onChange={(e) => {
+                          setChunkSearchQuery(e.target.value)
+                          if (selectedKbId) loadKbChunks(selectedKbId, e.target.value, chunkSourceFilter ?? undefined)
+                        }}
+                        placeholder="搜尋知識條目內容…"
+                        className="flex-1 bg-transparent text-base text-gray-700 placeholder-gray-300 focus:outline-none"
+                      />
+                      {chunkSearchQuery && (
+                        <button type="button" onClick={() => {
+                          setChunkSearchQuery('')
+                          if (selectedKbId) loadKbChunks(selectedKbId, '', chunkSourceFilter ?? undefined)
+                        }} className="text-gray-300 hover:text-gray-500">
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="shrink-0 text-base text-gray-400">來源：</span>
+                      <select
+                        value={chunkSourceFilter ?? ''}
+                        onChange={(e) => {
+                          const val = e.target.value ? Number(e.target.value) : null
+                          setChunkSourceFilter(val)
+                          if (selectedKbId) loadKbChunks(selectedKbId, chunkSearchQuery, val ?? undefined)
+                        }}
+                        className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-base text-gray-600 focus:outline-none">
+                        <option value="">所有來源</option>
+                        {docs.filter((d) => (d.chunk_count ?? 0) > 0).map((d) => (
+                          <option key={d.id} value={d.id}>{d.filename}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                   {/* 批次工具列 */}
                   {canUploadToSelectedKb && kbChunks.length > 0 && (
                     <div className="flex items-center gap-2">
@@ -1538,14 +1549,8 @@ export default function AgentKbManagerUI({ agent }: Props) {
                             setSelectedChunkIds(new Set(kbChunks.map((c) => c.id)))
                           }
                         }}
-                        className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-base text-gray-500 hover:border-sky-300 hover:text-sky-600">
-                        <input
-                          type="checkbox"
-                          readOnly
-                          checked={selectedChunkIds.size === kbChunks.length}
-                          ref={(el) => { if (el) el.indeterminate = selectedChunkIds.size > 0 && selectedChunkIds.size < kbChunks.length }}
-                          className="h-3.5 w-3.5 accent-sky-500 pointer-events-none"
-                        />
+                        className="flex items-center gap-1 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1 text-base text-violet-600 hover:border-violet-300 hover:bg-violet-100">
+                        <ListChecks className="h-3.5 w-3.5" />
                         {selectedChunkIds.size === kbChunks.length ? '全不選' : '全選'}
                       </button>
                       {selectedChunkIds.size > 0 && (
@@ -1913,6 +1918,125 @@ export default function AgentKbManagerUI({ agent }: Props) {
                         </div>
                       )
                     })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── 健診內容 ── */}
+          {centerTab === 'health' && (
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              {/* 設定列 */}
+              <div className="shrink-0 border-b border-gray-100 bg-gray-50/60 px-4 py-3 space-y-3">
+                <div className="flex items-center gap-3">
+                  <span className="shrink-0 text-base text-gray-500">相似度門檻</span>
+                  <input
+                    type="range" min={0.80} max={0.99} step={0.01}
+                    value={healthThreshold}
+                    onChange={(e) => setHealthThreshold(Number(e.target.value))}
+                    disabled={healthScanning}
+                    className="flex-1 accent-sky-500"
+                  />
+                  <span className="w-10 shrink-0 text-right text-base font-medium text-sky-600">
+                    {healthThreshold.toFixed(2)}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleHealthScan}
+                  disabled={healthScanning}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-base font-medium text-white hover:bg-sky-600 disabled:opacity-50"
+                >
+                  {healthScanning
+                    ? <><Loader2 className="h-4 w-4 animate-spin" />掃描中…</>
+                    : <><Stethoscope className="h-4 w-4" />開始健診</>
+                  }
+                </button>
+              </div>
+
+              {/* 進度條 */}
+              {healthScanning && healthProgress && (
+                <div className="shrink-0 border-b border-gray-100 px-4 py-2">
+                  <div className="mb-1 flex justify-between text-base text-gray-400">
+                    <span>掃描中…</span>
+                    <span>{healthProgress.current} / {healthProgress.total}</span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-gray-100">
+                    <div
+                      className="h-full rounded-full bg-sky-400 transition-all duration-200"
+                      style={{ width: `${(healthProgress.current / healthProgress.total) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* 結果 */}
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                {healthDone && healthPairs.length === 0 && (
+                  <div className="flex h-full flex-col items-center justify-center gap-2 text-gray-400">
+                    <Check className="h-8 w-8 text-green-400" />
+                    <p className="text-base">未發現疑似重複的條目</p>
+                  </div>
+                )}
+                {healthDone && healthPairs.length > 0 && (
+                  <div className="p-3 space-y-3">
+                    <p className="text-base text-gray-500">
+                      發現 <span className="font-semibold text-amber-600">{healthPairs.length}</span> 組疑似重複條目
+                    </p>
+                    {healthPairs.map((pair, idx) => (
+                      <div key={idx} className="rounded-xl border border-amber-200 bg-amber-50/60 p-3 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-base font-medium text-amber-700">
+                            配對 {idx + 1}
+                          </span>
+                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-base font-semibold text-amber-700">
+                            相似度 {Math.round(pair.sim * 100)}%
+                          </span>
+                        </div>
+                        {/* Chunk 1 */}
+                        <div className="rounded-lg border border-amber-100 bg-white p-2.5">
+                          <p className="mb-1 text-base text-gray-400">來源：{pair.chunk1.filename}</p>
+                          <p className="line-clamp-3 text-base text-gray-700 whitespace-pre-wrap">{pair.chunk1.content}</p>
+                        </div>
+                        {/* Chunk 2 */}
+                        <div className="rounded-lg border border-amber-100 bg-white p-2.5">
+                          <p className="mb-1 text-base text-gray-400">來源：{pair.chunk2.filename}</p>
+                          <p className="line-clamp-3 text-base text-gray-700 whitespace-pre-wrap">{pair.chunk2.content}</p>
+                        </div>
+                        {/* 操作按鈕 */}
+                        <div className="flex gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => setHealthDeleteConfirm({ chunkId: pair.chunk1.id, pairIdx: idx, which: 'chunk1' })}
+                            disabled={deletingHealthChunkId !== null}
+                            className="flex-1 rounded-lg border border-red-200 bg-white py-1 text-base text-red-500 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                          >
+                            {deletingHealthChunkId === pair.chunk1.id
+                              ? <Loader2 className="h-3 w-3 animate-spin" />
+                              : <Trash2 className="h-3 w-3" />}
+                            刪除上方
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setHealthDeleteConfirm({ chunkId: pair.chunk2.id, pairIdx: idx, which: 'chunk2' })}
+                            disabled={deletingHealthChunkId !== null}
+                            className="flex-1 rounded-lg border border-red-200 bg-white py-1 text-base text-red-500 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                          >
+                            {deletingHealthChunkId === pair.chunk2.id
+                              ? <Loader2 className="h-3 w-3 animate-spin" />
+                              : <Trash2 className="h-3 w-3" />}
+                            刪除下方
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {!healthScanning && !healthDone && (
+                  <div className="flex h-full flex-col items-center justify-center gap-2 text-gray-300">
+                    <Stethoscope className="h-10 w-10" />
+                    <p className="text-base">點擊「開始健診」掃描重複條目</p>
                   </div>
                 )}
               </div>
@@ -2322,6 +2446,15 @@ export default function AgentKbManagerUI({ agent }: Props) {
         variant="danger"
         onConfirm={() => { setConfirmBatchDeleteOpen(false); void handleBatchDelete() }}
         onCancel={() => setConfirmBatchDeleteOpen(false)}
+      />
+
+      <ConfirmModal
+        open={healthDeleteConfirm !== null}
+        title="刪除條目"
+        message="確定要刪除此條目嗎？此操作無法復原。"
+        confirmText="刪除"
+        onConfirm={() => healthDeleteConfirm && void handleHealthDeleteChunk(healthDeleteConfirm.chunkId)}
+        onCancel={() => setHealthDeleteConfirm(null)}
       />
 
     </div>
