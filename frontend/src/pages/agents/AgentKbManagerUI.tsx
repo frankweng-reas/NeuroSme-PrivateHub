@@ -1263,7 +1263,6 @@ export default function AgentKbManagerUI({ agent }: Props) {
                             <span className="block truncate text-xs text-white/40">{kbOwnerNames[kb.id]}</span>
                           )}
                         </span>
-                        <span className={`shrink-0 text-lg ${selectedKbId === kb.id ? 'text-sky-200/80' : 'text-white/40'}`}>{kb.ready_count}/{kb.doc_count}</span>
                         {kb.scope === 'publish' && (
                           <span className="shrink-0 rounded-full bg-violet-500/30 px-1.5 py-0.5 text-xs font-medium text-violet-200" title="已發布">
                             🚀
